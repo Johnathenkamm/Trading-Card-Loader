@@ -1,0 +1,27 @@
+{
+  "name": "card-db-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 1 MVP: public, SEO-first trading-card price database with variant-aware catalog, price history, sold comps, and faceted search. Seeded from the Pokemon TCG API and Scryfall. SQLite for the demo; Postgres + object-storage bucket for production.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "seed": "node src/seed.ts",
+    "start": "node --env-file-if-exists=.env src/server.ts",
+    "dev": "node --watch --env-file-if-exists=.env src/server.ts",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d",
+    "db:schema": "docker compose exec -T db psql -U cardindex -d cardindex -v ON_ERROR_STOP=1 -f /db/schema.postgres.sql",
+    "db:psql": "docker compose exec db psql -U cardindex -d cardindex",
+    "pg:migrate": "node --env-file=.env db/migrate_sqlite_to_postgres.ts"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0"
+  }
+}

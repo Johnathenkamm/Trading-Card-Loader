@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Databases & generated data (regenerate via seed)
+*.db
+*.db-wal
+*.db-shm
+data/uploads/
+
+# Logs
+*.log
+
+# Claude local settings (personal / machine-specific)
+.claude/settings.local.json
+**/.claude/settings.local.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
