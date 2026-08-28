@@ -1,6 +1,8 @@
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# Ship the seeded catalog DB so the app works on clone (WAL merged in).
+!data/catalog.db
 data/uploads/
 *.log
 node_modules/
