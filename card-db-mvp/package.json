@@ -19,6 +19,7 @@
     "pg:migrate": "node --env-file=.env db/migrate_sqlite_to_postgres.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1121.0",
     "pg": "^8.13.0"
   },
   "devDependencies": {
