@@ -9,6 +9,7 @@
   },
   "scripts": {
     "seed": "node src/seed.ts",
+    "grant-pro": "node --env-file-if-exists=.env src/scripts/grant-pro.ts",
     "start": "node --env-file-if-exists=.env src/server.ts",
     "dev": "node --watch --env-file-if-exists=.env src/server.ts",
     "db:up": "docker compose up -d",

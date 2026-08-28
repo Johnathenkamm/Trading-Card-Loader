@@ -42,6 +42,8 @@ import {
 } from "./app/auth.ts";
 import { runWithSeller, runWithRequest, currentAccount, type HeaderAccount } from "./app/session-context.ts";
 import { renderLogin, renderSignup, safeNext } from "./render/auth.ts";
+import { ensureBillingSchema, planTier, isPro } from "./app/billing.ts";
+import { renderPricing } from "./render/pricing.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5173);
@@ -62,6 +64,16 @@ try {
   await ensureAuthSchema();
 } catch (err) {
   console.error("\n  Failed to prepare the auth schema (sellers.password_hash / sessions).\n", err);
+  process.exit(1);
+}
+
+// Prepare the billing/plan bits (idempotent): ensure sellers.plan_tier exists and
+// grandfather any pre-existing accounts to Pro once, so shipping the paywall never
+// locks a current user out. See app/billing.ts.
+try {
+  await ensureBillingSchema();
+} catch (err) {
+  console.error("\n  Failed to prepare the billing schema (sellers.plan_tier / meta).\n", err);
   process.exit(1);
 }
 
@@ -537,6 +549,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // pages
     if (path === "/") return sendPage(res, { ...(await renderHome()) }, "/");
     if (path === "/browse") return sendPage(res, { ...(await renderBrowse()) }, "/browse");
+    if (path === "/pricing") {
+      const tier = account ? await planTier(account.id) : "free";
+      const upgrade = url.searchParams.get("upgrade") === "1";
+      return sendPage(res, renderPricing({ account, tier, upgrade }), "/pricing");
+    }
 
     let m: RegExpMatchArray | null;
 
@@ -685,6 +702,11 @@ async function handleApp(
       return redirect(res, "/login?next=" + encodeURIComponent(path + (url.search || "")));
     }
     return redirect(res, "/login");
+  }
+  // Pro paywall: the whole seller workspace requires an active Pro subscription.
+  // Free accounts are bounced to /pricing (the public catalog stays open to them).
+  if (!isPro(await planTier(acct.id))) {
+    return redirect(res, "/pricing?upgrade=1");
   }
   return runWithSeller(acct.id, () => handleAppAuthed(req, res, url, path, method, msg));
 }

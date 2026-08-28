@@ -19,6 +19,7 @@ import { EBAY_TITLE_MAX } from "../app/listing.ts";
 import {
   DEFAULT_STRUCTURE, TITLE_TOKENS, TITLE_MAX, parseStructure, serializeStructure, renderStructuredTitle,
 } from "../app/title.ts";
+import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL, isPro } from "../app/billing.ts";
 
 const dollars = (c: number | null | undefined): string => (c == null ? "" : (c / 100).toFixed(2));
 
@@ -606,9 +607,26 @@ export async function renderSettings(msg?: string): Promise<{ html: string; titl
   const structure = parseStructure(s.title_structure) ?? DEFAULT_STRUCTURE;
   const initialJson = serializeStructure(structure);
   const initialPreview = renderStructuredTitle(await sampleTitleFields(), structure);
+  const pro = isPro(s.plan_tier);
+  const planPanel = `<div class="ws-panel plan-panel">
+    <div>
+      <div class="eyebrow">Your plan</div>
+      <div class="plan-line">
+        <b>${pro ? "Pro" : "Free"}</b>${pro ? ` · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : ""}
+        <span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span>
+      </div>
+      <p class="hint">${
+        pro
+          ? "Thanks for subscribing. Online billing management is coming soon."
+          : "Upgrade to Pro to unlock the seller workspace."
+      } <a href="/pricing">View plans</a></p>
+    </div>
+  </div>`;
+
   const html = `<div class="wrap ws">
     ${wsHead("settings", "Settings", "Set once, reuse on every scan and listing — SKU scheme, default pricing, and eBay listing preferences.")}
     ${flash(msg)}
+    ${planPanel}
     <form class="ws-panel settings-form" method="post" action="/app/settings">
       <div class="set-section">
         <h2>Shop &amp; SKUs</h2>

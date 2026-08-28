@@ -37,12 +37,6 @@ function shell(opts: {
       ${error ? `<div class="auth-error" role="alert">${esc(error)}</div>` : ""}
       <form method="post" action="${action}" class="auth-form" autocomplete="on">
         ${nextField}
-        ${
-          isLogin
-            ? ""
-            : `<label class="fld"><span>Shop name <small>optional</small></span>
-                 <input type="text" name="display_name" value="${esc(displayName)}" placeholder="My card shop" maxlength="80" autocomplete="organization"></label>`
-        }
         <label class="fld"><span>Email</span>
           <input type="email" name="email" value="${esc(email)}" required autocomplete="email" autofocus inputmode="email" placeholder="you@example.com"></label>
         <label class="fld"><span>Password</span>

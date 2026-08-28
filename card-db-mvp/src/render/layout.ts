@@ -14,7 +14,7 @@ export type PageOpts = {
 
 const SITE = "CardIndex";
 
-// Brand mark: two offset cards on a violet→magenta tile. Inline SVG so it inherits
+// Brand mark: two offset cards on a cobalt-blue tile. Inline SVG so it inherits
 // crisp rendering at any size and needs no asset request. Exported for reuse on
 // the auth pages. (The gradient id repeats if the mark appears twice on a page;
 // browsers resolve to the first definition — same gradient, so it renders fine.)
@@ -42,6 +42,7 @@ function header(searchValue = ""): string {
       <a href="/g/pokemon">Pokémon</a>
       <a href="/g/mtg">Magic</a>
       <a href="/search">Search</a>
+      <a href="/pricing">Pricing</a>
       <a href="/app" class="nav-app">Seller tools</a>
     </nav>
     <div class="header-search">
@@ -83,6 +84,7 @@ function footer(): string {
       <a href="/app/scan">Scan &amp; identify</a>
       <a href="/app">Inventory &amp; pricing</a>
       <a href="/app/listings">eBay listings</a>
+      <a href="/pricing">Pricing &amp; plans</a>
     </div>
   </div>
   <div class="wrap legal">
@@ -144,7 +146,7 @@ const CLIENT_JS = `
   });
 })();`;
 
-// Favicon: the same violet→magenta stacked-cards mark, inlined as a data URI.
+// Favicon: the same blue stacked-cards mark, inlined as a data URI.
 const FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232f6bff'/%3E%3Cstop offset='1' stop-color='%235b8cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='11' height='15' rx='2' fill='white' fill-opacity='0.5'/%3E%3Crect x='13' y='9' width='11' height='15' rx='2' fill='white'/%3E%3C/svg%3E";
 

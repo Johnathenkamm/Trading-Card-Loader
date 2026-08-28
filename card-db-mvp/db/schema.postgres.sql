@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   password_hash     text,                              -- scrypt:salt:hash; NULL = legacy passwordless seller
   last_login_at     timestamptz,
   display_name      text    NOT NULL DEFAULT 'My card shop',
-  plan_tier         text    NOT NULL DEFAULT 'free',   -- free | pro
+  plan_tier         text    NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the seller workspace (app/billing.ts); Stripe checkout is the next seam.
   training_opt_in   boolean NOT NULL DEFAULT false,
 
   -- SKU scheme: PREFIX-000001, auto-incrementing, custom prefix.
