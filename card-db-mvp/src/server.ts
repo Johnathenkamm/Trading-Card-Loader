@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
-import { getGameBySlug, getSetBySlug, getCard, pool } from "./pg.ts";
+import { getGameBySlug, getSetBySlug, getCard, getVariants, pool } from "./pg.ts";
+import { ebayConfigured, searchListed } from "./ebay.ts";
 import { page } from "./render/layout.ts";
 import {
   renderHome,
@@ -544,6 +545,30 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         meta: `${r.set_name}${r.price != null ? " · " + money(r.price) : ""}`,
       }));
       return send(res, 200, JSON.stringify(out), "application/json");
+    }
+
+    // API: live eBay listings for a card (Browse API; see src/ebay.ts).
+    // Lazy-loaded by a button on the card page so pageviews/crawlers never
+    // spend Browse-API quota; results are cached 10 min in-process.
+    if (path === "/api/ebay/listed") {
+      const j = (code: number, body: unknown) => send(res, code, JSON.stringify(body), "application/json");
+      if (!ebayConfigured()) return j(200, { configured: false, items: [] });
+      const card = await getCard(Number(url.searchParams.get("card")));
+      if (!card) return j(404, { configured: true, error: "unknown card" });
+      const variants = await getVariants(card.id);
+      const vf = url.searchParams.get("v");
+      const sel = variants.find((v) => v.finish === vf) ?? variants.find((v) => v.is_default) ?? variants[0];
+      const query = [card.name, card.number ?? "", card.set_name ?? "", sel && sel.finish !== "normal" ? sel.finish_label : ""]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      try {
+        const items = await searchListed(query, 10);
+        return j(200, { configured: true, query, items });
+      } catch (err) {
+        console.error("ebay listed:", err);
+        return j(200, { configured: true, query, error: "eBay request failed — try again shortly" });
+      }
     }
 
     // pages

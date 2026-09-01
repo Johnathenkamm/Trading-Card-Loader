@@ -27,6 +27,7 @@ import {
   pager,
 } from "./components.ts";
 import type { SearchParams, SearchResult, FacetOption } from "../search.ts";
+import { ebayConfigured } from "../ebay.ts";
 
 const ORIGIN = ""; // relative canonicals keep it host-agnostic for the demo
 
@@ -464,6 +465,47 @@ export async function renderCard(
           <div class="comps-tabs">${compTabs}</div>
           <div class="comps-wrap">${compsTable}</div>
         </div>
+
+        ${
+          ebayConfigured()
+            ? `<div class="panel" id="ebay-live">
+          <h2>Live on eBay</h2>
+          <div class="sub">Current listings for this card, from eBay's Browse API. Loaded on demand.</div>
+          <button class="btn" id="ebay-load" data-card="${card.id}" data-v="${esc(selected.finish)}">Load live listings</button>
+          <div class="comps-wrap" id="ebay-rows" hidden></div>
+        </div>
+        <script>(function(){
+          var b=document.getElementById('ebay-load');if(!b)return;
+          b.addEventListener('click',async function(){
+            b.disabled=true;b.textContent='Loading…';
+            var w=document.getElementById('ebay-rows');
+            try{
+              var r=await fetch('/api/ebay/listed?card='+encodeURIComponent(b.dataset.card)+'&v='+encodeURIComponent(b.dataset.v));
+              var j=await r.json();
+              w.hidden=false;
+              if(j.error){w.textContent='⚠ '+j.error;b.disabled=false;b.textContent='Retry';return;}
+              if(!j.items||!j.items.length){w.textContent='No live listings found for this card right now.';b.remove();return;}
+              var t=document.createElement('table');t.className='comps';
+              t.innerHTML='<thead><tr><th>Listing</th><th>Type</th><th>Condition</th><th class="price">Price</th></tr></thead>';
+              var tb=document.createElement('tbody');
+              j.items.forEach(function(it){
+                var tr=document.createElement('tr');
+                var td1=document.createElement('td');
+                if(it.url){var a=document.createElement('a');a.href=it.url;a.target='_blank';a.rel='noopener nofollow';a.textContent=it.title;td1.appendChild(a);}
+                else td1.textContent=it.title;
+                var td2=document.createElement('td');td2.textContent=it.buying||'';
+                var td3=document.createElement('td');td3.textContent=it.condition||'';
+                var td4=document.createElement('td');td4.className='price';
+                td4.textContent=it.price_cents!=null?((it.currency==='USD'?'$':it.currency+' ')+(it.price_cents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'—';
+                tr.appendChild(td1);tr.appendChild(td2);tr.appendChild(td3);tr.appendChild(td4);
+                tb.appendChild(tr);
+              });
+              t.appendChild(tb);w.innerHTML='';w.appendChild(t);b.remove();
+            }catch(e){w.hidden=false;w.textContent='⚠ Could not reach the server.';b.disabled=false;b.textContent='Retry';}
+          });
+        })();</script>`
+            : ""
+        }
       </div>
     </div>
   </div>`;

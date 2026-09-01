@@ -45,6 +45,15 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
 ```
 
+**Live eBay listings on card pages** (`src/ebay.ts`): register free at
+[developer.ebay.com](https://developer.ebay.com), create an application keyset,
+and set `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` in `.env` — card pages then get
+a lazy-loaded **"Live on eBay"** panel driven by eBay's Browse API (self-serve,
+no partnership needed; 5,000 calls/day to start, results cached 10 min).
+`EBAY_MOCK=1` renders canned rows for UI testing without keys; with no config
+the panel is hidden and the "eBay listed ↗" link-out remains. Sold prices are
+**not** available this way (no open eBay API) — that's the archive above.
+
 `npm run dev` runs the server with `--watch` (auto-restart on edits). Requires
 **Node 24+** (TypeScript type-stripping) and Docker (for Postgres). Configuration
 is read from `.env` (copied from `.env.example`); point `DATABASE_URL` at
