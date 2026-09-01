@@ -15,6 +15,8 @@ import {
   sitemapUrls,
 } from "./render/pages.ts";
 import { search, suggest, type SearchParams } from "./search.ts";
+import { searchSales, type SalesParams } from "./sales.ts";
+import { renderSales } from "./render/sales.ts";
 import { money } from "./util.ts";
 
 // ---- seller-workspace wiring ----------------------------------------------
@@ -603,6 +605,16 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     // pages
     if (path === "/") return sendPage(res, { ...(await renderHome()) }, "/");
     if (path === "/browse") return sendPage(res, { ...(await renderBrowse()) }, "/browse");
+    if (path === "/sales") {
+      const sp: SalesParams = {
+        q: url.searchParams.get("q") ?? undefined,
+        market: url.searchParams.get("market") ?? undefined,
+        type: url.searchParams.get("type") ?? undefined,
+        grade: url.searchParams.get("grade") ?? undefined,
+        sort: url.searchParams.get("sort") ?? undefined,
+      };
+      return sendPage(res, { ...renderSales(sp, await searchSales(sp)) }, "/sales");
+    }
     if (path === "/pricing") {
       const tier = account ? await planTier(account.id) : "free";
       const upgrade = url.searchParams.get("upgrade") === "1";

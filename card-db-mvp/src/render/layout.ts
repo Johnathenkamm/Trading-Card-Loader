@@ -42,6 +42,7 @@ function header(searchValue = ""): string {
       <a href="/g/pokemon">Pokémon</a>
       <a href="/g/mtg">Magic</a>
       <a href="/search">Search</a>
+      <a href="/sales">Sales Lookup</a>
       <a href="/pricing">Pricing</a>
       <a href="/app" class="nav-app">Seller tools</a>
     </nav>
