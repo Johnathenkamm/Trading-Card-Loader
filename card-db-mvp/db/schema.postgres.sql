@@ -132,6 +132,21 @@ CREATE INDEX IF NOT EXISTS idx_sold_variant       ON sold_sales(variant_id, grad
 CREATE INDEX IF NOT EXISTS idx_sold_card          ON sold_sales(card_id, sold_on DESC);
 CREATE INDEX IF NOT EXISTS idx_sold_title_trgm    ON sold_sales USING gin (title gin_trgm_ops);
 
+-- Perceptual hashes of catalog reference images (photo identification;
+-- research report §6: card ID is image retrieval — hash the catalog once,
+-- hash the query photo, nearest Hamming distance wins). Populated by
+-- `npm run hash:catalog`; consumed by the VISION_PROVIDER=hash matcher.
+-- Hex-encoded 64-bit dHash/aHash, full frame + 8% inset crop.
+CREATE TABLE IF NOT EXISTS card_image_hashes (
+  card_id     bigint PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+  dhash       text NOT NULL,
+  ahash       text NOT NULL,
+  dhash_inset text NOT NULL,
+  ahash_inset text NOT NULL,
+  image_url   text NOT NULL,                -- which image was hashed (skip unchanged)
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
 -- Catalog gap reports (the "report a missing/wrong card" loop).
 CREATE TABLE IF NOT EXISTS catalog_issue_reports (
   id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

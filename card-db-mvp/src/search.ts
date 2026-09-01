@@ -9,7 +9,7 @@
 import { query, one, toPg } from "./pg.ts";
 import type { Card } from "./db.ts";
 import { parseInput } from "./app/identify.ts";
-import { numberSort } from "./util.ts";
+import { numberSort, matchSet } from "./util.ts";
 
 export type SearchParams = {
   q?: string;
@@ -101,38 +101,7 @@ type ParsedQuery = {
   setLabel?: string;
 };
 
-/** Find a known set spoken inside the query terms and consume its tokens.
- *  Accepts the full set name, the name + trailing "set" ("base set" -> "Base"),
- *  or any >= 2-token contiguous run of the name ("neon dynasty" -> "Kamigawa:
- *  Neon Dynasty"). */
-function matchSet(
-  terms: string[],
-  sets: Array<{ slug: string; name: string }>
-): { slug: string; label: string; terms: string[] } | null {
-  const tokensOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
-  let best: { slug: string; label: string; at: number; len: number } | null = null;
-  for (const s of sets) {
-    const key = tokensOf(s.name);
-    const candidates: string[][] = [key];
-    if (key[key.length - 1] !== "set") candidates.push([...key, "set"]);
-    for (let start = 0; start < key.length; start++) {
-      for (let end = key.length; end - start >= 2; end--) {
-        if (start === 0 && end === key.length) continue; // already covered
-        candidates.push(key.slice(start, end));
-      }
-    }
-    for (const cand of candidates) {
-      for (let i = 0; i + cand.length <= terms.length; i++) {
-        if (cand.every((t, j) => terms[i + j] === t)) {
-          if (!best || cand.length > best.len) best = { slug: s.slug, label: s.name, at: i, len: cand.length };
-        }
-      }
-    }
-  }
-  if (!best) return null;
-  const rest = [...terms.slice(0, best.at), ...terms.slice(best.at + best.len)];
-  return { slug: best.slug, label: best.label, terms: rest };
-}
+// matchSet lives in util.ts so identify.ts can use it too without a cycle.
 
 async function parseQuery(raw: string): Promise<ParsedQuery> {
   if (!raw.trim()) return { terms: [] };

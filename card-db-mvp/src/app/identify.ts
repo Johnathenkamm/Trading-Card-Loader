@@ -11,7 +11,7 @@
 
 import { query, toPg, getVariants } from "../pg.ts";
 import type { Variant } from "../db.ts";
-import { levenshtein, numberSort } from "../util.ts";
+import { levenshtein, numberSort, matchSet } from "../util.ts";
 
 export type Parsed = {
   nameTerms: string[];
@@ -23,6 +23,9 @@ export type Parsed = {
   grade: string | null;
   quantity: number;
   raw: string;
+  /** Set spoken in the input, resolved against the catalog (identify() fills these). */
+  setSlug?: string | null;
+  setLabel?: string | null;
 };
 
 export type Candidate = {
@@ -197,28 +200,58 @@ async function fetchRows(parsed: Parsed): Promise<Row[]> {
   const select = `SELECT c.id, c.name, c.number, c.rarity, c.image_small, c.image_large,
       s.name AS set_name, s.slug AS set_slug, g.name AS game_name, g.slug AS game_slug
     FROM cards c JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id`;
+  // A recognized set narrows every stage (and its tokens are already out of nameTerms).
+  const setCond = parsed.setSlug ? " AND s.slug = ?" : "";
+  const setParams = parsed.setSlug ? [parsed.setSlug] : [];
 
   // Primary: every name term must appear in search_text (precise).
   const terms = parsed.nameTerms.filter((t) => t.length >= 2);
   if (terms.length) {
     const where = terms.map(() => "c.search_text LIKE ?").join(" AND ");
-    const rows = await query<Row>(toPg(`${select} WHERE ${where} LIMIT 80`), terms.map((t) => `%${t}%`));
+    const rows = await query<Row>(
+      toPg(`${select} WHERE ${where}${setCond} LIMIT 80`),
+      [...terms.map((t) => `%${t}%`), ...setParams]
+    );
     if (rows.length) return rows;
   }
 
   // Relax: match the longest single term (recall).
   const longest = [...parsed.nameTerms].sort((a, b) => b.length - a.length)[0];
   if (longest) {
-    const rows = await query<Row>(toPg(`${select} WHERE c.search_text LIKE ? LIMIT 80`), [`%${longest}%`]);
+    const rows = await query<Row>(
+      toPg(`${select} WHERE c.search_text LIKE ?${setCond} LIMIT 80`),
+      [`%${longest}%`, ...setParams]
+    );
+    if (rows.length) return rows;
+  }
+
+  // Typo tolerance: trigram close-match on the card name (idx_cards_name_trgm),
+  // so a pasted "chorizard 4/102" still reaches scoring instead of failing.
+  if (terms.length) {
+    const rows = await query<Row>(
+      toPg(`${select} WHERE lower(c.name) % ?${setCond} LIMIT 80`),
+      [terms.join(" "), ...setParams]
+    );
     if (rows.length) return rows;
   }
 
   // Last resort: if only a number was given, match by number.
   if (parsed.number) {
     const ns = numericPart(parsed.number);
-    if (ns != null) return await query<Row>(toPg(`${select} WHERE c.number_sort=? LIMIT 80`), [ns]);
+    if (ns != null)
+      return await query<Row>(toPg(`${select} WHERE c.number_sort=?${setCond} LIMIT 80`), [ns, ...setParams]);
   }
   return [];
+}
+
+// Token equivalence with typo slack: exact/substring, or a small edit distance
+// on longer tokens — so trigram-recalled candidates ("chorizard") score fairly.
+function tokenMatches(a: string, b: string): boolean {
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const len = Math.min(a.length, b.length);
+  if (len >= 6) return levenshtein(a, b) <= 2;
+  if (len >= 4) return levenshtein(a, b) <= 1;
+  return false;
 }
 
 function scoreRow(parsed: Parsed, row: Row): number {
@@ -227,11 +260,11 @@ function scoreRow(parsed: Parsed, row: Row): number {
   const haystack = tokenize(`${row.name} ${row.set_name} ${row.game_name}`);
 
   // recall: how much of the catalog card's NAME the input covered
-  const nameHits = nameTokens.filter((t) => inputTokens.some((i) => i === t || i.includes(t) || t.includes(i)));
+  const nameHits = nameTokens.filter((t) => inputTokens.some((i) => tokenMatches(i, t)));
   const recall = nameTokens.length ? nameHits.length / nameTokens.length : 0;
 
   // precision: how much of what the user typed is accounted for by name+set+game
-  const covered = inputTokens.filter((i) => haystack.some((h) => h === i || h.includes(i) || i.includes(h)));
+  const covered = inputTokens.filter((i) => haystack.some((h) => tokenMatches(h, i)));
   const precision = inputTokens.length ? covered.length / inputTokens.length : recall;
 
   // whole-string similarity as a tie-breaker on close names
@@ -273,6 +306,21 @@ async function pickVariant(cardId: number, finish: string | null, language: stri
 
 export async function identify(raw: string): Promise<IdentifyResult> {
   const parsed = parseInput(raw);
+
+  // Set awareness: if the input speaks a set name ("charizard base set holo"),
+  // consume its tokens and hard-filter candidates to that set — precision and
+  // confidence both rise because set words stop reading as unmatched noise.
+  if (parsed.nameTerms.length) {
+    const sets = (await query("SELECT slug, name FROM sets")) as Array<{ slug: string; name: string }>;
+    const m = matchSet(parsed.nameTerms, sets);
+    if (m && m.terms.length) {
+      // only consume when card-name terms remain — "base set" alone stays a name query
+      parsed.setSlug = m.slug;
+      parsed.setLabel = m.label;
+      parsed.nameTerms = m.terms;
+    }
+  }
+
   const rows = await fetchRows(parsed);
 
   const scored = rows
@@ -326,6 +374,10 @@ export async function identify(raw: string): Promise<IdentifyResult> {
     if (want != null && have != null && want === have && best.score >= 0.6) {
       confidence = Math.max(confidence, 0.92);
     }
+  }
+  // a spoken set that matches the candidate corroborates like a number does
+  if (parsed.setSlug && best.set_slug === parsed.setSlug && best.score >= 0.6) {
+    confidence = Math.max(confidence, 0.9);
   }
   confidence = Math.max(0, Math.min(0.99, confidence));
 

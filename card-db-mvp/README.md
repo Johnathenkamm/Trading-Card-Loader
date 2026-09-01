@@ -43,6 +43,9 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # land sold listings in the canonical sold_sales archive, deduped and
                       # CANONICALIZED to card/variant/grade via the identify() parser.
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
+npm run hash:catalog  # build the photo-ID index: perceptual-hash every catalog reference
+                      # image (re-run after adding sets; only new/changed cards fetch).
+                      # Powers VISION_PROVIDER=hash — real photo identification, no API.
 ```
 
 **TCGplayer on card pages**: the daily sync stores the full **price spread**

@@ -17,6 +17,8 @@
 
 import { identify, AUTO_THRESHOLD, type IdentifyResult } from "./identify.ts";
 import { hintFromFilename } from "../upload.ts";
+import { query } from "../pg.ts";
+import { hashImage, hashDistance, fromHex, type ImageHashes } from "../imagehash.ts";
 
 export type VisionImage = { data: Buffer; filename: string; contentType: string };
 
@@ -73,6 +75,92 @@ class MockProvider implements VisionProvider {
     const hint = process.env.VISION_MOCK_HINT ?? "Charizard 4/102 Holo";
     const conf = Number(process.env.VISION_MOCK_CONFIDENCE ?? "0.97");
     return { provider: this.name, hintText: hint, confidence: Number.isFinite(conf) ? conf : 0.97, raw: { mock: true, filename: image.filename } };
+  }
+}
+
+/**
+ * Local perceptual-hash matcher — the first REAL photo identifier that works
+ * with no external service (research report §6: card ID is image retrieval;
+ * hashing is the proven baseline tier, embeddings/Ximilar the upgrades).
+ * Requires the index built by `npm run hash:catalog`; with an empty index it
+ * returns null and the caller falls back (filename hint) gracefully.
+ */
+type HashIndexRow = { card_id: number; name: string; number: string | null; set_name: string; h: ImageHashes };
+let hashIndex: { rows: HashIndexRow[]; at: number } | null = null;
+const HASH_INDEX_TTL_MS = 10 * 60 * 1000;
+
+async function loadHashIndex(): Promise<HashIndexRow[]> {
+  if (hashIndex && Date.now() - hashIndex.at < HASH_INDEX_TTL_MS) return hashIndex.rows;
+  const raw = (await query(
+    `SELECT h.card_id, h.dhash, h.ahash, h.dhash_inset, h.ahash_inset, c.name, c.number, s.name AS set_name
+     FROM card_image_hashes h JOIN cards c ON c.id=h.card_id JOIN sets s ON s.id=c.set_id`
+  )) as Array<{ card_id: number; dhash: string; ahash: string; dhash_inset: string; ahash_inset: string; name: string; number: string | null; set_name: string }>;
+  const rows = raw.map((r) => ({
+    card_id: r.card_id,
+    name: r.name,
+    number: r.number,
+    set_name: r.set_name,
+    h: {
+      full: { dhash: fromHex(r.dhash), ahash: fromHex(r.ahash) },
+      inset: { dhash: fromHex(r.dhash_inset), ahash: fromHex(r.ahash_inset) },
+    },
+  }));
+  hashIndex = { rows, at: Date.now() };
+  return rows;
+}
+
+class HashProvider implements VisionProvider {
+  readonly name = "hash";
+
+  async identify(image: VisionImage): Promise<VisionResult | null> {
+    let index: HashIndexRow[];
+    try {
+      index = await loadHashIndex();
+    } catch {
+      return null;
+    }
+    if (index.length === 0) return null;
+
+    let q: ImageHashes;
+    try {
+      q = await hashImage(image.data);
+    } catch {
+      return null; // undecodable image
+    }
+
+    let best: { row: HashIndexRow; d: number } | null = null;
+    let second: { row: HashIndexRow; d: number } | null = null;
+    for (const row of index) {
+      const d = hashDistance(q, row.h);
+      if (!best || d < best.d) {
+        if (best && best.row.card_id !== row.card_id) second = best;
+        best = { row, d };
+      } else if (row.card_id !== best.row.card_id && (!second || d < second.d)) {
+        second = { row, d };
+      }
+    }
+    if (!best) return null;
+
+    // distance -> confidence (64-bit dHash + half-weight aHash scale; measured:
+    // same image re-encoded ≈ 0, different cards ≈ 20+)
+    let confidence: number | null =
+      best.d <= 6 ? 0.97 : best.d <= 10 ? 0.9 : best.d <= 14 ? 0.75 : best.d <= 18 ? 0.55 : null;
+    if (confidence == null) return null;
+    // near-tie with a different card (reprints/alt arts): route to review
+    if (second && second.d - best.d < 2) confidence = Math.min(confidence, 0.7);
+
+    const labels: VisionLabels = {
+      name: best.row.name,
+      number: best.row.number ?? undefined,
+      set: best.row.set_name,
+    };
+    return {
+      provider: this.name,
+      labels,
+      hintText: labelsToHint(labels),
+      confidence,
+      raw: { distance: best.d, runner_up: second ? { card_id: second.row.card_id, distance: second.d } : null, card_id: best.row.card_id },
+    };
   }
 }
 
@@ -162,6 +250,7 @@ let _provider: VisionProvider | null = null;
 
 function build(): VisionProvider {
   const p = (process.env.VISION_PROVIDER ?? "none").toLowerCase();
+  if (p === "hash") return new HashProvider();
   if (p === "mock") return new MockProvider();
   if (p === "http" || p === "custom" || p === "ximilar") {
     return new HttpVisionProvider(p, {
