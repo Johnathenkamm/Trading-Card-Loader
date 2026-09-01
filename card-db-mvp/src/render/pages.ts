@@ -691,7 +691,18 @@ export function renderSearch(p: SearchParams, r: SearchResult): { html: string; 
         <div class="sort">Sort ${sortLinks}</div>
       </div>
       ${applied.length ? `<div class="applied">${applied.join("")}</div>` : ""}
-      <div class="grid cards">${r.rows.map((row) => cardTile({ ...row, price_cents: row.price_cents, currency: row.currency ?? "USD" })).join("")}</div>
+      ${r.fuzzyFor ? `<div class="did-you-mean">No exact matches for “${esc(r.fuzzyFor)}” — showing the closest cards.</div>` : ""}
+      <div class="grid cards">${r.rows
+        .map((row) =>
+          cardTile({
+            ...row,
+            price_cents: row.price_cents,
+            currency: row.currency ?? "USD",
+            price_label: r.gradeApplied,
+            link_suffix: r.gradeApplied ? `?tab=${encodeURIComponent(r.gradeApplied)}#comps` : "",
+          })
+        )
+        .join("")}</div>
       ${pager(baseForPager, r.page, r.totalPages)}`;
   }
 

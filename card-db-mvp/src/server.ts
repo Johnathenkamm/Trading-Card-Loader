@@ -543,7 +543,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         name: r.name,
         url: `/c/${r.slug}-${r.id}`,
         image: r.image,
-        meta: `${r.set_name}${r.price != null ? " · " + money(r.price) : ""}`,
+        meta: `${r.set_name}${r.number ? " · #" + r.number : ""}${r.price != null ? " · " + money(r.price) : ""}`,
       }));
       return send(res, 200, JSON.stringify(out), "application/json");
     }

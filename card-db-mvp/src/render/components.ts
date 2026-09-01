@@ -20,12 +20,23 @@ export function finishChip(v: { finish: string; finish_label: string }): string 
 }
 
 export function cardTile(
-  card: Card & { set_name?: string; price_cents?: number | null; currency?: string; finish_label?: string; finish?: string; rarity?: string | null }
+  card: Card & {
+    set_name?: string;
+    price_cents?: number | null;
+    currency?: string;
+    finish_label?: string;
+    finish?: string;
+    rarity?: string | null;
+    /** small tag shown before the price, e.g. "PSA 10" when a graded search repriced the tile */
+    price_label?: string | null;
+    /** extra query/hash appended to the card link, e.g. "?tab=PSA%2010#comps" */
+    link_suffix?: string;
+  }
 ): string {
   const img = card.image_small || card.image_large;
   const price =
     card.price_cents != null
-      ? `<span class="v">${money(card.price_cents, card.currency)}</span>`
+      ? `${card.price_label ? `<span class="chip">${esc(card.price_label)}</span> ` : ""}<span class="v">${money(card.price_cents, card.currency)}</span>`
       : `<span class="no">No price</span>`;
   const chip =
     card.finish && card.finish_label
@@ -33,7 +44,7 @@ export function cardTile(
       : card.rarity
       ? `<span class="chip rar">${esc(card.rarity)}</span>`
       : "";
-  return `<div class="tile"><a href="${cardUrl(card)}">
+  return `<div class="tile"><a href="${cardUrl(card)}${card.link_suffix ?? ""}">
     <div class="img">${img ? `<img src="${esc(img)}" alt="${esc(card.name)}" loading="lazy" width="245" height="342">` : ""}</div>
     <div class="body">
       <div class="nm">${esc(card.name)}</div>

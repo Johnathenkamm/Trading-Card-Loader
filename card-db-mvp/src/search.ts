@@ -33,21 +33,54 @@ export type SearchResult = {
   facets: { game: FacetOption[]; set: FacetOption[]; rarity: FacetOption[]; finish: FacetOption[] };
   /** Filters understood from the free-text query (not removable chips — edit the query). */
   parsedChips: string[];
+  /** Grade the result prices are shown at (e.g. "PSA 10") — null = raw market. */
+  gradeApplied: string | null;
+  /** Set when no exact match existed and results are trigram close-matches for this text. */
+  fuzzyFor: string | null;
   suggestions: string[];
   terms: string[];
 };
 
 const PAGE_SIZE = 24;
-const HP_JOIN = `LEFT JOIN (
+
+/**
+ * The price column joined to every result row. Raw market by default; when the
+ * query named a grade ("charizard psa 10"), the SAME join switches to that
+ * grade's value — so a graded search doesn't just filter, it REPRICES the
+ * results at the grade the user asked about.
+ */
+function priceJoin(grade: string | null): { sql: string; params: unknown[] } {
+  if (grade)
+    return {
+      sql: `LEFT JOIN (
+    SELECT v.card_id AS cid, MAX(pp.price_cents) AS pc, MAX(pp.currency) AS cur
+    FROM card_variants v
+    JOIN price_points pp ON pp.variant_id=v.id AND pp.kind='market' AND pp.grade = ?
+    GROUP BY v.card_id
+  ) hp ON hp.cid=c.id`,
+      params: [grade],
+    };
+  return {
+    sql: `LEFT JOIN (
     SELECT v.card_id AS cid, MAX(pp.price_cents) AS pc, MAX(pp.currency) AS cur
     FROM card_variants v
     JOIN price_points pp ON pp.variant_id=v.id AND pp.kind='market' AND pp.grade IS NULL
     GROUP BY v.card_id
-  ) hp ON hp.cid=c.id`;
-const BASE_FROM = `FROM cards c
+  ) hp ON hp.cid=c.id`,
+    params: [],
+  };
+}
+
+function fromClause(grade: string | null): { sql: string; params: unknown[] } {
+  const pj = priceJoin(grade);
+  return {
+    sql: `FROM cards c
   JOIN sets s ON s.id=c.set_id
   JOIN games g ON g.id=s.game_id
-  ${HP_JOIN}`;
+  ${pj.sql}`,
+    params: pj.params,
+  };
+}
 
 const GAME_WORDS: Record<string, string> = {
   pokemon: "pokemon",
@@ -142,13 +175,25 @@ async function parseQuery(raw: string): Promise<ParsedQuery> {
 }
 
 type Built = { where: string; params: unknown[] };
-function buildWhere(p: SearchParams & { number?: string }, terms: string[], exclude: Set<string>): Built {
+function buildWhere(
+  p: SearchParams & { number?: string },
+  terms: string[],
+  exclude: Set<string>,
+  fuzzy = false
+): Built {
   const cond: string[] = [];
   const params: unknown[] = [];
   if (!exclude.has("q")) {
-    for (const t of terms) {
-      cond.push("c.search_text LIKE ?");
-      params.push(`%${t}%`);
+    if (fuzzy && terms.length) {
+      // trigram close-match on the card name (uses idx_cards_name_trgm; the
+      // % operator applies pg_trgm's similarity threshold, default 0.3)
+      cond.push("lower(c.name) % ?");
+      params.push(terms.join(" "));
+    } else {
+      for (const t of terms) {
+        cond.push("c.search_text LIKE ?");
+        params.push(`%${t}%`);
+      }
     }
     const ns = p.number != null ? numberSort(p.number) : null;
     if (ns != null) {
@@ -183,7 +228,12 @@ function buildWhere(p: SearchParams & { number?: string }, terms: string[], excl
   return { where: cond.length ? "WHERE " + cond.join(" AND ") : "", params };
 }
 
-function orderBy(sort: string | undefined, hasQuery: boolean, firstTerm: string): { sql: string; params: unknown[] } {
+function orderBy(
+  sort: string | undefined,
+  hasQuery: boolean,
+  firstTerm: string,
+  fuzzy = false
+): { sql: string; params: unknown[] } {
   switch (sort) {
     case "price_asc":
       return { sql: "ORDER BY (hp.pc IS NULL), hp.pc ASC, c.name", params: [] };
@@ -194,6 +244,12 @@ function orderBy(sort: string | undefined, hasQuery: boolean, firstTerm: string)
     case "price_desc":
       return { sql: "ORDER BY (hp.pc IS NULL), hp.pc DESC, c.name", params: [] };
     default:
+      // fuzzy relevance: closest name first
+      if (fuzzy && hasQuery)
+        return {
+          sql: "ORDER BY similarity(lower(c.name), ?) DESC, (hp.pc IS NULL), hp.pc DESC",
+          params: [firstTerm],
+        };
       // relevance: exact name, then starts-with, then value
       if (hasQuery)
         return {
@@ -239,59 +295,83 @@ export async function search(p: SearchParams): Promise<SearchResult> {
 
   const hasQuery = terms.length > 0;
   const firstTerm = (terms.join(" ") || "").trim();
+  const grade = parsed.grade ?? null;
+  const from = fromClause(grade);
 
-  const base = buildWhere(eff, terms, new Set());
-  const total = (await one<{ n: number }>(
-    toPg(`SELECT COUNT(*) n ${BASE_FROM} ${base.where}`),
-    base.params
-  ))!.n;
+  const countWith = async (fuzzy: boolean) => {
+    const b = buildWhere(eff, terms, new Set(), fuzzy);
+    const n = (await one<{ n: number }>(
+      toPg(`SELECT COUNT(*) n ${from.sql} ${b.where}`),
+      [...from.params, ...b.params]
+    ))!.n;
+    return { b, n };
+  };
+
+  // exact structured query first; when it finds nothing, silently retry the
+  // name as a trigram close-match ("chorizard" -> Charizard results, bannered)
+  let fuzzy = false;
+  let { b: base, n: total } = await countWith(false);
+  if (total === 0 && hasQuery) {
+    const attempt = await countWith(true);
+    if (attempt.n > 0) {
+      fuzzy = true;
+      base = attempt.b;
+      total = attempt.n;
+    }
+  }
 
   const page = Math.max(1, p.page ?? 1);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const ob = orderBy(p.sort, hasQuery, firstTerm);
+  const ob = orderBy(p.sort, hasQuery, firstTerm, fuzzy);
   const rows = (await query(
     toPg(
       `SELECT c.*, s.name AS set_name, s.slug AS set_slug, g.name AS game_name, g.slug AS game_slug,
               hp.pc AS price_cents, hp.cur AS currency
-       ${BASE_FROM} ${base.where} ${ob.sql} LIMIT ? OFFSET ?`
+       ${from.sql} ${base.where} ${ob.sql} LIMIT ? OFFSET ?`
     ),
-    [...base.params, ...ob.params, PAGE_SIZE, (page - 1) * PAGE_SIZE]
+    [...from.params, ...base.params, ...ob.params, PAGE_SIZE, (page - 1) * PAGE_SIZE]
   )) as SearchResult["rows"];
 
   // ---- facets (each dimension counted with its own filter removed) ----
-  const gwhere = buildWhere(eff, terms, new Set(["game"]));
-  const gameRows = (await query(
-    toPg(`SELECT g.slug key, g.name label, COUNT(*) n ${BASE_FROM} ${gwhere.where} GROUP BY g.slug, g.name ORDER BY n DESC`),
-    gwhere.params
-  )) as Array<{ key: string; label: string; n: number }>;
+  const facetQuery = async (excludeDim: string, select: string, tail: string, extraWhere = "") => {
+    const w = buildWhere(eff, terms, new Set([excludeDim]), fuzzy);
+    return (await query(
+      toPg(`${select} ${from.sql} ${w.where}${extraWhere} ${tail}`),
+      [...from.params, ...w.params]
+    )) as Array<{ key: string; label: string; n: number }>;
+  };
 
-  const swhere = buildWhere(eff, terms, new Set(["set"]));
-  const setRows = (await query(
-    toPg(`SELECT s.slug key, s.name label, COUNT(*) n ${BASE_FROM} ${swhere.where} GROUP BY s.slug, s.name ORDER BY n DESC LIMIT 12`),
-    swhere.params
-  )) as Array<{ key: string; label: string; n: number }>;
-
-  const rwhere = buildWhere(eff, terms, new Set(["rarity"]));
+  const gameRows = await facetQuery(
+    "game",
+    "SELECT g.slug key, g.name label, COUNT(*) n",
+    "GROUP BY g.slug, g.name ORDER BY n DESC"
+  );
+  const setRows = await facetQuery(
+    "set",
+    "SELECT s.slug key, s.name label, COUNT(*) n",
+    "GROUP BY s.slug, s.name ORDER BY n DESC LIMIT 12"
+  );
+  const rwhere = buildWhere(eff, terms, new Set(["rarity"]), fuzzy);
   const rarRows = (await query(
     toPg(
-      `SELECT c.rarity key, c.rarity label, COUNT(*) n ${BASE_FROM} ${rwhere.where}${rwhere.where ? " AND" : " WHERE"} c.rarity IS NOT NULL GROUP BY c.rarity ORDER BY n DESC LIMIT 14`
+      `SELECT c.rarity key, c.rarity label, COUNT(*) n ${from.sql} ${rwhere.where}${rwhere.where ? " AND" : " WHERE"} c.rarity IS NOT NULL GROUP BY c.rarity ORDER BY n DESC LIMIT 14`
     ),
-    rwhere.params
+    [...from.params, ...rwhere.params]
   )) as Array<{ key: string; label: string; n: number }>;
 
-  const fwhere = buildWhere(eff, terms, new Set(["finish"]));
+  const pjf = priceJoin(grade);
+  const fwhere = buildWhere(eff, terms, new Set(["finish"]), fuzzy);
   const finRows = (await query(
     toPg(
       `SELECT vf.finish key, vf.finish_label label, COUNT(DISTINCT c.id) n
        FROM cards c JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id
-       JOIN card_variants vf ON vf.card_id=c.id ${HP_JOIN}
+       JOIN card_variants vf ON vf.card_id=c.id ${pjf.sql}
        ${fwhere.where} GROUP BY vf.finish, vf.finish_label ORDER BY n DESC`
     ),
-    fwhere.params
+    [...pjf.params, ...fwhere.params]
   )) as Array<{ key: string; label: string; n: number }>;
 
-  // ---- typo-tolerant fallback: pg_trgm similarity over the indexed names ----
-  // (replaces the old app-side Levenshtein scan; idx_cards_name_trgm serves it)
+  // ---- "did you mean" (only when even the fuzzy retry found nothing) ------
   let suggestions: string[] = [];
   if (total === 0 && hasQuery) {
     const target = terms.join(" ");
@@ -299,7 +379,7 @@ export async function search(p: SearchParams): Promise<SearchResult> {
       `SELECT name FROM (
          SELECT name, MAX(similarity(lower(name), $1)) AS sim
          FROM cards
-         WHERE similarity(lower(name), $1) > 0.3
+         WHERE similarity(lower(name), $1) > 0.25
          GROUP BY name
        ) t ORDER BY sim DESC LIMIT 3`,
       [target]
@@ -320,32 +400,70 @@ export async function search(p: SearchParams): Promise<SearchResult> {
       finish: facetList(finRows, eff.finish),
     },
     parsedChips,
+    gradeApplied: grade,
+    fuzzyFor: fuzzy ? firstTerm : null,
     suggestions,
     terms,
   };
 }
 
-/** Type-ahead: top name matches (prefix first, then substring). */
-export function suggest(
-  q: string,
-  limit = 8
-): Promise<Array<{ id: number; name: string; slug: string; set_name: string; image: string | null; price: number | null }>> {
-  const like = `%${q.toLowerCase()}%`;
-  const prefix = `${q.toLowerCase()}%`;
-  // Wrapped in a subquery so ORDER BY can reference the computed `price` column
-  // in an expression (Postgres only allows a bare SELECT alias as a sort key,
-  // not inside one — unlike SQLite).
-  return query(
-    `SELECT id, name, slug, set_name, price, image FROM (
-       SELECT c.id, c.name, c.slug, s.name AS set_name,
-              (SELECT MAX(pp.price_cents) FROM card_variants v JOIN price_points pp ON pp.variant_id=v.id AND pp.kind='market' AND pp.grade IS NULL WHERE v.card_id=c.id) AS price,
-              c.image_small AS image,
-              (lower(c.name) LIKE $2) AS is_prefix
-       FROM cards c JOIN sets s ON s.id=c.set_id
-       WHERE c.search_text LIKE $1
-     ) t
-     ORDER BY is_prefix DESC, (price IS NULL), price DESC
-     LIMIT $3`,
-    [like, prefix, limit]
-  ) as Promise<Array<{ id: number; name: string; slug: string; set_name: string; image: string | null; price: number | null }>>;
+type SuggestRow = {
+  id: number;
+  name: string;
+  slug: string;
+  set_name: string;
+  number: string | null;
+  image: string | null;
+  price: number | null;
+};
+
+/**
+ * Type-ahead, speaking the same structured language as full search: the query
+ * is parsed (grade/finish/number stripped from the name terms), a collector
+ * number filters directly, and — because the last word is usually mid-typing —
+ * a zero-hit query retries once without its final term ("charizard ps" still
+ * shows Charizards).
+ */
+export async function suggest(q: string, limit = 8): Promise<SuggestRow[]> {
+  const parsed = parseInput(q);
+  const ns = parsed.number != null ? numberSort(parsed.number) : null;
+
+  const run = (terms: string[]): Promise<SuggestRow[]> => {
+    const conds: string[] = [];
+    const params: unknown[] = [];
+    for (const t of terms) {
+      conds.push("c.search_text LIKE ?");
+      params.push(`%${t}%`);
+    }
+    if (ns != null) {
+      conds.push("c.number_sort = ?");
+      params.push(ns);
+    }
+    if (conds.length === 0) return Promise.resolve([]);
+    const prefix = `${terms.join(" ")}%`;
+    // Wrapped in a subquery so ORDER BY can reference the computed `price`
+    // column in an expression (Postgres only allows a bare SELECT alias as a
+    // sort key, not inside one — unlike SQLite).
+    return query(
+      toPg(
+        `SELECT id, name, slug, set_name, number, price, image FROM (
+           SELECT c.id, c.name, c.slug, s.name AS set_name, c.number,
+                  (SELECT MAX(pp.price_cents) FROM card_variants v JOIN price_points pp ON pp.variant_id=v.id AND pp.kind='market' AND pp.grade IS NULL WHERE v.card_id=c.id) AS price,
+                  c.image_small AS image,
+                  (lower(c.name) LIKE ?) AS is_prefix
+           FROM cards c JOIN sets s ON s.id=c.set_id
+           WHERE ${conds.join(" AND ")}
+         ) t
+         ORDER BY is_prefix DESC, (price IS NULL), price DESC
+         LIMIT ?`
+      ),
+      [prefix, ...params, limit]
+    ) as Promise<SuggestRow[]>;
+  };
+
+  let rows = await run(parsed.nameTerms);
+  if (rows.length === 0 && parsed.nameTerms.length > 1) {
+    rows = await run(parsed.nameTerms.slice(0, -1)); // drop the word being typed
+  }
+  return rows;
 }
