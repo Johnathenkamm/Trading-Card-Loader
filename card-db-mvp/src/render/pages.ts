@@ -9,11 +9,12 @@ import {
   priceHistory,
   gradedValues,
   soldComps,
+  soldSalesForCard,
   trendingCards,
   counts,
   cardHeadlinePrice,
 } from "../pg.ts";
-import type { Game, CardSet, Card, Variant } from "../db.ts";
+import type { Game, CardSet, Card, Variant, SoldSale } from "../db.ts";
 import {
   cardTile,
   cardUrl,
@@ -258,12 +259,16 @@ export async function renderCard(
   if (variants.length === 0) return null;
   const selected = variants.find((v) => v.finish === opts.variantFinish) ?? variants.find((v) => v.is_default) ?? variants[0];
 
-  const [market, fullHistory, graded, sold] = await Promise.all([
+  const [market, fullHistory, graded, sold, archive] = await Promise.all([
     latestMarket(selected.id),
     priceHistory(selected.id),
     gradedValues(selected.id),
     soldComps(selected.id),
+    soldSalesForCard(card.id, selected.id),
   ]);
+  // The canonical sold_sales archive (research §8.1) supersedes the synthetic
+  // price_points comps as soon as it holds anything for this card.
+  const useArchive = archive.length > 0;
   const range = opts.range === 30 ? 30 : 90;
   const history = fullHistory.slice(-range);
 
@@ -298,7 +303,8 @@ export async function renderCard(
 
   // grade strip: ungraded + graded values, with sold volume
   const soldByGrade: Record<string, number> = {};
-  for (const s of sold) soldByGrade[s.grade ?? "Ungraded"] = (soldByGrade[s.grade ?? "Ungraded"] ?? 0) + 1;
+  const volumeRows: Array<{ grade: string | null }> = useArchive ? archive : sold;
+  for (const s of volumeRows) soldByGrade[s.grade ?? "Ungraded"] = (soldByGrade[s.grade ?? "Ungraded"] ?? 0) + 1;
   const stripRows: string[] = [];
   if (market)
     stripRows.push(
@@ -310,7 +316,7 @@ export async function renderCard(
     );
 
   // sold comps tabs + rows
-  const grades = ["all", ...Array.from(new Set(sold.map((s) => s.grade ?? "Ungraded")))];
+  const grades = ["all", ...Array.from(new Set(volumeRows.map((s) => s.grade ?? "Ungraded")))];
   const tab = opts.gradeTab && grades.includes(opts.gradeTab) ? opts.gradeTab : "all";
   const compTabs = grades
     .map((gr) => {
@@ -319,20 +325,73 @@ export async function renderCard(
       return `<a class="${gr === tab ? "active" : ""}" href="${u}">${esc(label)}</a>`;
     })
     .join("");
-  const compRows = sold
-    .filter((s) => tab === "all" || (s.grade ?? "Ungraded") === tab)
-    .slice(0, 40)
-    .map(
-      (s) => `<tr>
-        <td class="date">${esc(fmtDate(s.observed_on))}</td>
-        <td>${sourceChip(s.source)}</td>
-        <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
-        <td class="price">${money(s.price_cents, s.currency)}</td>
-      </tr>`
-    )
-    .join("");
+
+  // Best-offer sales show the accepted price AND the struck list price — the
+  // "hidden price" 130point/CardUploader surface, here tied to the canonical
+  // card instead of a title string (research §2, §6).
+  const saleCell = (s: SoldSale) => {
+    if (s.sale_type === "best_offer") {
+      const pct =
+        s.list_price_cents && s.list_price_cents > s.price_cents
+          ? ` <span style="color:var(--muted)">−${Math.round((1 - s.price_cents / s.list_price_cents) * 100)}%</span>`
+          : "";
+      const listed = s.list_price_cents
+        ? ` <s style="color:var(--muted)">${money(s.list_price_cents, s.currency)}</s>${pct}`
+        : "";
+      return `<span class="chip">Best Offer</span>${listed}`;
+    }
+    if (s.sale_type === "auction") return `<span class="chip">Auction${s.bids ? ` · ${s.bids} bids` : ""}</span>`;
+    if (s.sale_type === "bin") return `<span class="chip">Buy It Now</span>`;
+    return "";
+  };
+
+  let compsTable: string;
+  if (useArchive) {
+    const rows = archive
+      .filter((s) => tab === "all" || (s.grade ?? "Ungraded") === tab)
+      .slice(0, 40)
+      .map(
+        (s) => `<tr title="${esc(s.title)}">
+          <td class="date">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener nofollow">${esc(fmtDate(s.sold_on))}</a>` : esc(fmtDate(s.sold_on))}</td>
+          <td>${sourceChip(s.marketplace)}</td>
+          <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
+          <td>${saleCell(s)}</td>
+          <td class="price">${money(s.price_cents, s.currency)}</td>
+        </tr>`
+      )
+      .join("");
+    compsTable = rows
+      ? `<table class="comps"><thead><tr><th>Date</th><th>Market</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div style="padding:16px;color:var(--muted)">No sold comps for this filter.</div>`;
+  } else {
+    const rows = sold
+      .filter((s) => tab === "all" || (s.grade ?? "Ungraded") === tab)
+      .slice(0, 40)
+      .map(
+        (s) => `<tr>
+          <td class="date">${esc(fmtDate(s.observed_on))}</td>
+          <td>${sourceChip(s.source)}</td>
+          <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
+          <td class="price">${money(s.price_cents, s.currency)}</td>
+        </tr>`
+      )
+      .join("");
+    compsTable = rows
+      ? `<table class="comps"><thead><tr><th>Date</th><th>Source</th><th>Grade</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div style="padding:16px;color:var(--muted)">No sold comps for this filter.</div>`;
+  }
 
   const noPrice = !market && graded.length === 0;
+
+  // Free price-research link-outs (research §2: no open eBay sold API exists —
+  // CardUploader's own in-app "eBay Sold" button is exactly this link-out).
+  // LH_Sold+LH_Complete opens eBay's completed-sales filter pre-searched.
+  const ebayQuery = encodeURIComponent(
+    [card.name, card.number ?? "", card.set_name ?? "", selected.finish === "normal" ? "" : selected.finish_label]
+      .filter(Boolean)
+      .join(" ")
+      .trim()
+  );
 
   const html = `<div class="wrap">
     ${breadcrumb([
@@ -384,23 +443,26 @@ export async function renderCard(
         <div class="actions">
           <a class="btn primary" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">+ Add to my inventory</a>
           <a class="btn" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">List on eBay</a>
+          ${card.tcgplayer_url ? `<a class="btn" href="${esc(card.tcgplayer_url)}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
+          <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener nofollow" title="Completed eBay sales for this card, on eBay itself">eBay sold ↗</a>
+          <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
         </div>
 
-        ${demoNote(
-          "<b>Market prices</b> are live from TCGplayer/Scryfall. <b>Per-grade values, the price-history chart and sold comps below are demo data</b> — real sold-comp feeds are gated to approved partners, and price history accrues from daily snapshots once live (see the research report’s integrations section)."
-        )}
+        ${
+          useArchive
+            ? demoNote(
+                `<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Sold comps below come from the sold-sales archive</b>${archive.every((s) => s.is_demo) ? " (sample feed import — plug a licensed feed into <code>npm run import:sold</code> to go live)" : ""}, canonicalized to this exact card. Per-grade values and the history chart are demo data until real depth accrues.`
+              )
+            : demoNote(
+                "<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Per-grade values, the price-history chart and sold comps below are demo data</b> — real sold-comp data is a licensed-feed line item (see the data-sourcing research report §8.1), and the archive schema + importer are ready for it."
+              )
+        }
 
         <div class="panel" id="comps">
           <h2>Sold comps</h2>
-          <div class="sub">Recent sales for this printing, by grade and source.</div>
+          <div class="sub">${useArchive ? "Real sales attached to this exact card — accepted Best Offer prices included." : "Recent sales for this printing, by grade and source."}</div>
           <div class="comps-tabs">${compTabs}</div>
-          <div class="comps-wrap">
-            ${
-              compRows
-                ? `<table class="comps"><thead><tr><th>Date</th><th>Source</th><th>Grade</th><th class="price">Price</th></tr></thead><tbody>${compRows}</tbody></table>`
-                : `<div style="padding:16px;color:var(--muted)">No sold comps for this filter.</div>`
-            }
-          </div>
+          <div class="comps-wrap">${compsTable}</div>
         </div>
       </div>
     </div>
@@ -527,7 +589,7 @@ export function renderSearch(p: SearchParams, r: SearchResult): { html: string; 
   } else {
     content = `
       <div class="results-top">
-        <div class="count"><b>${r.total.toLocaleString()}</b> ${r.total === 1 ? "card" : "cards"}${p.q ? ` for “${esc(p.q)}”` : ""}${r.parsedGrade ? ` <span class="chip">${esc(r.parsedGrade)}</span>` : ""}</div>
+        <div class="count"><b>${r.total.toLocaleString()}</b> ${r.total === 1 ? "card" : "cards"}${p.q ? ` for “${esc(p.q)}”` : ""}${r.parsedChips.map((c) => ` <span class="chip" title="Understood from your search">${esc(c)}</span>`).join("")}</div>
         <div class="sort">Sort ${sortLinks}</div>
       </div>
       ${applied.length ? `<div class="applied">${applied.join("")}</div>` : ""}

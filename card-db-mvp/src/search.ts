@@ -1,6 +1,15 @@
+// Public catalog search. The research (carduploader-data-sourcing-research.md §6)
+// found CardUploader's text search is plain keyword matching — the exploitable
+// upgrade is STRUCTURED search: parse what the query means ("charizard psa 10
+// base set reverse holo" -> name:charizard, grade:PSA 10, set:Base, finish:
+// reverse holo) and filter facets accordingly. We reuse the seller workspace's
+// identify parser (app/identify.ts) so both surfaces speak one query language,
+// and pg_trgm (already indexed) supplies typo-tolerant "did you mean".
+
 import { query, one, toPg } from "./pg.ts";
 import type { Card } from "./db.ts";
-import { levenshtein } from "./util.ts";
+import { parseInput } from "./app/identify.ts";
+import { numberSort } from "./util.ts";
 
 export type SearchParams = {
   q?: string;
@@ -22,7 +31,8 @@ export type SearchResult = {
   pageSize: number;
   totalPages: number;
   facets: { game: FacetOption[]; set: FacetOption[]; rarity: FacetOption[]; finish: FacetOption[] };
-  parsedGrade: string | null;
+  /** Filters understood from the free-text query (not removable chips — edit the query). */
+  parsedChips: string[];
   suggestions: string[];
   terms: string[];
 };
@@ -47,32 +57,103 @@ const GAME_WORDS: Record<string, string> = {
   gathering: "mtg",
 };
 
-function parseQuery(raw: string): { terms: string[]; gameFromQuery?: string; grade?: string } {
-  let q = raw.toLowerCase().trim();
-  let grade: string | undefined;
-  const gm = q.match(/\b(psa|cgc|bgs|sgc)\s*(\d{1,2}(?:\.\d)?)\b/);
-  if (gm) {
-    grade = `${gm[1].toUpperCase()} ${gm[2]}`;
-    q = q.replace(gm[0], " ");
+type ParsedQuery = {
+  terms: string[];
+  gameFromQuery?: string;
+  grade?: string;
+  number?: string;
+  finish?: string;
+  finishLabel?: string;
+  setSlug?: string;
+  setLabel?: string;
+};
+
+/** Find a known set spoken inside the query terms and consume its tokens.
+ *  Accepts the full set name, the name + trailing "set" ("base set" -> "Base"),
+ *  or any >= 2-token contiguous run of the name ("neon dynasty" -> "Kamigawa:
+ *  Neon Dynasty"). */
+function matchSet(
+  terms: string[],
+  sets: Array<{ slug: string; name: string }>
+): { slug: string; label: string; terms: string[] } | null {
+  const tokensOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+  let best: { slug: string; label: string; at: number; len: number } | null = null;
+  for (const s of sets) {
+    const key = tokensOf(s.name);
+    const candidates: string[][] = [key];
+    if (key[key.length - 1] !== "set") candidates.push([...key, "set"]);
+    for (let start = 0; start < key.length; start++) {
+      for (let end = key.length; end - start >= 2; end--) {
+        if (start === 0 && end === key.length) continue; // already covered
+        candidates.push(key.slice(start, end));
+      }
+    }
+    for (const cand of candidates) {
+      for (let i = 0; i + cand.length <= terms.length; i++) {
+        if (cand.every((t, j) => terms[i + j] === t)) {
+          if (!best || cand.length > best.len) best = { slug: s.slug, label: s.name, at: i, len: cand.length };
+        }
+      }
+    }
   }
-  const words = q.split(/\s+/).filter(Boolean);
+  if (!best) return null;
+  const rest = [...terms.slice(0, best.at), ...terms.slice(best.at + best.len)];
+  return { slug: best.slug, label: best.label, terms: rest };
+}
+
+async function parseQuery(raw: string): Promise<ParsedQuery> {
+  if (!raw.trim()) return { terms: [] };
+  // Full structured parse (grade, finish, condition, language, number, qty) —
+  // the same language the seller workspace's identify() speaks.
+  const p = parseInput(raw);
+  let terms = p.nameTerms;
+
   let gameFromQuery: string | undefined;
-  const terms: string[] = [];
-  for (const w of words) {
-    if (GAME_WORDS[w] && !gameFromQuery) gameFromQuery = GAME_WORDS[w];
-    else terms.push(w);
+  terms = terms.filter((w) => {
+    if (GAME_WORDS[w] && !gameFromQuery) {
+      gameFromQuery = GAME_WORDS[w];
+      return false;
+    }
+    return true;
+  });
+
+  let setSlug: string | undefined;
+  let setLabel: string | undefined;
+  if (terms.length) {
+    const sets = (await query("SELECT slug, name FROM sets")) as Array<{ slug: string; name: string }>;
+    const m = matchSet(terms, sets);
+    if (m) {
+      setSlug = m.slug;
+      setLabel = m.label;
+      terms = m.terms;
+    }
   }
-  return { terms, gameFromQuery, grade };
+
+  return {
+    terms,
+    gameFromQuery,
+    grade: p.grade ?? undefined,
+    number: p.number ?? undefined,
+    finish: p.finish ?? undefined,
+    finishLabel: p.finishLabel ?? undefined,
+    setSlug,
+    setLabel,
+  };
 }
 
 type Built = { where: string; params: unknown[] };
-function buildWhere(p: SearchParams, terms: string[], exclude: Set<string>): Built {
+function buildWhere(p: SearchParams & { number?: string }, terms: string[], exclude: Set<string>): Built {
   const cond: string[] = [];
   const params: unknown[] = [];
   if (!exclude.has("q")) {
     for (const t of terms) {
       cond.push("c.search_text LIKE ?");
       params.push(`%${t}%`);
+    }
+    const ns = p.number != null ? numberSort(p.number) : null;
+    if (ns != null) {
+      cond.push("c.number_sort = ?");
+      params.push(ns);
     }
   }
   if (!exclude.has("game") && p.game) {
@@ -131,14 +212,35 @@ function facetList(
 }
 
 export async function search(p: SearchParams): Promise<SearchResult> {
-  const parsed = parseQuery(p.q ?? "");
+  const parsed = await parseQuery(p.q ?? "");
   const terms = parsed.terms;
-  // query game keyword acts as a filter unless the user set one explicitly
-  if (!p.game && parsed.gameFromQuery) p.game = parsed.gameFromQuery;
+
+  // Effective filters = explicit params, back-filled by what the query text
+  // said. Explicit always wins; parser-derived filters surface as parsedChips
+  // (not removable — the honest way to drop them is editing the query).
+  const eff: SearchParams & { number?: string } = { ...p };
+  const parsedChips: string[] = [];
+  if (!eff.game && parsed.gameFromQuery) {
+    eff.game = parsed.gameFromQuery;
+  }
+  if (!eff.set && parsed.setSlug) {
+    eff.set = parsed.setSlug;
+    parsedChips.push(`Set: ${parsed.setLabel}`);
+  }
+  if (!eff.finish && parsed.finish) {
+    eff.finish = parsed.finish;
+    parsedChips.push(parsed.finishLabel ?? parsed.finish);
+  }
+  if (parsed.number && numberSort(parsed.number) != null) {
+    eff.number = parsed.number;
+    parsedChips.push(`#${parsed.number}`);
+  }
+  if (parsed.grade) parsedChips.push(parsed.grade);
+
   const hasQuery = terms.length > 0;
   const firstTerm = (terms.join(" ") || "").trim();
 
-  const base = buildWhere(p, terms, new Set());
+  const base = buildWhere(eff, terms, new Set());
   const total = (await one<{ n: number }>(
     toPg(`SELECT COUNT(*) n ${BASE_FROM} ${base.where}`),
     base.params
@@ -157,19 +259,19 @@ export async function search(p: SearchParams): Promise<SearchResult> {
   )) as SearchResult["rows"];
 
   // ---- facets (each dimension counted with its own filter removed) ----
-  const gwhere = buildWhere(p, terms, new Set(["game"]));
+  const gwhere = buildWhere(eff, terms, new Set(["game"]));
   const gameRows = (await query(
     toPg(`SELECT g.slug key, g.name label, COUNT(*) n ${BASE_FROM} ${gwhere.where} GROUP BY g.slug, g.name ORDER BY n DESC`),
     gwhere.params
   )) as Array<{ key: string; label: string; n: number }>;
 
-  const swhere = buildWhere(p, terms, new Set(["set"]));
+  const swhere = buildWhere(eff, terms, new Set(["set"]));
   const setRows = (await query(
     toPg(`SELECT s.slug key, s.name label, COUNT(*) n ${BASE_FROM} ${swhere.where} GROUP BY s.slug, s.name ORDER BY n DESC LIMIT 12`),
     swhere.params
   )) as Array<{ key: string; label: string; n: number }>;
 
-  const rwhere = buildWhere(p, terms, new Set(["rarity"]));
+  const rwhere = buildWhere(eff, terms, new Set(["rarity"]));
   const rarRows = (await query(
     toPg(
       `SELECT c.rarity key, c.rarity label, COUNT(*) n ${BASE_FROM} ${rwhere.where}${rwhere.where ? " AND" : " WHERE"} c.rarity IS NOT NULL GROUP BY c.rarity ORDER BY n DESC LIMIT 14`
@@ -177,7 +279,7 @@ export async function search(p: SearchParams): Promise<SearchResult> {
     rwhere.params
   )) as Array<{ key: string; label: string; n: number }>;
 
-  const fwhere = buildWhere(p, terms, new Set(["finish"]));
+  const fwhere = buildWhere(eff, terms, new Set(["finish"]));
   const finRows = (await query(
     toPg(
       `SELECT vf.finish key, vf.finish_label label, COUNT(DISTINCT c.id) n
@@ -188,22 +290,21 @@ export async function search(p: SearchParams): Promise<SearchResult> {
     fwhere.params
   )) as Array<{ key: string; label: string; n: number }>;
 
-  // ---- fuzzy fallback ----
+  // ---- typo-tolerant fallback: pg_trgm similarity over the indexed names ----
+  // (replaces the old app-side Levenshtein scan; idx_cards_name_trgm serves it)
   let suggestions: string[] = [];
   if (total === 0 && hasQuery) {
-    const names = (await query("SELECT DISTINCT name FROM cards")) as Array<{ name: string }>;
     const target = terms.join(" ");
-    suggestions = names
-      .map((r) => {
-        const nl = r.name.toLowerCase();
-        const whole = levenshtein(target, nl);
-        const byWord = Math.min(...nl.split(/\s+/).map((w) => levenshtein(target, w)), whole);
-        return { name: r.name, d: Math.min(whole, byWord) };
-      })
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 3)
-      .filter((x) => x.d <= Math.max(3, target.length * 0.5))
-      .map((x) => x.name);
+    const simRows = (await query(
+      `SELECT name FROM (
+         SELECT name, MAX(similarity(lower(name), $1)) AS sim
+         FROM cards
+         WHERE similarity(lower(name), $1) > 0.3
+         GROUP BY name
+       ) t ORDER BY sim DESC LIMIT 3`,
+      [target]
+    )) as Array<{ name: string }>;
+    suggestions = simRows.map((r) => r.name);
   }
 
   return {
@@ -213,12 +314,12 @@ export async function search(p: SearchParams): Promise<SearchResult> {
     pageSize: PAGE_SIZE,
     totalPages,
     facets: {
-      game: facetList(gameRows, p.game),
-      set: facetList(setRows, p.set),
-      rarity: facetList(rarRows, p.rarity),
-      finish: facetList(finRows, p.finish),
+      game: facetList(gameRows, eff.game),
+      set: facetList(setRows, eff.set),
+      rarity: facetList(rarRows, eff.rarity),
+      finish: facetList(finRows, eff.finish),
     },
-    parsedGrade: parsed.grade ?? null,
+    parsedChips,
     suggestions,
     terms,
   };

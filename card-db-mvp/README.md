@@ -32,6 +32,19 @@ npm run pg:migrate  # load the catalog into Postgres
 npm start           # serves http://localhost:5173
 ```
 
+Data pipelines (run any time; both are re-runnable):
+
+```bash
+npm run sync:tcgcsv   # real TCGplayer market prices per PRINTING via the free TCGCSV daily
+                      # mirror (~20:00 UTC refresh) + TCGplayer product ids/URLs on cards.
+                      # Run daily (cron / Railway scheduled job) — each run adds a real
+                      # price-history observation.
+npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
+                      # land sold listings in the canonical sold_sales archive, deduped and
+                      # CANONICALIZED to card/variant/grade via the identify() parser.
+                      # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
+```
+
 `npm run dev` runs the server with `--watch` (auto-restart on edits). Requires
 **Node 24+** (TypeScript type-stripping) and Docker (for Postgres). Configuration
 is read from `.env` (copied from `.env.example`); point `DATABASE_URL` at
@@ -47,16 +60,22 @@ Supabase/Neon to run against hosted Postgres with no code changes.
 |---|---|---|
 | Cards, sets, images, rarities, artists | Pokémon TCG API, Scryfall | ✅ live |
 | Variant finishes (holo, reverse holo, foil, etched…) | Pokémon TCG API, Scryfall | ✅ live |
-| Current market price per variant | TCGplayer (via Pokémon TCG API) & Scryfall | ✅ live |
-| 90-day price **history** | synthesized (random walk to current price) | ⚠️ demo, flagged |
+| Current market price per variant/printing | **TCGplayer via `sync:tcgcsv`** (TCGCSV daily mirror) | ✅ live, refresh daily |
+| TCGplayer product ids + link-outs on card pages | `sync:tcgcsv` | ✅ live (affiliate-ready) |
+| Price **history** | real observations accrue per `sync:tcgcsv` run; demo random-walk fills the chart until depth exists | ⚠️ mixed, flagged |
 | Per-**grade** values (PSA 8/9/10, CGC, BGS) | synthesized (multipliers on raw price) | ⚠️ demo, flagged |
-| **Sold comps** | synthesized | ⚠️ demo, flagged |
+| **Sold comps** | `sold_sales` archive via `import:sold` (canonicalized to card/variant/grade); synthetic rows shown only where the archive is empty | ⚠️ per-card: real archive when present |
 
 Demo data is generated deterministically and marked `is_demo = 1` in the database,
-and every page that shows it carries a note. This mirrors the real integration
-constraints from the research report: a single API call has no price history
-(you accrue it from daily snapshots), and **eBay sold-comp data is gated to
-approved partners** — so those feeds are stubbed until a data source is secured.
+and every page that shows it carries a note. The data-sourcing research
+(`../carduploader-data-sourcing-research.md`) sets the constraints these
+pipelines encode: TCGplayer's API is closed to new developers (TCGCSV is the
+sanctioned free mirror, product-level prices only — per-condition SKU prices
+need a grandfathered key), and **there is no open eBay sold-data API** — sold
+comps come from licensed feeds or accumulation, so the archive schema +
+importer are built and waiting for whichever feed is licensed, and archiving
+starts on day one because eBay only exposes ~90 days (CardUploader's own
+archive reaches 2018 — bought, not built).
 
 Seeded sets: Pokémon **Base Set** + **Vivid Voltage**, Magic **Kamigawa: Neon
 Dynasty** (~607 cards, ~1,050 variants). Edit `POKEMON_SETS` / `MAGIC_SETS` at the

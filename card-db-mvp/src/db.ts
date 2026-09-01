@@ -57,10 +57,35 @@ export type Card = {
   image_small: string | null;
   image_large: string | null;
   search_text: string;
+  tcgplayer_product_id?: number | null; // filled by sync:tcgcsv
+  tcgplayer_url?: string | null;        // canonical product URL (affiliate-ready)
   set_name?: string;
   set_slug?: string;
   game_name?: string;
   game_slug?: string;
+};
+
+/** A row of the canonical sold-sales archive (see db/schema.postgres.sql). */
+export type SoldSale = {
+  id: number;
+  source: string;
+  marketplace: string;
+  external_id: string | null;
+  title: string;
+  price_cents: number;
+  list_price_cents: number | null;
+  currency: string;
+  sale_type: string;
+  bids: number | null;
+  sold_on: string;
+  url: string | null;
+  image_url: string | null;
+  card_id: number | null;
+  variant_id: number | null;
+  grade: string | null;
+  condition: string | null;
+  canon_confidence: number | null;
+  is_demo: boolean;
 };
 export type Variant = {
   id: number;

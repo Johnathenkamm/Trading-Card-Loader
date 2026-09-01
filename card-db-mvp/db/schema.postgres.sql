@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS sets (
   release_date date,                       -- ISO yyyy-mm-dd
   card_count   integer NOT NULL DEFAULT 0,
   image_url    text,
-  external_id  text                        -- e.g. "base1" (pokemontcg) or "neo" (scryfall)
+  external_id  text,                       -- e.g. "base1" (pokemontcg) or "neo" (scryfall)
+  tcgplayer_group_id integer               -- TCGCSV/TCGplayer group; cached by sync:tcgcsv
 );
 
 CREATE TABLE IF NOT EXISTS cards (
@@ -55,7 +56,12 @@ CREATE TABLE IF NOT EXISTS cards (
   image_small  text,                       -- catalog art: external/CDN URL (Pokemon TCG API, Scryfall)
   image_large  text,
   external_id  text,                       -- provider card id
-  search_text  text   NOT NULL DEFAULT ''  -- normalized: name + set + number + game + rarity + artist
+  search_text  text   NOT NULL DEFAULT '', -- normalized: name + set + number + game + rarity + artist
+
+  -- TCGplayer linkage (filled by sync:tcgcsv; research report §4/§8.3): the
+  -- product id keys price syncs, the canonical URL powers affiliate link-outs.
+  tcgplayer_product_id bigint,
+  tcgplayer_url        text
 );
 
 -- The table CardUploader deliberately omits: printing/finish variants of a card.
@@ -87,6 +93,44 @@ CREATE TABLE IF NOT EXISTS price_points (
   is_demo      boolean NOT NULL DEFAULT false,
   external_ref text
 );
+
+-- Canonical sold-sales archive (research report §2, §8.1). eBay exposes ~90
+-- days of sold history and no open API; CardUploader's moat is a licensed
+-- multi-year archive (live-tested back to Dec 2018). Ours starts accruing on
+-- day one: every sold listing from any feed lands here, deduped by
+-- (source, external_id) — and is CANONICALIZED to card/variant/grade via the
+-- identify() parser, which is the thing no incumbent does (their sold search
+-- is raw title keywords). Feeds plug in through scripts/import-sold.ts.
+CREATE TABLE IF NOT EXISTS sold_sales (
+  id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  source           text NOT NULL,                      -- feed id: 'manual', 'sample', vendor name...
+  marketplace      text NOT NULL,                      -- ebay | goldin | fanatics | ...
+  external_id      text,                               -- listing/item id when the feed has one
+  title            text NOT NULL,                      -- raw listing title as sold
+  price_cents      integer NOT NULL,                   -- actual transaction price
+  list_price_cents integer,                            -- pre-negotiation list price (best-offer delta)
+  currency         text NOT NULL DEFAULT 'USD',
+  sale_type        text NOT NULL DEFAULT 'unknown',    -- auction | bin | best_offer | unknown
+  bids             integer,
+  sold_on          date NOT NULL,
+  url              text,
+  image_url        text,
+
+  -- canonicalization: the sale attached to OUR catalog
+  card_id          bigint REFERENCES cards(id) ON DELETE SET NULL,
+  variant_id       bigint REFERENCES card_variants(id) ON DELETE SET NULL,
+  grade            text,                               -- "PSA 10" when graded
+  condition        text,                               -- NM/LP/... when raw and stated
+  canon_confidence real,                               -- identify() confidence 0..1
+
+  is_demo          boolean NOT NULL DEFAULT false,
+  raw              jsonb,                              -- untouched feed row
+  created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sold_ext     ON sold_sales(source, external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sold_variant       ON sold_sales(variant_id, grade, sold_on DESC);
+CREATE INDEX IF NOT EXISTS idx_sold_card          ON sold_sales(card_id, sold_on DESC);
+CREATE INDEX IF NOT EXISTS idx_sold_title_trgm    ON sold_sales USING gin (title gin_trgm_ops);
 
 -- Catalog gap reports (the "report a missing/wrong card" loop).
 CREATE TABLE IF NOT EXISTS catalog_issue_reports (

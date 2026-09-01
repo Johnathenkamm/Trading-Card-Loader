@@ -13,7 +13,7 @@ import pg from "pg";
 import type { PoolClient } from "pg";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { Game, CardSet, Card, Variant, PricePoint } from "./db.ts";
+import type { Game, CardSet, Card, Variant, PricePoint, SoldSale } from "./db.ts";
 
 // Load card-db-mvp/.env if the environment doesn't already provide DATABASE_URL.
 // Resolved relative to THIS module (not the CWD), so it works however the app is
@@ -206,6 +206,23 @@ export function soldComps(variantId: number): Promise<PricePoint[]> {
     `SELECT * FROM price_points WHERE variant_id=$1 AND kind='sold'
      ORDER BY observed_on DESC`,
     [variantId]
+  );
+}
+
+/**
+ * Canonicalized sold sales from the archive (sold_sales) for a card, preferring
+ * rows pinned to the selected printing but including card-level matches whose
+ * variant is unknown. This is the research report's differentiator: sold
+ * history attached to the canonical card/variant/grade instead of raw title
+ * keywords (report §6, §8.1).
+ */
+export function soldSalesForCard(cardId: number, variantId: number): Promise<SoldSale[]> {
+  return query<SoldSale>(
+    `SELECT * FROM sold_sales
+     WHERE card_id=$1 AND (variant_id=$2 OR variant_id IS NULL)
+     ORDER BY sold_on DESC, id DESC
+     LIMIT 60`,
+    [cardId, variantId]
   );
 }
 
