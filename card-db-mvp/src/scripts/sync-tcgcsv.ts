@@ -266,7 +266,8 @@ async function syncSet(
       // replace today's observation (re-runs), keep other days -> real history
       await query(
         `DELETE FROM price_points
-         WHERE variant_id=$1 AND source='tcgplayer' AND observed_on=$2 AND kind IN ('market','history')`,
+         WHERE variant_id=$1 AND source='tcgplayer' AND observed_on=$2
+           AND kind IN ('market','history','market_low','market_mid','market_high')`,
         [variant.id, day]
       );
       await query(
@@ -275,6 +276,21 @@ async function syncSet(
                 ($1,'tcgplayer','history','USD',$2,$3,false,$4)`,
         [variant.id, cents, day, ref]
       );
+      // full TCGplayer price spread (shown on card pages; TCGCSV carries it,
+      // so don't throw it away): low / mid / high alongside market
+      const stats: Array<[string, number | null]> = [
+        ["market_low", pr.lowPrice],
+        ["market_mid", pr.midPrice],
+        ["market_high", pr.highPrice],
+      ];
+      for (const [kind, dollars] of stats) {
+        if (dollars == null) continue;
+        await query(
+          `INSERT INTO price_points (variant_id, source, kind, currency, price_cents, observed_on, is_demo, external_ref)
+           VALUES ($1,'tcgplayer',$2,'USD',$3,$4,false,$5)`,
+          [variant.id, kind, Math.round(dollars * 100), day, ref]
+        );
+      }
       // the variant now has a real current price: retire the synthetic market row
       await query(
         "DELETE FROM price_points WHERE variant_id=$1 AND kind='market' AND is_demo=true AND grade IS NULL",

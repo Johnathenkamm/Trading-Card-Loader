@@ -10,6 +10,7 @@ import {
   gradedValues,
   soldComps,
   soldSalesForCard,
+  latestSpread,
   trendingCards,
   counts,
   cardHeadlinePrice,
@@ -28,6 +29,7 @@ import {
 } from "./components.ts";
 import type { SearchParams, SearchResult, FacetOption } from "../search.ts";
 import { ebayConfigured } from "../ebay.ts";
+import { tcgConfigured } from "../tcgplayer.ts";
 
 const ORIGIN = ""; // relative canonicals keep it host-agnostic for the demo
 
@@ -260,12 +262,13 @@ export async function renderCard(
   if (variants.length === 0) return null;
   const selected = variants.find((v) => v.finish === opts.variantFinish) ?? variants.find((v) => v.is_default) ?? variants[0];
 
-  const [market, fullHistory, graded, sold, archive] = await Promise.all([
+  const [market, fullHistory, graded, sold, archive, spread] = await Promise.all([
     latestMarket(selected.id),
     priceHistory(selected.id),
     gradedValues(selected.id),
     soldComps(selected.id),
     soldSalesForCard(card.id, selected.id),
+    latestSpread(selected.id),
   ]);
   // The canonical sold_sales archive (research §8.1) supersedes the synthetic
   // price_points comps as soon as it holds anything for this card.
@@ -438,6 +441,17 @@ export async function renderCard(
               <tbody>${stripRows.join("")}</tbody></table></div>`
               : ""
           }
+          ${
+            spread.low != null || spread.mid != null || spread.high != null
+              ? `<div class="lbl" style="margin-top:10px">TCGplayer spread${spread.observed_on ? ` · ${esc(fmtDate(spread.observed_on))}` : ""} — ${[
+                  spread.low != null ? `Low ${money(spread.low)}` : "",
+                  spread.mid != null ? `Mid ${money(spread.mid)}` : "",
+                  spread.high != null ? `High ${money(spread.high)}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}</div>`
+              : ""
+          }
         </div>`
         }
 
@@ -499,6 +513,48 @@ export async function renderCard(
                 td4.textContent=it.price_cents!=null?((it.currency==='USD'?'$':it.currency+' ')+(it.price_cents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'—';
                 tr.appendChild(td1);tr.appendChild(td2);tr.appendChild(td3);tr.appendChild(td4);
                 tb.appendChild(tr);
+              });
+              t.appendChild(tb);w.innerHTML='';w.appendChild(t);b.remove();
+            }catch(e){w.hidden=false;w.textContent='⚠ Could not reach the server.';b.disabled=false;b.textContent='Retry';}
+          });
+        })();</script>`
+            : ""
+        }
+
+        ${
+          tcgConfigured()
+            ? `<div class="panel" id="tcg-cond">
+          <h2>TCGplayer by condition</h2>
+          <div class="sub">SKU-level NM/LP/MP/HP market prices, per printing. Loaded on demand.</div>
+          <button class="btn" id="tcg-load" data-card="${card.id}" data-v="${esc(selected.finish)}">Load condition prices</button>
+          <div class="comps-wrap" id="tcg-rows" hidden></div>
+        </div>
+        <script>(function(){
+          var b=document.getElementById('tcg-load');if(!b)return;
+          b.addEventListener('click',async function(){
+            b.disabled=true;b.textContent='Loading…';
+            var w=document.getElementById('tcg-rows');
+            try{
+              var r=await fetch('/api/tcgplayer/conditions?card='+encodeURIComponent(b.dataset.card)+'&v='+encodeURIComponent(b.dataset.v));
+              var j=await r.json();
+              w.hidden=false;
+              if(j.error){w.textContent='⚠ '+j.error;b.disabled=false;b.textContent='Retry';return;}
+              var groups=j.groups||[];
+              if(!groups.length){w.textContent='No condition prices available for this product.';b.remove();return;}
+              var t=document.createElement('table');t.className='comps';
+              t.innerHTML='<thead><tr><th>Condition</th><th>Printing</th><th class="price">Low</th><th class="price">Market</th></tr></thead>';
+              var tb=document.createElement('tbody');
+              var fmt=function(c){return c!=null?('$'+(c/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'—';};
+              groups.forEach(function(g){
+                (g.rows||[]).forEach(function(row){
+                  var tr=document.createElement('tr');
+                  var td1=document.createElement('td');td1.textContent=row.condition+' ('+row.abbr+')';
+                  var td2=document.createElement('td');td2.textContent=g.printing;
+                  var td3=document.createElement('td');td3.className='price';td3.textContent=fmt(row.low_cents);
+                  var td4=document.createElement('td');td4.className='price';td4.textContent=fmt(row.market_cents);
+                  tr.appendChild(td1);tr.appendChild(td2);tr.appendChild(td3);tr.appendChild(td4);
+                  tb.appendChild(tr);
+                });
               });
               t.appendChild(tb);w.innerHTML='';w.appendChild(t);b.remove();
             }catch(e){w.hidden=false;w.textContent='⚠ Could not reach the server.';b.disabled=false;b.textContent='Retry';}

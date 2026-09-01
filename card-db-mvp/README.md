@@ -45,6 +45,16 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
 ```
 
+**TCGplayer on card pages**: the daily sync stores the full **price spread**
+(low/mid/high next to market) per printing — shown keylessly on every card
+page. `src/tcgplayer.ts` adds an env-gated **"TCGplayer by condition"** panel
+(SKU-level NM/LP/MP/HP prices) for the one access route that exists:
+TCGplayer's developer program is **closed to new applicants**, so
+`TCGPLAYER_PUBLIC_KEY`/`TCGPLAYER_PRIVATE_KEY` only help if the client obtains
+a grandfathered or partner keyset (JustTCG/Scrydex are the commercial
+alternatives). `TCGPLAYER_MOCK=1` renders canned condition rows for UI testing;
+unconfigured, the panel is hidden.
+
 **Live eBay listings on card pages** (`src/ebay.ts`): register free at
 [developer.ebay.com](https://developer.ebay.com), create an application keyset,
 and set `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` in `.env` — card pages then get

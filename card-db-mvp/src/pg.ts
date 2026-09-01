@@ -160,6 +160,29 @@ export function getVariants(cardId: number): Promise<Variant[]> {
   );
 }
 
+/**
+ * Latest TCGplayer price spread for a variant: market plus low/mid/high, as
+ * synced daily from TCGCSV (sync:tcgcsv stores them as kind='market_low' etc.).
+ */
+export async function latestSpread(
+  variantId: number
+): Promise<{ low: number | null; mid: number | null; high: number | null; observed_on: string | null }> {
+  const rows = await query<{ kind: string; price_cents: number; observed_on: string }>(
+    `SELECT kind, price_cents, observed_on FROM price_points
+     WHERE variant_id=$1 AND source='tcgplayer' AND is_demo=false
+       AND kind IN ('market_low','market_mid','market_high')
+     ORDER BY observed_on DESC, id DESC`,
+    [variantId]
+  );
+  const first = (k: string) => rows.find((r) => r.kind === k)?.price_cents ?? null;
+  return {
+    low: first("market_low"),
+    mid: first("market_mid"),
+    high: first("market_high"),
+    observed_on: rows[0]?.observed_on ?? null,
+  };
+}
+
 /** Latest raw market price (in cents) for a variant. */
 export function latestMarket(variantId: number): Promise<PricePoint | undefined> {
   return one<PricePoint>(

@@ -2,8 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
-import { getGameBySlug, getSetBySlug, getCard, getVariants, pool } from "./pg.ts";
+import { getGameBySlug, getSetBySlug, getCard, getVariants, latestMarket, pool } from "./pg.ts";
 import { ebayConfigured, searchListed } from "./ebay.ts";
+import { tcgConfigured, conditionPrices } from "./tcgplayer.ts";
 import { page } from "./render/layout.ts";
 import {
   renderHome,
@@ -568,6 +569,34 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       } catch (err) {
         console.error("ebay listed:", err);
         return j(200, { configured: true, query, error: "eBay request failed — try again shortly" });
+      }
+    }
+
+    // API: per-condition TCGplayer prices (SKU-level; needs a grandfathered/
+    // partner key or TCGPLAYER_MOCK — see src/tcgplayer.ts). Lazy like the
+    // eBay endpoint; results cached 30 min in-process.
+    if (path === "/api/tcgplayer/conditions") {
+      const j = (code: number, body: unknown) => send(res, code, JSON.stringify(body), "application/json");
+      if (!tcgConfigured()) return j(200, { configured: false, groups: [] });
+      const card = await getCard(Number(url.searchParams.get("card")));
+      if (!card) return j(404, { configured: true, error: "unknown card" });
+      if (!card.tcgplayer_product_id)
+        return j(200, { configured: true, groups: [], error: "No TCGplayer product linked for this card yet (run sync:tcgcsv)." });
+      const variants = await getVariants(card.id);
+      const vf = url.searchParams.get("v");
+      const sel = variants.find((v) => v.finish === vf) ?? variants.find((v) => v.is_default) ?? variants[0];
+      const base = sel ? await latestMarket(sel.id) : undefined;
+      try {
+        const groups = await conditionPrices({
+          productId: Number(card.tcgplayer_product_id),
+          gameSlug: card.game_slug ?? "",
+          mockBaseCents: base?.price_cents ?? null,
+          mockPrinting: sel?.finish_label ?? "Standard",
+        });
+        return j(200, { configured: true, product_id: card.tcgplayer_product_id, groups });
+      } catch (err) {
+        console.error("tcgplayer conditions:", err);
+        return j(200, { configured: true, error: "TCGplayer request failed — try again shortly" });
       }
     }
 
