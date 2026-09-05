@@ -192,7 +192,102 @@ export function buildSpecifics(f: ListingFields): Record<string, string> {
   return out;
 }
 
-export function buildDescription(f: ListingFields, priceCents: number | null): string {
+// ---- description templates ------------------------------------------------
+// CardUploader's Configuration → General → "Description Templates": up to three
+// saved templates with insertable variables, one active. Stored per seller as
+// JSON ({active, items:[{name, body}]}); the active body fills {variables} below.
+
+export const DESCRIPTION_TEMPLATE_MAX = 3;
+
+export const DESCRIPTION_VARS: Array<{ k: string; label: string; hint: string }> = [
+  { k: "title", label: "Title", hint: "The generated listing title" },
+  { k: "name", label: "Card Name", hint: "Name of the card" },
+  { k: "number", label: "Card Number", hint: "Full card number (e.g. 4/102)" },
+  { k: "set", label: "Set Name", hint: "Full name of the set" },
+  { k: "setcode", label: "Set Code", hint: "Set code abbreviation" },
+  { k: "game", label: "Card Game", hint: "Card game name" },
+  { k: "year", label: "Year", hint: "Year the set was released" },
+  { k: "rarity", label: "Rarity", hint: "Card rarity" },
+  { k: "finish", label: "Finish", hint: "Card finish (e.g. Holo)" },
+  { k: "condition", label: "Condition", hint: "Condition code (NM, LP…)" },
+  { k: "conditionlabel", label: "Condition (full)", hint: "Full condition text (e.g. Near Mint)" },
+  { k: "language", label: "Language", hint: "Card language" },
+  { k: "grade", label: "Grade", hint: "Grade when graded (e.g. PSA 10), else empty" },
+  { k: "sku", label: "SKU", hint: "Stock keeping unit" },
+  { k: "price", label: "Price", hint: "Your listing price" },
+];
+
+export type DescriptionTemplates = { active: number; items: Array<{ name: string; body: string }> };
+
+/** The built-in description, expressed as a template so the editor can start from it. */
+export const DEFAULT_DESCRIPTION_TEMPLATE = [
+  "{name} #{number} — {set} ({year})",
+  "",
+  "Game: {game}",
+  "Set: {set} ({setcode})",
+  "Rarity: {rarity}",
+  "Finish: {finish}",
+  "Language: {language}",
+  "Condition: {conditionlabel} ({condition})",
+  "",
+  "Card shipped in a penny sleeve + top loader, securely packaged. Combined shipping available — check my other listings for more singles.",
+].join("\n");
+
+/** Parse stored templates JSON; empty/invalid → no templates. */
+export function parseDescriptionTemplates(json: string | null | undefined): DescriptionTemplates {
+  if (!json || !json.trim()) return { active: 0, items: [] };
+  try {
+    const o = JSON.parse(json);
+    const items = Array.isArray(o?.items)
+      ? o.items
+          .slice(0, DESCRIPTION_TEMPLATE_MAX)
+          .map((it: any, i: number) => ({ name: String(it?.name ?? `Template ${i + 1}`).slice(0, 40), body: String(it?.body ?? "").slice(0, 8000) }))
+      : [];
+    const active = Math.max(0, Math.min(items.length ? items.length - 1 : 0, Number(o?.active) || 0));
+    return { active, items };
+  } catch {
+    return { active: 0, items: [] };
+  }
+}
+
+export function serializeDescriptionTemplates(t: DescriptionTemplates): string | null {
+  const items = t.items.filter((it) => it.body.trim()).slice(0, DESCRIPTION_TEMPLATE_MAX);
+  if (!items.length) return null;
+  return JSON.stringify({ active: Math.max(0, Math.min(items.length - 1, t.active)), items });
+}
+
+/** The active template body, or null to use the built-in description. */
+export function activeDescriptionTemplate(json: string | null | undefined): string | null {
+  const t = parseDescriptionTemplates(json);
+  const body = t.items[t.active]?.body;
+  return body && body.trim() ? body : null;
+}
+
+/** Fill {variables} in a template; lines that end up blank-after-label ("Rarity: ") are dropped. */
+export function fillDescriptionTemplate(tpl: string, f: ListingFields, priceCents: number | null, title = ""): string {
+  const map: Record<string, string> = {
+    title, name: f.name, number: f.number, set: f.set, setcode: f.setcode, game: f.game, year: f.year,
+    rarity: f.rarity, finish: f.finish, condition: f.condition, conditionlabel: f.conditionLabel,
+    language: f.languageName, lang: f.language, grade: f.grade, grader: f.grader, sku: f.sku,
+    price: priceCents != null ? money(priceCents) : "",
+  };
+  return tpl
+    .split(/\r?\n/)
+    .map((line) => {
+      const had = /\{\w+\}/.test(line);
+      const out = line.replace(/\{(\w+)\}/g, (_, k: string) => map[k.toLowerCase()] ?? "");
+      // "Label: {var}" with an empty var, or a line that was only variables → drop it
+      if (had && (/^[^:]{0,40}:\s*$/.test(out.trim()) || out.trim() === "" || /^[#()\s—-]*$/.test(out.trim()))) return null;
+      return out.replace(/\(\s*\)/g, "").replace(/\s+—\s*$/, "").replace(/[ \t]+$/, "");
+    })
+    .filter((l): l is string => l !== null)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function buildDescription(f: ListingFields, priceCents: number | null, template?: string | null, title = ""): string {
+  if (template && template.trim()) return fillDescriptionTemplate(template, f, priceCents, title);
   const cond = f.grade ? `${f.grade} (graded)` : `${f.conditionLabel} (${f.condition})`;
   const lines = [
     `${f.name}${f.number ? " #" + f.number : ""} — ${f.set}${f.year ? " (" + f.year + ")" : ""}`,

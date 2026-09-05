@@ -58,6 +58,61 @@ export function ruleKey(mode: string, pct: number): string {
   return "market";
 }
 
+// ---- automatic pricing preference ----------------------------------------
+// CardUploader's Configuration → Ungraded → "Automatic Pricing": a first and
+// second choice between the price you last listed a card at and the market rule,
+// plus "do not price below start price". Modelled here as one preference + an
+// optional floor, applied whenever a scan item's price is first resolved.
+
+export type AutoPricePref = "rule" | "previous_first" | "previous_only";
+
+export const AUTO_PRICE_PREFS: Array<{ key: AutoPricePref; label: string; hint: string }> = [
+  { key: "previous_first", label: "Previous price first, then pricing rule", hint: "Re-listing the same printing? Reuse what you priced it at last time; fall back to the rule for new cards." },
+  { key: "rule", label: "Pricing rule only", hint: "Always compute from market (Market, Market ± %, or Fixed). Previous prices are shown as a hint only." },
+  { key: "previous_only", label: "Previous price only", hint: "Never auto-price from market — leave the price empty for cards you haven't listed before." },
+];
+
+export function parseAutoPricePref(v: string | null | undefined): AutoPricePref {
+  return v === "previous_first" || v === "previous_only" ? v : "rule";
+}
+
+export type AutoPriceResult = { price: number | null; source: "previous" | "rule" | "floor" | null };
+
+/**
+ * Pick the automatic price for a freshly identified card from the seller's
+ * preference, then enforce the floor ("never price below $X").
+ */
+export function autoPrice(
+  ruled: number | null,
+  prev: number | null,
+  pref: AutoPricePref,
+  floorCents: number | null | undefined
+): AutoPriceResult {
+  let price: number | null;
+  let source: AutoPriceResult["source"];
+  if (pref === "previous_only") {
+    price = prev;
+    source = prev != null ? "previous" : null;
+  } else if (pref === "previous_first" && prev != null) {
+    price = prev;
+    source = "previous";
+  } else {
+    price = ruled;
+    source = ruled != null ? "rule" : null;
+  }
+  return applyFloor(price, floorCents, source);
+}
+
+/** Raise an automatic price to the floor when one is set. */
+export function applyFloor(
+  price: number | null,
+  floorCents: number | null | undefined,
+  source: AutoPriceResult["source"] = "rule"
+): AutoPriceResult {
+  if (price != null && floorCents != null && floorCents > 0 && price < floorCents) return { price: floorCents, source: "floor" };
+  return { price, source };
+}
+
 export const CONDITIONS: Array<{ key: string; label: string }> = [
   { key: "NM", label: "Near Mint" },
   { key: "LP", label: "Lightly Played" },

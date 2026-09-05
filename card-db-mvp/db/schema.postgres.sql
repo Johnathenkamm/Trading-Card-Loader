@@ -211,6 +211,13 @@ CREATE TABLE IF NOT EXISTS sellers (
   title_template       text,                            -- NULL = built-in template
   title_structure      jsonb,                           -- NULL = none; visual Title Structure Editor
 
+  -- Workspace preferences (app/matching.ts, app/pricing.ts, app/listing.ts).
+  -- Added by ensureWorkspaceSchema() at startup on older databases.
+  matching_prefs        jsonb,                           -- Advanced Matching Options defaults: {prioritizeSets, excludeSets, prioritizeTerms, excludeTerms}
+  auto_price_pref       text    NOT NULL DEFAULT 'rule', -- rule | previous_first | previous_only
+  price_floor_cents     integer,                         -- never auto-price below this
+  description_templates jsonb,                           -- {active, items:[{name, body}]} (max 3)
+
   created_at        timestamptz NOT NULL DEFAULT now()
 );
 

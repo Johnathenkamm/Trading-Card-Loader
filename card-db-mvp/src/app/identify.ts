@@ -56,6 +56,21 @@ export type IdentifyResult = {
 export const AUTO_THRESHOLD = 0.9; // >= auto-matches; below routes to review (build plan §4.5)
 const MIN_MATCH = 0.5; // below this, treat as failed even with candidates
 
+/**
+ * Advanced Matching Options (app/matching.ts). Exclusions remove candidates
+ * before scoring; priorities add a bounded score boost so a card from a set the
+ * seller said they're scanning wins ties (and clears the auto-match bar) over
+ * the same name in another set.
+ */
+export type IdentifyOptions = {
+  prioritizeSets?: string[]; // set slugs
+  excludeSets?: string[];
+  prioritizeTerms?: string[]; // lower-case keywords against name + set name
+  excludeTerms?: string[];
+};
+const PRIORITY_SET_BOOST = 0.1;
+const PRIORITY_TERM_BOOST = 0.05;
+
 // ---- finish parsing -------------------------------------------------------
 // Order matters: check "reverse" before "holo", "1st edition holo" before "1st".
 const FINISH_RULES: Array<{ re: RegExp; finish: string; label: string }> = [
@@ -304,7 +319,7 @@ async function pickVariant(cardId: number, finish: string | null, language: stri
   return vs.find((v) => v.is_default) === undefined ? vs[0] : vs.find((v) => v.is_default)!;
 }
 
-export async function identify(raw: string): Promise<IdentifyResult> {
+export async function identify(raw: string, opts: IdentifyOptions = {}): Promise<IdentifyResult> {
   const parsed = parseInput(raw);
 
   // Set awareness: if the input speaks a set name ("charizard base set holo"),
@@ -321,10 +336,23 @@ export async function identify(raw: string): Promise<IdentifyResult> {
     }
   }
 
-  const rows = await fetchRows(parsed);
+  const fetched = await fetchRows(parsed);
+
+  // Advanced Matching Options: drop excluded sets/keywords, boost prioritized ones.
+  const exSets = new Set(opts.excludeSets ?? []);
+  const priSets = new Set(opts.prioritizeSets ?? []);
+  const exTerms = opts.excludeTerms ?? [];
+  const priTerms = opts.prioritizeTerms ?? [];
+  const hay = (r: Row) => `${r.name} ${r.set_name}`.toLowerCase();
+  const rows = fetched.filter((r) => !exSets.has(r.set_slug) && !exTerms.some((t) => hay(r).includes(t)));
 
   const scored = rows
-    .map((r) => ({ row: r, score: scoreRow(parsed, r) }))
+    .map((r) => {
+      let score = scoreRow(parsed, r);
+      if (priSets.has(r.set_slug)) score += PRIORITY_SET_BOOST;
+      if (priTerms.length) score += PRIORITY_TERM_BOOST * priTerms.filter((t) => hay(r).includes(t)).length;
+      return { row: r, score: Math.min(1, score) };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, 6);
 

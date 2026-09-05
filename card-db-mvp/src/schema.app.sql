@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS sellers (
   title_template       TEXT,                          -- NULL = built-in template
   title_structure      TEXT,                          -- NULL = none; JSON for the visual Title Structure Editor (app/title.ts)
 
+  -- Workspace preferences (app/matching.ts, app/pricing.ts, app/listing.ts).
+  matching_prefs        TEXT,                         -- JSON: Advanced Matching Options defaults
+  auto_price_pref       TEXT NOT NULL DEFAULT 'rule', -- rule | previous_first | previous_only
+  price_floor_cents     INTEGER,                      -- never auto-price below this
+  description_templates TEXT,                         -- JSON: {active, items:[{name, body}]} (max 3)
+
   created_at        TEXT NOT NULL
 );
 

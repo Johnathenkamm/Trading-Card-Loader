@@ -16,8 +16,12 @@ export function boundaryOf(contentType: string | undefined): string | null {
   return m ? (m[1] ?? m[2]).trim() : null;
 }
 
+/** Upload limits, shared by the server (enforced) and the scan page (pre-flight check). */
+export const MAX_UPLOAD_FILES = 40;
+export const MAX_UPLOAD_BYTES = 60_000_000;
+
 /** Collect the full request body as a Buffer, rejecting bodies over `limit`. */
-export function readBodyBuffer(req: IncomingMessage, limit = 60_000_000): Promise<Buffer> {
+export function readBodyBuffer(req: IncomingMessage, limit = MAX_UPLOAD_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;

@@ -7,9 +7,18 @@ import {
   type ScanItem, type InventoryRow, type VariantFull, type Seller,
 } from "./store.ts";
 import {
-  listingFields, buildTitle, buildSpecifics, buildDescription, ebayCategory,
+  listingFields, buildTitle, buildSpecifics, buildDescription, ebayCategory, activeDescriptionTemplate,
   type ListingExportRow, type ListingFields,
 } from "./listing.ts";
+
+/**
+ * Listing description for a seller: the active saved description template when
+ * one exists (Settings → Descriptions), else the built-in description. One path
+ * shared by the listing builder, bulk "Create listings", and the CSV export.
+ */
+export function sellerDescription(f: ListingFields, priceCents: number | null, seller: Seller, title = ""): string {
+  return buildDescription(f, priceCents, activeDescriptionTemplate(seller.description_templates), title);
+}
 import { parseStructure, renderStructuredTitle } from "./title.ts";
 import { resolvePrice } from "./pricing.ts";
 
@@ -43,7 +52,7 @@ export async function scanItemTitle(item: ScanItem, seller?: Seller): Promise<st
   const vf = await getVariantFull(item.matched_variant_id);
   if (!vf) return null;
   const s = seller ?? (await getSeller());
-  const f = listingFields(vf, { condition: item.condition, language: item.language, sku: item.sku ?? "" });
+  const f = listingFields(vf, { condition: item.condition, language: item.language, sku: item.sku ?? "" }, item.grade);
   return sellerTitle(f, s);
 }
 
@@ -64,14 +73,14 @@ export async function inventoryListingPreview(
   const vf = await getVariantFull(inv.variant_id);
   if (!vf) return null;
   const seller = await getSeller();
-  const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku }, opts.grade);
+  const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku }, opts.grade ?? inv.grade);
   const title = opts.titleOverride && opts.titleOverride.trim()
     ? opts.titleOverride.trim().slice(0, 80)
     : opts.template ? buildTitle(f, opts.template) : sellerTitle(f, seller);
   return {
     title,
     specifics: buildSpecifics(f),
-    description: buildDescription(f, inv.price_cents),
+    description: sellerDescription(f, inv.price_cents, seller, title),
     category: ebayCategory(vf.game_slug),
     priceCents: inv.price_cents,
     vf,
@@ -88,19 +97,20 @@ export async function exportRowsFor(
   for (const inv of invs) {
     const vf = await getVariantFull(inv.variant_id);
     if (!vf) continue;
-    const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku });
+    const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku }, inv.grade);
+    const title = sellerTitle(f, seller);
     rows.push({
       vf,
       inv,
-      title: sellerTitle(f, seller),
-      description: buildDescription(f, inv.price_cents),
+      title,
+      description: sellerDescription(f, inv.price_cents, seller, title),
       specifics: buildSpecifics(f),
       category: ebayCategory(vf.game_slug),
       format: opts.format,
       priceCents: inv.price_cents,
       startCents: inv.price_cents,
       durationDays: opts.durationDays ?? 7,
-      grade: null,
+      grade: inv.grade ?? null,
     });
   }
   return rows;

@@ -20,21 +20,48 @@ import { renderSales } from "./render/sales.ts";
 import { money } from "./util.ts";
 
 // ---- seller-workspace wiring ----------------------------------------------
-import { identify } from "./app/identify.ts";
-import { resolvePrice, parseRuleKey } from "./app/pricing.ts";
+import { identify, type IdentifyOptions } from "./app/identify.ts";
+import { resolvePrice, parseRuleKey, parseAutoPricePref, applyFloor } from "./app/pricing.ts";
 import {
   getSeller, updateSeller, createBatch, addItemFromIdentify, detectDuplicates, finalizeBatch,
   getItems, getItem, updateItem, replaceMatch, commitBatch,
   getInventoryItem, listInventory, updateInventory, createListing, previousPrice, marketCents,
+  ensureWorkspaceSchema,
   type Seller,
 } from "./app/store.ts";
-import { toEbayCsv } from "./app/listing.ts";
-import { parseStructure, serializeStructure, renderStructuredTitle, DEFAULT_STRUCTURE } from "./app/title.ts";
-import { exportRowsFor, inventoryListingPreview, scanItemTitle, sampleTitleFields } from "./app/compose.ts";
 import {
-  renderDashboard, renderScan, renderReview, renderListingBuilder, renderListings, renderSettings,
+  toEbayCsv, parseDescriptionTemplates, serializeDescriptionTemplates, fillDescriptionTemplate, DESCRIPTION_TEMPLATE_MAX,
+} from "./app/listing.ts";
+import { parseStructure, serializeStructure, renderStructuredTitle, DEFAULT_STRUCTURE } from "./app/title.ts";
+import { exportRowsFor, inventoryListingPreview, scanItemTitle, sampleTitleFields, sellerTitle } from "./app/compose.ts";
+import { prefsFromForm, serializeMatchingPrefs, isEmptyPrefs, type MatchingPrefs } from "./app/matching.ts";
+import { getAllSets } from "./pg.ts";
+import {
+  renderWorkspaceHome, renderInventory, renderBatches, renderScan, renderReview, renderListingBuilder, renderListings, renderSettings,
 } from "./render/app.ts";
-import { readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, type UploadedFile } from "./upload.ts";
+import {
+  renderGraded, renderListingCreator, renderBlankListing, renderPricingTool, renderPricingResults, renderCardSearch,
+  renderOrders, renderPicklist, renderAutomaticInventory, renderInbox,
+} from "./render/workspace2.ts";
+import {
+  addItemFromCatalog, shareBatch, unshareBatch, getBatchByToken, getItemsPublic, setBatchKind, getBatch,
+  getListings, listBlankListings, markListingsExported, setListingStatus, marketCentsAt,
+} from "./app/store.ts";
+import { parseCerts, lookupCert, gradeLabel, graderOf, GRADE_VALUES } from "./app/graded.ts";
+import {
+  ensureOrdersSchema, createOrder, listOrders, setItemPicked, shipOrder, deleteOrder, importPullSheet, picklist, getOrderWithItems, existingRefs,
+} from "./app/orders.ts";
+import {
+  ensureEbaySchema, ebaySellConfigured, beginConnect, completeConnect, disconnect as ebayDisconnect, syncPolicies, setPolicyIds, ensureLocation,
+  getConnection, publishListing, endListing, syncQuantityForInventory, fetchOpenOrders, markShippedOnEbay, touchOrderSync, EbayError,
+} from "./app/ebay-sell.ts";
+import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
+import {
+  itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
+} from "./app/exporters.ts";
+import { formatSku } from "./app/sku.ts";
+import { parseInput, type IdentifyResult } from "./app/identify.ts";
+import { readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, MAX_UPLOAD_FILES, type UploadedFile } from "./upload.ts";
 import { storage, keyFor, localUploadsDir, contentTypeForExt } from "./storage.ts";
 import { visionIdentify } from "./app/vision.ts";
 
@@ -78,6 +105,18 @@ try {
   await ensureBillingSchema();
 } catch (err) {
   console.error("\n  Failed to prepare the billing schema (sellers.plan_tier / meta).\n", err);
+  process.exit(1);
+}
+
+// Workspace preference columns (matching defaults, automatic pricing, description
+// templates) — idempotent, same pattern as the auth/billing bootstraps.
+try {
+  await ensureWorkspaceSchema();
+  await ensureOrdersSchema();
+  await ensureFeedbackSchema();
+  await ensureEbaySchema();
+} catch (err) {
+  console.error("\n  Failed to prepare the workspace schema (seller prefs, graded columns, orders, feedback).\n", err);
   process.exit(1);
 }
 
@@ -181,7 +220,28 @@ function redirectBack(req: IncomingMessage, res: ServerResponse, fallback: strin
 
 // ---- app: mutations -------------------------------------------------------
 
-async function handleScan(f: Record<string, string>): Promise<string> {
+/**
+ * Read the Advanced Matching Options fields off a scan form (set names resolve
+ * against the catalog), persisting them as the seller's defaults on request.
+ */
+async function matchingFromForm(f: Record<string, string>): Promise<MatchingPrefs> {
+  const prefs = prefsFromForm(f, await getAllSets());
+  if (f.save_matching === "1") await updateSeller({ matching_prefs: serializeMatchingPrefs(prefs) });
+  return prefs;
+}
+const identifyOpts = (p: MatchingPrefs): IdentifyOptions => (isEmptyPrefs(p) ? {} : p);
+
+/** Where a finished batch goes: pricing batches to their results page, the rest to review. */
+const batchLanding = (kind: string, batchId: number): string => (kind === "pricing" ? `/app/pricing/${batchId}` : `/app/review/${batchId}`);
+const scanPageFor = (kind: string): string => (kind === "pricing" ? "/app/pricing-tool" : "/app/scan");
+
+/** Generate titles for every matched item (after any batch build). */
+async function titleBatch(batchId: number, seller: Seller): Promise<void> {
+  for (const it of await getItems(batchId))
+    if (it.matched_variant_id) await updateItem(it.id, { title: await scanItemTitle(it, seller) });
+}
+
+async function handleScan(f: Record<string, string>, kind = "scan"): Promise<string> {
   const base = await getSeller();
   const rr = parseRuleKey(f.rule || "market");
   const condition = f.condition || base.default_condition;
@@ -194,6 +254,7 @@ async function handleScan(f: Record<string, string>): Promise<string> {
   if (f.save_defaults === "1") {
     await updateSeller({ default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct });
   }
+  const matching = identifyOpts(await matchingFromForm(f));
 
   const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
 
@@ -203,20 +264,162 @@ async function handleScan(f: Record<string, string>): Promise<string> {
     .filter(Boolean)
     .slice(0, 500);
 
-  if (!lines.length) return "/app/scan?msg=" + encodeURIComponent("Paste at least one card line.");
+  if (!lines.length) return scanPageFor(kind) + "?msg=" + encodeURIComponent("Paste at least one card line.");
 
-  const batchId = await createBatch("paste", f.label?.trim() || null);
+  const batchId = await createBatch("paste", f.label?.trim() || null, kind);
   for (const line of lines) {
-    const result = await identify(line);
+    const result = await identify(line, matching);
     await addItemFromIdentify(batchId, line, result, seller);
   }
   await detectDuplicates(batchId);
   await finalizeBatch(batchId);
-  // pre-generate titles for matched items
-  for (const it of await getItems(batchId))
-    if (it.matched_variant_id) await updateItem(it.id, { title: await scanItemTitle(it, seller) });
+  await titleBatch(batchId, seller);
+  return batchLanding(kind, batchId);
+}
 
+/**
+ * Graded Cards: one item per cert. With a lookup provider the cert resolves to a
+ * card hint + grade; otherwise the item waits in review carrying the cert, and
+ * the seller picks the card and grade (link-out to the grader for verification).
+ */
+async function handleGraded(f: Record<string, string>): Promise<string> {
+  const base = await getSeller();
+  const grader = graderOf(f.grader)?.key ?? "PSA";
+  const { certs } = parseCerts(f.certs ?? "");
+  if (!certs.length) return "/app/graded?msg=" + encodeURIComponent("Paste at least one cert number.");
+  const rr = parseRuleKey(f.rule || "market");
+  if (f.sku_prefix && f.sku_prefix.trim() && f.sku_prefix.trim() !== base.sku_prefix) {
+    await updateSeller({ sku_prefix: f.sku_prefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD" });
+  }
+  const seller: Seller = { ...(await getSeller()), price_mode: rr.mode, price_pct: rr.pct };
+  const defaultGrade = GRADE_VALUES.includes(f.grade_default ?? "") ? gradeLabel(grader, f.grade_default) : null;
+
+  const batchId = await createBatch("certs", f.label?.trim() || null, "graded");
+  for (const cert of certs) {
+    const lk = await lookupCert(grader, cert);
+    const grade = lk.grade ?? defaultGrade;
+    let result: IdentifyResult;
+    if (lk.hint) result = await identify(lk.hint);
+    else result = { parsed: parseInput(""), best: null, alternatives: [], confidence: 0, status: "needs_review" };
+    if (result.status === "failed") result = { ...result, status: "needs_review" };
+    const raw = `${grader} ${cert}${lk.hint ? " · " + lk.hint : ""}`;
+    await addItemFromIdentify(batchId, raw, result, seller, { grade, grader, cert });
+  }
+  await detectDuplicates(batchId);
+  await finalizeBatch(batchId);
+  await titleBatch(batchId, seller);
   return `/app/review/${batchId}`;
+}
+
+/**
+ * Listing Creator / Card Search "Add": chosen catalog cards → confirmed items.
+ * Picks arrive as `picks` lines ("cardId,qty") and/or checkbox fields
+ * card_<id> with qty_<id>.
+ */
+async function handleCreator(f: Record<string, string>): Promise<string> {
+  const base = await getSeller();
+  const rr = parseRuleKey(f.rule || ruleKeyOf(base));
+  const condition = f.condition || base.default_condition;
+  const seller: Seller = { ...base, default_condition: condition, price_mode: rr.mode, price_pct: rr.pct };
+  const picks = new Map<number, number>();
+  for (const line of (f.picks ?? "").split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s*,\s*(\d+)?/);
+    if (m) picks.set(Number(m[1]), Math.max(1, Number(m[2] || 1)) + (picks.get(Number(m[1])) ?? 0));
+  }
+  for (const k of Object.keys(f)) {
+    const m = k.match(/^card_(\d+)$/);
+    if (m && f[k]) picks.set(Number(m[1]), Math.max(1, intOr(f[`qty_${m[1]}`], 1)) + (picks.get(Number(m[1])) ?? 0));
+  }
+  if (!picks.size) return "/app/listing-creator?msg=" + encodeURIComponent("Pick at least one card.");
+  const batchId = await createBatch("catalog", f.label?.trim() || (f.quick === "1" ? "Card search pick" : null), "creator");
+  let added = 0;
+  for (const [cardId, qty] of picks) {
+    const vs = await getVariants(cardId);
+    const v = vs.find((x) => x.is_default) ?? vs[0];
+    if (!v) continue;
+    if (await addItemFromCatalog(batchId, v.id, seller, { quantity: qty, condition })) added++;
+  }
+  await detectDuplicates(batchId);
+  await finalizeBatch(batchId);
+  await titleBatch(batchId, seller);
+  return `/app/review/${batchId}?msg=` + encodeURIComponent(`${added} card${added === 1 ? "" : "s"} added from the catalog — confirm and add to inventory.`);
+}
+const ruleKeyOf = (s: Seller): string => (s.price_mode === "fixed" ? "fixed" : s.price_mode === "pct" ? `pct:${s.price_pct}` : "market");
+
+/** Blank Listing Creator: a listing draft with no catalog row behind it. */
+async function handleBlank(f: Record<string, string>): Promise<string> {
+  const seller = await getSeller();
+  const title = (f.title ?? "").trim().slice(0, 80);
+  if (!title) return "/app/blank-listing?msg=" + encodeURIComponent("A title is required.");
+  const price = toCents(f.price);
+  const format = f.format === "auction" ? "auction" : "fixed";
+  const graded = f.listing_type === "graded" && f.grader && f.grade_value;
+  const specifics: Record<string, string> = {};
+  const put = (k: string, v: string | undefined) => {
+    if (v && v.trim()) specifics[k] = v.trim();
+  };
+  put("Game", f.game);
+  put("Set", f.set);
+  put("Card Name", f.card_name);
+  put("Card Number", f.number);
+  put("Rarity", f.rarity);
+  put("Language", f.language);
+  if (graded) {
+    specifics["Graded"] = "Yes";
+    specifics["Professional Grader"] = String(f.grader).toUpperCase();
+    specifics["Grade"] = String(f.grade_value);
+    put("Certification Number", f.cert);
+  } else {
+    specifics["Graded"] = "No";
+    const cond = f.condition || seller.default_condition;
+    specifics["Card Condition"] = { NM: "Near Mint", LP: "Lightly Played", MP: "Moderately Played", HP: "Heavily Played", DMG: "Damaged" }[cond] ?? cond;
+  }
+  let sku = (f.sku ?? "").trim();
+  if (!sku) {
+    sku = formatSku(seller.sku_prefix, seller.sku_next, seller.sku_pad);
+    await updateSeller({ sku_next: seller.sku_next + 1 });
+  }
+  const description = (f.description ?? "").trim() || [title, "", ...Object.entries(specifics).filter(([k]) => k !== "Graded").map(([k, v]) => `${k}: ${v}`)].join("\n");
+  const scheduled = f.scheduled_at?.trim() || null;
+  await createListing({
+    inventory_id: null,
+    marketplace: "ebay",
+    format,
+    title,
+    description,
+    category_id: (f.category ?? "").trim() || "183454",
+    price_cents: format === "fixed" ? price : null,
+    start_cents: format === "auction" ? price : null,
+    duration_days: format === "auction" ? 7 : null,
+    quantity: Math.max(1, intOr(f.quantity, 1)),
+    sku,
+    item_specifics: JSON.stringify(specifics),
+    scheduled_at: scheduled,
+    status: scheduled ? "scheduled" : "draft",
+    image_url: (f.image_url ?? "").trim() || null,
+  });
+  return "/app/blank-listing?msg=" + encodeURIComponent(`Listing draft created: ${title} (${sku}).`);
+}
+
+/** Manual order: "SKU, qty, price" lines. */
+async function handleOrderCreate(f: Record<string, string>): Promise<string> {
+  const items = (f.items ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const [sku, qty, price] = l.split(/\s*,\s*/);
+      return { sku: sku?.trim() || null, quantity: Math.max(1, intOr(qty, 1)), price_cents: toCents(price) };
+    });
+  if (!items.length) return "/app/orders?msg=" + encodeURIComponent("Add at least one item line (SKU, qty, price).");
+  const id = await createOrder({
+    platform: f.platform || "manual",
+    external_ref: f.external_ref?.trim() || null,
+    buyer: f.buyer?.trim() || null,
+    ship_to: f.ship_to?.trim() || null,
+    items,
+  });
+  return "/app/orders?msg=" + encodeURIComponent(`Order #${id} created with ${items.length} item${items.length === 1 ? "" : "s"}.`);
 }
 
 /**
@@ -226,7 +429,7 @@ async function handleScan(f: Record<string, string>): Promise<string> {
  * "needs review" for manual search — the same path a vision model will feed once
  * it reads the pixels (see identify.ts / the seam note on the scan page).
  */
-async function handleScanUpload(fields: Record<string, string>, files: UploadedFile[]): Promise<string> {
+async function handleScanUpload(fields: Record<string, string>, files: UploadedFile[], kind = "scan"): Promise<string> {
   const base = await getSeller();
   const rr = parseRuleKey(fields.rule || "market");
   const condition = fields.condition || base.default_condition;
@@ -238,18 +441,19 @@ async function handleScanUpload(fields: Record<string, string>, files: UploadedF
   if (fields.save_defaults === "1") {
     await updateSeller({ default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct });
   }
+  const matching = identifyOpts(await matchingFromForm(fields));
   const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
 
-  const imgs = files.filter((f) => f.field === "images" && isImage(f)).slice(0, 40);
-  if (!imgs.length) return "/app/scan?msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
+  const imgs = files.filter((f) => f.field === "images" && isImage(f)).slice(0, MAX_UPLOAD_FILES);
+  if (!imgs.length) return scanPageFor(kind) + "?msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
 
   const store = storage();
-  const batchId = await createBatch("upload", fields.label?.trim() || null);
+  const batchId = await createBatch("upload", fields.label?.trim() || null, kind);
   for (const file of imgs) {
     const put = await store.put(keyFor(seller.id, file.filename), file.data, file.contentType);
     // Vision provider reads the card (pixels → labels → catalog match); falls back
     // to the filename hint when no provider is configured (see app/vision.ts).
-    const { result: r0, hintText } = await visionIdentify({ data: file.data, filename: file.filename, contentType: file.contentType });
+    const { result: r0, hintText } = await visionIdentify({ data: file.data, filename: file.filename, contentType: file.contentType }, matching);
     // An uploaded photo we couldn't auto-match isn't a failure — it's a review
     // task with the image in hand, so route "failed" → "needs_review".
     const result = r0.status === "failed" ? { ...r0, status: "needs_review" as const } : r0;
@@ -258,10 +462,8 @@ async function handleScanUpload(fields: Record<string, string>, files: UploadedF
   }
   await detectDuplicates(batchId);
   await finalizeBatch(batchId);
-  for (const it of await getItems(batchId))
-    if (it.matched_variant_id) await updateItem(it.id, { title: await scanItemTitle(it, seller) });
-
-  return `/app/review/${batchId}`;
+  await titleBatch(batchId, seller);
+  return batchLanding(kind, batchId);
 }
 
 /** Attach or replace a scan item's front/back image (per-item upload in review). */
@@ -306,13 +508,18 @@ async function handleItemAction(batchId: number, itemId: number, f: Record<strin
   const language = f.language || item.language;
   const quantity = Math.max(1, intOr(f.quantity, item.quantity));
   const rr = parseRuleKey(f.rule || "market");
+  // Grade: grader + value selects ("PSA" + "10" → "PSA 10"); "Raw" clears it.
+  const graderKey = f.grader != null ? graderOf(f.grader)?.key ?? null : item.grader;
+  const gradeValue = f.grade_value != null ? (GRADE_VALUES.includes(f.grade_value) ? f.grade_value : null) : null;
+  const grade = graderKey && gradeValue ? gradeLabel(graderKey, gradeValue) : f.grader != null ? null : item.grade;
 
   // Price resolution. `shown_price` is the value the form was rendered with, so
   // we can tell "user changed the rule (recompute)" from "user edited the price
   // box (override)": if the typed price still equals what was shown, it wasn't
   // hand-edited and we recompute from the rule; otherwise it's a manual override.
-  const market = item.matched_variant_id ? await marketCents(item.matched_variant_id) : null;
-  const ruled = resolvePrice(market, { mode: rr.mode, pct: rr.pct, fixed_cents: null });
+  const market = item.matched_variant_id ? await marketCentsAt(item.matched_variant_id, grade) : null;
+  // Rule-derived prices respect the seller's floor; a typed price never does.
+  const ruled = applyFloor(resolvePrice(market, { mode: rr.mode, pct: rr.pct, fixed_cents: null }), (await getSeller()).price_floor_cents).price;
   const typed = toCents(f.price);
   const shown = toCents(f.shown_price);
   let price_cents = ruled;
@@ -333,11 +540,13 @@ async function handleItemAction(batchId: number, itemId: number, f: Record<strin
     price_cents,
     price_overridden,
     sku: f.sku?.trim() || null,
-    prev_price_cents: item.matched_variant_id ? await previousPrice(item.matched_variant_id, condition) : null,
+    grade,
+    grader: grade ? graderKey : null,
+    prev_price_cents: item.matched_variant_id ? await previousPrice(item.matched_variant_id, grade || condition) : null,
   };
 
   // title: regenerate on request or when cleared, else keep the user's text
-  const merged = { ...item, condition, language, sku: patch.sku as string | null } as typeof item;
+  const merged = { ...item, condition, language, grade, sku: patch.sku as string | null } as typeof item;
   if (doAction === "regen" || !f.title || !f.title.trim()) {
     patch.title = (await scanItemTitle(merged)) ?? "";
   } else {
@@ -349,7 +558,7 @@ async function handleItemAction(batchId: number, itemId: number, f: Record<strin
 
 async function handleInventoryBulk(f: Record<string, string>): Promise<string> {
   const ids = (f.ids || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
-  if (!ids.length) return "/app?msg=" + encodeURIComponent("No cards selected.");
+  if (!ids.length) return "/app/inventory?msg=" + encodeURIComponent("No cards selected.");
   const doAction = f.do;
 
   if (doAction === "list") {
@@ -394,12 +603,12 @@ async function handleInventoryBulk(f: Record<string, string>): Promise<string> {
     }
     await updateInventory(id, patch);
   }
-  return "/app?msg=" + encodeURIComponent(`Updated ${ids.length} card(s).`);
+  return "/app/inventory?msg=" + encodeURIComponent(`Updated ${ids.length} card(s).`);
 }
 
 async function handleCreateListing(invId: number, f: Record<string, string>): Promise<string> {
   const inv = await getInventoryItem(invId);
-  if (!inv) return "/app";
+  if (!inv) return "/app/inventory";
   const format = f.format === "auction" ? "auction" : "fixed";
   const price = toCents(f.price);
   const grade = f.grade?.trim() || null;
@@ -407,7 +616,7 @@ async function handleCreateListing(invId: number, f: Record<string, string>): Pr
   const specifics = pv ? pv.specifics : {};
   const scheduled = f.scheduled_at?.trim() || null;
 
-  await createListing({
+  const id = await createListing({
     inventory_id: inv.id,
     marketplace: "ebay",
     format,
@@ -423,11 +632,75 @@ async function handleCreateListing(invId: number, f: Record<string, string>): Pr
     scheduled_at: scheduled,
     status: scheduled ? "scheduled" : "draft",
   });
+  if (f.do === "publish") return await publishAndRedirect(id, `${inv.card_name}`);
   return "/app/listings?msg=" + encodeURIComponent(`Listing draft created for ${inv.card_name}.`);
 }
 
-async function handleSettings(f: Record<string, string>): Promise<void> {
+/** Publish (or revise) a listing on eBay and land on the listings page with the outcome. */
+async function publishAndRedirect(listingId: number, label: string): Promise<string> {
+  try {
+    const r = await publishListing(listingId);
+    return "/app/listings?msg=" + encodeURIComponent(`${r.revised ? "Revised" : "Published"} on eBay: ${label} → item ${r.listingId}.`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!(err instanceof EbayError)) console.error("ebay publish:", err);
+    return "/app/listings?msg=" + encodeURIComponent(`eBay rejected "${label}": ${msg}`);
+  }
+}
+
+/** Pull open eBay orders into the orders table (skipping ones already imported). */
+async function fetchEbayOrders(): Promise<string> {
+  try {
+    const open = await fetchOpenOrders();
+    const seen = await existingRefs("ebay");
+    let added = 0;
+    for (const o of open) {
+      if (seen.has(o.orderId)) continue;
+      await createOrder({ platform: "ebay", external_ref: o.orderId, buyer: o.buyer, ship_to: o.shipTo, items: o.items });
+      added++;
+    }
+    await touchOrderSync();
+    return "/app/orders?platform=ebay&msg=" + encodeURIComponent(`Fetched ${open.length} open eBay order${open.length === 1 ? "" : "s"} — ${added} new.`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!(err instanceof EbayError)) console.error("ebay orders:", err);
+    return "/app/orders?msg=" + encodeURIComponent(`Couldn't fetch eBay orders: ${msg}`);
+  }
+}
+
+/**
+ * After an order ships: tell eBay (for eBay orders) or push the new quantity to
+ * live eBay listings (for orders from anywhere else). Best-effort; local
+ * inventory is already updated and is the source of truth.
+ */
+async function afterShip(orderId: number): Promise<string> {
+  const o = await getOrderWithItems(orderId);
+  if (!o || !(await getConnection())) return "";
+  try {
+    if (o.platform === "ebay" && o.external_ref) {
+      await markShippedOnEbay(o.external_ref);
+      return " Marked shipped on eBay.";
+    }
+    let n = 0;
+    for (const it of o.items) if (it.inventory_id != null) n += await syncQuantityForInventory(it.inventory_id);
+    return n ? ` Quantity synced to ${n} live eBay listing${n === 1 ? "" : "s"}.` : "";
+  } catch (err) {
+    return ` (eBay sync failed: ${err instanceof Error ? err.message : String(err)})`;
+  }
+}
+
+async function handleSettings(f: Record<string, string>): Promise<string> {
   const rr = parseRuleKey(f.rule || "market");
+  // Description templates: up to N (name, body) pairs + which one is active.
+  const items = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => ({
+    name: (f[`desc_name_${i}`] ?? "").trim().slice(0, 40) || `Description ${i + 1}`,
+    body: (f[`desc_body_${i}`] ?? "").replace(/\r\n/g, "\n").slice(0, 8000),
+  }));
+  const activeRaw = intOr(f.desc_active, 0);
+  // `active` indexes the kept (non-empty) list; map from the form slot.
+  const kept = items.map((it, i) => ({ ...it, i })).filter((it) => it.body.trim());
+  const active = Math.max(0, kept.findIndex((it) => it.i === activeRaw));
+  const matching = prefsFromForm(f, await getAllSets());
   await updateSeller({
     display_name: f.display_name?.trim() || "My card shop",
     sku_prefix: (f.sku_prefix || "CARD").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD",
@@ -450,7 +723,30 @@ async function handleSettings(f: Record<string, string>): Promise<void> {
     ebay_return_policy: f.ebay_return_policy?.trim() || null,
     ebay_payment_policy: f.ebay_payment_policy?.trim() || null,
     training_opt_in: f.training_opt_in === "1" ? 1 : 0,
+    auto_price_pref: parseAutoPricePref(f.auto_price_pref),
+    price_floor_cents: (() => {
+      const c = toCents(f.price_floor);
+      return c != null && c > 0 ? c : null;
+    })(),
+    matching_prefs: serializeMatchingPrefs(matching),
+    description_templates: serializeDescriptionTemplates({ active, items: kept.map(({ name, body }) => ({ name, body })) }),
+    channel_prefs: JSON.stringify(channelPrefsFromForm(f)),
   });
+  // eBay: chosen policy ids + ship-from location (only when connected).
+  let note = "";
+  if (await getConnection()) {
+    if (f.policy_fulfillment != null || f.policy_payment != null || f.policy_return != null) {
+      await setPolicyIds({ fulfillment: (f.policy_fulfillment ?? "").trim(), payment: (f.policy_payment ?? "").trim(), return: (f.policy_return ?? "").trim() });
+    }
+    if ((f.loc_postal ?? "").trim()) {
+      try {
+        await ensureLocation({ postalCode: f.loc_postal.trim(), country: (f.loc_country ?? "US").trim(), city: (f.loc_city ?? "").trim(), stateOrProvince: (f.loc_state ?? "").trim() });
+      } catch (err) {
+        note = ` eBay location wasn't saved: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+  }
+  return note;
 }
 
 /** Serve a locally-stored uploaded image (local storage driver only). */
@@ -470,22 +766,37 @@ function serveUpload(res: ServerResponse, path: string): void {
   }
 }
 
-async function exportCsv(res: ServerResponse, url: URL): Promise<void> {
+/**
+ * File export for any channel. `ids` = inventory rows, `listings` = blank
+ * listing ids, `all=1` = every inventory row plus every blank listing draft.
+ */
+async function exportCsv(res: ServerResponse, url: URL, fmt: string): Promise<void> {
   const seller = await getSeller();
-  let invIds: number[];
-  if (url.searchParams.get("all") === "1") {
-    invIds = (await listInventory({})).map((r) => r.id);
-  } else {
-    invIds = (url.searchParams.get("ids") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
+  const all = url.searchParams.get("all") === "1";
+  const invIds = all ? (await listInventory({})).map((r) => r.id) : (url.searchParams.get("ids") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
+  const listingIds = (url.searchParams.get("listings") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
+  const invs = (await Promise.all(invIds.map((id) => getInventoryItem(id)))).filter((x): x is NonNullable<typeof x> => !!x);
+  const blanks = all ? await listBlankListings() : await getListings(listingIds);
+  const items = [...itemsFromRows(await exportRowsFor(invs, { format: "fixed" })), ...blanks.filter((l) => l.inventory_id == null).map(itemFromBlankListing)];
+  const prefs = parseChannelPrefs(seller.channel_prefs);
+  let csv: string;
+  switch (fmt) {
+    case "tcgplayer":
+      csv = tcgplayerCsv(items, prefs).csv;
+      break;
+    case "whatnot":
+      csv = whatnotCsv(items, prefs);
+      break;
+    case "shopify":
+      csv = shopifyCsv(items, prefs);
+      break;
+    default:
+      csv = ebayCsv(items, seller);
   }
-  const invs = (await Promise.all(invIds.map((id) => getInventoryItem(id)))).filter(
-    (x): x is NonNullable<typeof x> => !!x
-  );
-  const rows = await exportRowsFor(invs, { format: "fixed" });
-  const csv = toEbayCsv(rows, seller);
+  if (blanks.length) await markListingsExported(blanks.map((l) => l.id));
   res.writeHead(200, {
     "content-type": "text/csv; charset=utf-8",
-    "content-disposition": `attachment; filename="ebay-listings.csv"`,
+    "content-disposition": `attachment; filename="${fmt}-listings.csv"`,
     "cache-control": "no-cache",
   });
   res.end(csv);
@@ -498,6 +809,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   const path = decodeURIComponent(url.pathname);
   const method = req.method ?? "GET";
   const msg = url.searchParams.get("msg") ?? undefined;
+  let m: RegExpMatchArray | null;
 
   // Resolve the logged-in account once per request; the shared page shell reads
   // it (via AsyncLocalStorage) to render the header without threading a param.
@@ -532,8 +844,20 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return await handleAuth(req, res, url, path, method);
     }
 
+    // ---- public share page for a priced list (token is the capability) ----
+    if ((m = path.match(/^\/p\/([A-Za-z0-9_-]{8,40})$/))) {
+      const b = await getBatchByToken(m[1]);
+      if (!b) return notFound(res);
+      const acct = await getAccount(b.seller_id);
+      const items = await getItemsPublic(b.id);
+      const token = m[1];
+      return runWithSeller(b.seller_id, async () =>
+        sendPage(res, await renderPricingResults(b, items, { isPublic: true, shareUrl: null, shopName: acct?.display_name ?? "a CardIndex seller" }), `/p/${token}`)
+      );
+    }
+
     // ---- seller workspace (login-gated) ----
-    if (path === "/app" || path.startsWith("/app/") || path === "/api/identify" || path === "/api/title-preview") {
+    if (path === "/app" || path.startsWith("/app/") || path === "/api/identify" || path === "/api/title-preview" || path === "/api/description-preview") {
       return await handleApp(req, res, url, path, method, msg);
     }
 
@@ -620,8 +944,6 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const upgrade = url.searchParams.get("upgrade") === "1";
       return sendPage(res, renderPricing({ account, tier, upgrade }), "/pricing");
     }
-
-    let m: RegExpMatchArray | null;
 
     if ((m = path.match(/^\/g\/([a-z0-9-]+)$/i))) {
       const game = await getGameBySlug(m[1]);
@@ -809,10 +1131,18 @@ async function handleAppAuthed(
     return send(res, 200, JSON.stringify(r), "application/json");
   }
 
-  // CSV export (GET)
-  if (path === "/app/export/ebay.csv" && method === "GET") return await exportCsv(res, url);
+  // Description template live preview (POST t=<template>): fill the draft
+  // against the same sample card the title editor uses, through the real filler.
+  if (path === "/api/description-preview" && method === "POST") {
+    const f = parseForm(await readBody(req));
+    const [fields, seller] = await Promise.all([sampleTitleFields(), getSeller()]);
+    const text = fillDescriptionTemplate(String(f.t ?? "").slice(0, 8000), fields, 1250, sellerTitle(fields, seller));
+    return send(res, 200, JSON.stringify({ text }), "application/json");
+  }
 
+  // CSV exports (GET): /app/export/{ebay|tcgplayer|whatnot|shopify}.csv
   let m: RegExpMatchArray | null;
+  if ((m = path.match(/^\/app\/export\/(ebay|tcgplayer|whatnot|shopify)\.csv$/)) && method === "GET") return await exportCsv(res, url, m[1]);
 
   if (method === "POST") {
     // Image uploads arrive as multipart/form-data (binary); everything else is
@@ -828,6 +1158,13 @@ async function handleAppAuthed(
         return redirect(res, "/app/scan?msg=" + encodeURIComponent("Upload too large — try fewer or smaller images."));
       }
       if (path === "/app/scan/upload") return redirect(res, await handleScanUpload(mp.fields, mp.files));
+      if (path === "/app/pricing-tool/upload") return redirect(res, await handleScanUpload(mp.fields, mp.files, "pricing"));
+      if (path === "/app/orders/import") {
+        const file = mp.files.find((x) => x.field === "csv");
+        if (!file) return redirect(res, "/app/orders?msg=" + encodeURIComponent("Choose a CSV file."));
+        const r = await importPullSheet(file.data.toString("utf8"));
+        return redirect(res, "/app/orders?msg=" + encodeURIComponent(`Imported ${r.orders.length} order${r.orders.length === 1 ? "" : "s"}: ${r.matched} line${r.matched === 1 ? "" : "s"} matched inventory, ${r.unmatched} not matched.`));
+      }
       let mi: RegExpMatchArray | null;
       if ((mi = path.match(/^\/app\/review\/(\d+)\/item\/(\d+)\/image$/))) {
         await handleItemImage(Number(mi[1]), Number(mi[2]), mp.fields, mp.files);
@@ -840,9 +1177,70 @@ async function handleAppAuthed(
     const f = parseForm(body);
 
     if (path === "/app/scan") return redirect(res, await handleScan(f));
+    if (path === "/app/pricing-tool") return redirect(res, await handleScan(f, "pricing"));
+    if (path === "/app/graded") return redirect(res, await handleGraded(f));
+    if (path === "/app/listing-creator") return redirect(res, await handleCreator(f));
+    if (path === "/app/blank-listing") return redirect(res, await handleBlank(f));
+    if (path === "/app/orders") return redirect(res, await handleOrderCreate(f));
+    if (path === "/app/inbox") {
+      if (!(f.title ?? "").trim()) return redirect(res, "/app/inbox?msg=" + encodeURIComponent("Give your note a title."));
+      await submitFeedback(f.kind ?? "feedback", f.title, f.body ?? "");
+      return redirect(res, "/app/inbox?msg=" + encodeURIComponent("Sent — replies will show up here."));
+    }
+    if ((m = path.match(/^\/app\/pricing\/(\d+)\/(share|unshare|convert)$/))) {
+      const id = Number(m[1]);
+      if (m[2] === "share") {
+        await shareBatch(id);
+        return redirect(res, `/app/pricing/${id}?msg=` + encodeURIComponent("Share link created — anyone with it can view the priced list."));
+      }
+      if (m[2] === "unshare") {
+        await unshareBatch(id);
+        return redirect(res, `/app/pricing/${id}?msg=` + encodeURIComponent("Sharing stopped."));
+      }
+      await setBatchKind(id, "scan");
+      return redirect(res, `/app/review/${id}?msg=` + encodeURIComponent("Now an inventory batch — review, then add to inventory."));
+    }
+    if ((m = path.match(/^\/app\/orders\/(\d+)\/(pick|ship|delete)$/))) {
+      const id = Number(m[1]);
+      if (m[2] === "pick") await setItemPicked(id, intOr(f.item, 0), f.picked === "1");
+      else if (m[2] === "ship") {
+        const r = await shipOrder(id);
+        const extra = await afterShip(id);
+        return redirect(res, "/app/orders?msg=" + encodeURIComponent(`Order #${id} shipped — ${r.adjusted} inventory row${r.adjusted === 1 ? "" : "s"} adjusted.${extra}`));
+      } else await deleteOrder(id);
+      return redirect(res, "/app/orders");
+    }
+    if (path === "/app/orders/fetch-ebay") return redirect(res, await fetchEbayOrders());
+    if (path === "/app/ebay/disconnect") {
+      await ebayDisconnect();
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay disconnected."));
+    }
+    if (path === "/app/ebay/sync-policies") {
+      try {
+        const p = await syncPolicies();
+        return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Synced ${p.fulfillment.length} shipping, ${p.payment.length} payment and ${p.return.length} return polic${p.return.length === 1 ? "y" : "ies"} from eBay — pick one of each and save.`) + "#s-ebay");
+      } catch (err) {
+        return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Policy sync failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
+      }
+    }
+    if ((m = path.match(/^\/app\/listings\/(\d+)\/(publish|end)$/))) {
+      const id = Number(m[1]);
+      if (m[2] === "publish") return redirect(res, await publishAndRedirect(id, `#${id}`));
+      try {
+        await endListing(id);
+        return redirect(res, "/app/listings?msg=" + encodeURIComponent(`Listing #${id} ended on eBay.`));
+      } catch (err) {
+        return redirect(res, "/app/listings?msg=" + encodeURIComponent(`Couldn't end listing #${id}: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+    if ((m = path.match(/^\/app\/inventory\/automatic\/(\d+)$/))) {
+      const st = f.status === "published" ? "published" : "ended";
+      await setListingStatus(Number(m[1]), st);
+      return redirect(res, "/app/inventory/automatic?msg=" + encodeURIComponent(st === "published" ? "Marked live." : "Listing ended."));
+    }
     if (path === "/app/settings") {
-      await handleSettings(f);
-      return redirect(res, "/app/settings?msg=" + encodeURIComponent("Settings saved."));
+      const note = await handleSettings(f);
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent("Settings saved." + note));
     }
     if (path === "/app/inventory/bulk") return redirect(res, await handleInventoryBulk(f));
 
@@ -853,7 +1251,7 @@ async function handleAppAuthed(
     if ((m = path.match(/^\/app\/review\/(\d+)\/commit$/))) {
       const r = await commitBatch(Number(m[1]), { mergeDuplicates: f.merge === "1" });
       const extra = r.merged ? ` (${r.merged} merged)` : "";
-      return redirect(res, "/app?msg=" + encodeURIComponent(`Added ${r.created.length} card(s) to inventory${extra}.`));
+      return redirect(res, "/app/inventory?msg=" + encodeURIComponent(`Added ${r.created.length} card(s) to inventory${extra}.`));
     }
     if ((m = path.match(/^\/app\/list\/(\d+)$/))) return redirect(res, await handleCreateListing(Number(m[1]), f));
 
@@ -862,14 +1260,74 @@ async function handleAppAuthed(
 
   // GET pages
   if (path === "/app") {
+    // Old inventory links carried filters on /app itself — send them to the inventory page.
+    if (["status", "q", "sort", "game"].some((k) => url.searchParams.has(k))) return redirect(res, "/app/inventory" + url.search);
+    return sendPage(res, await renderWorkspaceHome(msg), "/app");
+  }
+  if (path === "/app/inventory") {
     const filter = {
       status: url.searchParams.get("status") ?? undefined,
       q: url.searchParams.get("q") ?? undefined,
       sort: url.searchParams.get("sort") ?? undefined,
       game: url.searchParams.get("game") ?? undefined,
     };
-    return sendPage(res, await renderDashboard(filter, msg), "/app");
+    return sendPage(res, await renderInventory(filter, msg), "/app/inventory");
   }
+  if (path === "/app/batches") return sendPage(res, await renderBatches(msg), "/app/batches");
+  if (path === "/app/inventory/automatic") return sendPage(res, await renderAutomaticInventory(msg), path);
+  if (path === "/app/graded") return sendPage(res, await renderGraded(msg), path);
+  if (path === "/app/listing-creator")
+    return sendPage(res, await renderListingCreator({ game: url.searchParams.get("game") ?? undefined, set: url.searchParams.get("set") ?? undefined }, msg), path);
+  if (path === "/app/blank-listing") return sendPage(res, await renderBlankListing(msg), path);
+  if (path === "/app/pricing-tool") return sendPage(res, await renderPricingTool(msg), path);
+  if ((m = path.match(/^\/app\/pricing\/(\d+)$/))) {
+    const b = await getBatch(Number(m[1]));
+    if (!b) return notFound(res);
+    const seller = await getSeller();
+    const shareUrl = b.share_token ? `${url.origin}/p/${b.share_token}` : null;
+    return sendPage(res, await renderPricingResults(b, await getItems(b.id), { isPublic: false, shareUrl, shopName: seller.display_name, msg }), path);
+  }
+  if (path === "/app/card-search") {
+    const sp: SearchParams = {
+      q: url.searchParams.get("q") ?? undefined,
+      game: url.searchParams.get("game") ?? undefined,
+      set: url.searchParams.get("set") ?? undefined,
+      rarity: url.searchParams.get("rarity") ?? undefined,
+      sort: url.searchParams.get("sort") ?? undefined,
+      page: num(url.searchParams.get("page")),
+    };
+    return sendPage(res, renderCardSearch(sp, await search(sp), msg), path);
+  }
+  if (path === "/app/orders") {
+    const f = { platform: url.searchParams.get("platform") ?? "all", status: url.searchParams.get("status") ?? "pending" };
+    const conn = await getConnection();
+    return sendPage(res, renderOrders(await listOrders(f), f, { connected: !!conn, lastSync: conn?.last_order_sync ?? null }, msg), path);
+  }
+  // eBay OAuth: start on eBay's consent page, come back with a code.
+  if (path === "/app/ebay/connect") {
+    if (!ebaySellConfigured()) return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay isn't configured on this server yet (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / EBAY_RU_NAME).") + "#s-ebay");
+    return redirect(res, await beginConnect());
+  }
+  if (path === "/app/ebay/callback") {
+    const code = url.searchParams.get("code") ?? "";
+    const state = url.searchParams.get("state") ?? "";
+    if (!code || !state) return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay sign-in was cancelled or returned no code.") + "#s-ebay");
+    try {
+      const c = await completeConnect(code, state);
+      let extra = "";
+      try {
+        const p = await syncPolicies();
+        extra = ` Synced ${p.fulfillment.length + p.payment.length + p.return.length} business policies — pick one of each and add your postal code.`;
+      } catch {
+        extra = " Now sync your business policies and add a postal code.";
+      }
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Connected eBay account ${c.ebay_user ?? ""}.${extra}`) + "#s-ebay");
+    } catch (err) {
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connection failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
+    }
+  }
+  if (path === "/app/orders/picklist") return sendPage(res, renderPicklist(await picklist()), path);
+  if (path === "/app/inbox") return sendPage(res, renderInbox(await listFeedback(), msg), path);
   if (path === "/app/scan") return sendPage(res, await renderScan(msg, url.searchParams.get("add") ?? undefined), "/app/scan");
   if (path === "/app/listings") return sendPage(res, await renderListings(msg), "/app/listings");
   if (path === "/app/settings") return sendPage(res, await renderSettings(msg), "/app/settings");

@@ -15,7 +15,7 @@
 // (review queue, pricing, listing) is unchanged. Selecting a provider is
 // env-only; see .env.example (VISION_*).
 
-import { identify, AUTO_THRESHOLD, type IdentifyResult } from "./identify.ts";
+import { identify, AUTO_THRESHOLD, type IdentifyResult, type IdentifyOptions } from "./identify.ts";
 import { hintFromFilename } from "../upload.ts";
 import { query } from "../pg.ts";
 import { hashImage, hashDistance, fromHex, type ImageHashes } from "../imagehash.ts";
@@ -299,7 +299,8 @@ export type IdentifySource = "vision" | "filename" | "none";
  * the review queue). `hintText` is the human-readable identity to show in review.
  */
 export async function visionIdentify(
-  image: VisionImage
+  image: VisionImage,
+  opts: IdentifyOptions = {}
 ): Promise<{ result: IdentifyResult; source: IdentifySource; hintText: string | null; vision: VisionResult | null }> {
   let vision: VisionResult | null = null;
   try {
@@ -310,7 +311,7 @@ export async function visionIdentify(
 
   const visionHint = vision ? (vision.hintText || (vision.labels ? labelsToHint(vision.labels) : "")) : "";
   if (visionHint && visionHint.trim()) {
-    let result = await identify(visionHint);
+    let result = await identify(visionHint, opts);
     // Fold the recognizer's confidence in: a strong vision match on a card the
     // catalog also found should clear the auto-match bar.
     if (result.best && vision?.confidence != null) {
@@ -322,6 +323,6 @@ export async function visionIdentify(
 
   // Fallback: derive a hint from the filename (e.g. "charizard-4-102.jpg").
   const fileHint = hintFromFilename(image.filename);
-  const result = await identify(fileHint ?? "");
+  const result = await identify(fileHint ?? "", opts);
   return { result, source: fileHint ? "filename" : "none", hintText: fileHint, vision };
 }

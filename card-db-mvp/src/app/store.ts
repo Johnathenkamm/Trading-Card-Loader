@@ -8,10 +8,12 @@
 // customer can never read or write another's data. Read-then-write (e.g. SKU
 // allocation) is serialized inside a transaction and safe without extra locking.
 
+import { randomBytes } from "node:crypto";
 import { query, one, tx, toPg, latestMarket } from "../pg.ts";
-import { resolvePrice, type PriceRule, type PriceMode } from "./pricing.ts";
+import { resolvePrice, autoPrice, parseAutoPricePref, type PriceRule, type PriceMode } from "./pricing.ts";
 import { formatSku } from "./sku.ts";
 import { currentSellerId } from "./session-context.ts";
+import { gradedMarketCents } from "./graded.ts";
 import type { Variant } from "../db.ts";
 import type { Candidate, IdentifyResult } from "./identify.ts";
 
@@ -42,8 +44,68 @@ export type Seller = {
   item_location: string | null;
   title_template: string | null;
   title_structure: string | null; // JSON: visual Title Structure Editor (see app/title.ts)
+  matching_prefs: string | null; // JSON: Advanced Matching Options defaults (see app/matching.ts)
+  auto_price_pref: string; // rule | previous_first | previous_only (see app/pricing.ts)
+  price_floor_cents: number | null; // "never price below" floor for automatic prices
+  description_templates: string | null; // JSON: {active, items:[{name, body}]} (see app/listing.ts)
+  channel_prefs: string | null; // JSON: Shopify / Whatnot / TCGplayer / Mana Pool export preferences (see app/exporters.ts)
   created_at: string;
 };
+
+/**
+ * Workspace settings and page tables added after the first schema (idempotent,
+ * runs at server start like ensureAuthSchema): matching defaults, automatic
+ * pricing, description templates, channel prefs; graded-card columns; batch
+ * kinds + share tokens; catalog-less ("blank") listings.
+ */
+export async function ensureWorkspaceSchema(): Promise<void> {
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS matching_prefs jsonb`);
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS auto_price_pref text NOT NULL DEFAULT 'rule'`);
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS price_floor_cents integer`);
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS description_templates jsonb`);
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS channel_prefs jsonb`);
+  // graded cards: grade label ("PSA 10"), grader, cert number travel scan → inventory
+  await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS grade text`);
+  await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS grader text`);
+  await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS cert text`);
+  await query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS grade text`);
+  await query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS cert text`);
+  // batch kind (scan | graded | creator | pricing) + public share token for pricing batches
+  await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'scan'`);
+  await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS share_token text`);
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_batches_share ON scan_batches(share_token) WHERE share_token IS NOT NULL`);
+  // blank listings have no inventory row
+  await query(`ALTER TABLE listings ALTER COLUMN inventory_id DROP NOT NULL`);
+  await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS image_url text`);
+}
+
+/** Opaque token for a public share link (pricing tool). */
+export async function shareBatch(batchId: number): Promise<string> {
+  const b = await getBatch(batchId);
+  if (!b) throw new Error("batch not found");
+  if (b.share_token) return b.share_token;
+  const token = randomBytes(9).toString("base64url");
+  await query("UPDATE scan_batches SET share_token=$1 WHERE id=$2 AND seller_id=$3", [token, batchId, currentSellerId()]);
+  return token;
+}
+
+export async function unshareBatch(batchId: number): Promise<void> {
+  await query("UPDATE scan_batches SET share_token=NULL WHERE id=$1 AND seller_id=$2", [batchId, currentSellerId()]);
+}
+
+/** Public lookup by share token (no seller scope — the token is the capability). */
+export function getBatchByToken(token: string): Promise<ScanBatch | undefined> {
+  return one<ScanBatch>("SELECT * FROM scan_batches WHERE share_token=$1", [token]);
+}
+
+/** Items of a shared batch, for the public page (no seller scope). */
+export function getItemsPublic(batchId: number): Promise<ScanItem[]> {
+  return query<ScanItem>("SELECT * FROM scan_items WHERE batch_id=$1 ORDER BY id", [batchId]);
+}
+
+export async function setBatchKind(batchId: number, kind: string): Promise<void> {
+  await query("UPDATE scan_batches SET kind=$1 WHERE id=$2 AND seller_id=$3", [kind, batchId, currentSellerId()]);
+}
 
 export type ScanBatch = {
   id: number;
@@ -55,6 +117,8 @@ export type ScanBatch = {
   processed: number;
   created_at: string;
   finished_at: string | null;
+  kind: string; // scan | graded | creator | pricing
+  share_token: string | null;
 };
 
 export type ScanItem = {
@@ -80,6 +144,9 @@ export type ScanItem = {
   sku: string | null;
   title: string | null;
   dup_of_item_id: number | null;
+  grade: string | null; // "PSA 10" — graded cards
+  grader: string | null;
+  cert: string | null;
   created_at: string;
 };
 
@@ -98,6 +165,8 @@ export type InventoryRow = {
   acquired_cents: number | null;
   status: string;
   source_item_id: number | null;
+  grade: string | null;
+  cert: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -105,7 +174,8 @@ export type InventoryRow = {
 export type Listing = {
   id: number;
   seller_id: number;
-  inventory_id: number;
+  inventory_id: number | null; // null = blank (catalog-less) listing
+  image_url: string | null;
   marketplace: string;
   format: string;
   title: string;
@@ -118,8 +188,11 @@ export type Listing = {
   sku: string | null;
   item_specifics: string;
   scheduled_at: string | null;
-  status: string;
-  external_ref: string | null;
+  status: string; // draft | scheduled | exported | published | ended
+  external_ref: string | null; // eBay listing (item) id once published
+  ebay_offer_id?: string | null; // eBay Inventory API offer id (app/ebay-sell.ts)
+  last_error?: string | null; // last publish/revise failure, for the listings page
+  published_at?: string | null;
   created_at: string;
 };
 
@@ -159,10 +232,10 @@ const SELLER_FIELDS = new Set([
   "default_condition", "default_language",
   "ebay_connected", "ebay_store_category", "ebay_shipping_policy",
   "ebay_return_policy", "ebay_payment_policy", "item_location", "title_template",
-  "title_structure",
+  "title_structure", "matching_prefs", "auto_price_pref", "price_floor_cents", "description_templates", "channel_prefs",
 ]);
 const SELLER_BOOL = new Set(["training_opt_in", "ebay_connected"]);
-const SELLER_JSON = new Set(["title_structure"]);
+const SELLER_JSON = new Set(["title_structure", "matching_prefs", "description_templates", "channel_prefs"]);
 
 export async function updateSeller(patch: Record<string, unknown>): Promise<void> {
   const keys = Object.keys(patch).filter((k) => SELLER_FIELDS.has(k));
@@ -195,6 +268,15 @@ export async function marketCents(variantId: number): Promise<number | null> {
   return (await latestMarket(variantId))?.price_cents ?? null;
 }
 
+/** Market for a printing at an optional grade: the graded value when one is known, else raw market. */
+export async function marketCentsAt(variantId: number, grade: string | null | undefined): Promise<number | null> {
+  if (grade) {
+    const g = await gradedMarketCents(variantId, grade);
+    if (g != null) return g;
+  }
+  return marketCents(variantId);
+}
+
 /**
  * A representative variant id for the Title Structure Editor's live preview —
  * prefer a numbered chase card (a Charizard, if the catalog has one), else any
@@ -224,11 +306,44 @@ export async function previousPrice(variantId: number, condition: string): Promi
 
 // ---- scan batches & items -------------------------------------------------
 
-export async function createBatch(source: string, label: string | null): Promise<number> {
+export async function createBatch(source: string, label: string | null, kind = "scan"): Promise<number> {
   const r = await one<{ id: number }>(
-    `INSERT INTO scan_batches(seller_id, source, label, status, total, processed, created_at)
-     VALUES ($1, $2, $3, 'processing', 0, 0, $4) RETURNING id`,
-    [currentSellerId(), source, label, nowIso()]
+    `INSERT INTO scan_batches(seller_id, source, label, status, total, processed, created_at, kind)
+     VALUES ($1, $2, $3, 'processing', 0, 0, $4, $5) RETURNING id`,
+    [currentSellerId(), source, label, nowIso(), kind]
+  );
+  return r!.id;
+}
+
+/**
+ * Add a catalog card directly (Listing Creator / Card Search "Add"): no
+ * identification step — the seller chose the printing, so it's a confirmed
+ * match at full confidence, priced by the usual rule (at the grade if any).
+ */
+export async function addItemFromCatalog(
+  batchId: number,
+  variantId: number,
+  seller: Seller,
+  opts: { quantity?: number; condition?: string; language?: string; grade?: string | null; grader?: string | null; cert?: string | null; raw?: string } = {}
+): Promise<number | null> {
+  const vf = await getVariantFull(variantId);
+  if (!vf) return null;
+  const condition = opts.condition || seller.default_condition;
+  const language = opts.language || vf.language || seller.default_language;
+  const rule = sellerRule(seller);
+  const prev = await previousPrice(variantId, opts.grade || condition);
+  const ruled = resolvePrice(await marketCentsAt(variantId, opts.grade), rule);
+  const price = autoPrice(ruled, prev, parseAutoPricePref(seller.auto_price_pref), seller.price_floor_cents).price;
+  const r = await one<{ id: number }>(
+    `INSERT INTO scan_items(
+      batch_id, seller_id, raw_input, matched_card_id, matched_variant_id, ai_confidence, alternatives, status,
+      condition, language, quantity, price_mode, price_pct, price_cents, prev_price_cents, grade, grader, cert, created_at)
+     VALUES ($1,$2,$3,$4,$5,1,'[]'::jsonb,'matched',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+    [
+      batchId, currentSellerId(), opts.raw ?? `${vf.card_name}${vf.number ? " " + vf.number : ""} ${vf.set_name}`,
+      vf.card_id, variantId, condition, language, Math.max(1, opts.quantity ?? 1), rule.mode, rule.pct ?? 0, price, prev,
+      opts.grade ?? null, opts.grader ?? null, opts.cert ?? null, nowIso(),
+    ]
   );
   return r!.id;
 }
@@ -244,6 +359,55 @@ export function listBatches(limit = 20): Promise<ScanBatch[]> {
   );
 }
 
+/** Batches of one kind (e.g. 'pricing' for the pricing tool's history). */
+export function listBatchesOfKind(kind: string, limit = 20): Promise<ScanBatch[]> {
+  return query<ScanBatch>(
+    "SELECT * FROM scan_batches WHERE seller_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3",
+    [currentSellerId(), kind, limit]
+  );
+}
+
+export type BatchStats = ScanBatch & {
+  matched: number; // matched + approved
+  review: number; // needs_review
+  failed: number;
+  approved: number; // committed to inventory
+  value_cents: number; // priced value of matched/approved items
+};
+
+/** Batches with per-status counts and value — the "Previous Batches" page. */
+export function listBatchesWithStats(limit = 100): Promise<BatchStats[]> {
+  return query<BatchStats>(
+    `SELECT b.*,
+            COALESCE(SUM(CASE WHEN i.status IN ('matched','approved') THEN 1 ELSE 0 END),0)::int AS matched,
+            COALESCE(SUM(CASE WHEN i.status='needs_review' THEN 1 ELSE 0 END),0)::int AS review,
+            COALESCE(SUM(CASE WHEN i.status='failed' THEN 1 ELSE 0 END),0)::int AS failed,
+            COALESCE(SUM(CASE WHEN i.status='approved' THEN 1 ELSE 0 END),0)::int AS approved,
+            COALESCE(SUM(CASE WHEN i.status IN ('matched','approved') THEN i.quantity * COALESCE(i.price_cents,0) ELSE 0 END),0)::bigint AS value_cents
+     FROM scan_batches b
+     LEFT JOIN scan_items i ON i.batch_id=b.id
+     WHERE b.seller_id=$1
+     GROUP BY b.id
+     ORDER BY b.id DESC
+     LIMIT $2`,
+    [currentSellerId(), limit]
+  );
+}
+
+export type WorkspaceCounts = { batches: number; review_items: number; listings: number; sold: number };
+
+/** Small counters for the dashboard home and its getting-started checklist. */
+export async function workspaceCounts(): Promise<WorkspaceCounts> {
+  const sid = currentSellerId();
+  return (await one<WorkspaceCounts>(
+    `SELECT (SELECT COUNT(*) FROM scan_batches WHERE seller_id=$1)::int AS batches,
+            (SELECT COUNT(*) FROM scan_items WHERE seller_id=$1 AND status='needs_review')::int AS review_items,
+            (SELECT COUNT(*) FROM listings WHERE seller_id=$1)::int AS listings,
+            (SELECT COUNT(*) FROM inventory WHERE seller_id=$1 AND status='sold')::int AS sold`,
+    [sid]
+  ))!;
+}
+
 /**
  * Insert a scan item from an identification result, resolving its initial price
  * from the seller's default rule and recalling any previous price.
@@ -253,26 +417,31 @@ export async function addItemFromIdentify(
   raw: string,
   result: IdentifyResult,
   seller: Seller,
-  opts: { imageUrl?: string | null; backImageUrl?: string | null } = {}
+  opts: { imageUrl?: string | null; backImageUrl?: string | null; grade?: string | null; grader?: string | null; cert?: string | null } = {}
 ): Promise<number> {
   const best = result.best;
   const condition = seller.default_condition;
   const language = best?.language || seller.default_language;
   const rule = sellerRule(seller);
+  // A parsed grade ("psa 10 charizard") counts unless the caller pinned one.
+  const grade = opts.grade ?? result.parsed.grade ?? null;
+  const grader = opts.grader ?? (grade ? grade.split(" ")[0] : null);
 
   let price: number | null = null;
   let prev: number | null = null;
   if (best) {
-    price = resolvePrice(await marketCents(best.variant_id), rule);
-    prev = await previousPrice(best.variant_id, condition);
+    prev = await previousPrice(best.variant_id, grade || condition);
+    // Automatic pricing preference (previous price vs. rule) + floor — see pricing.ts.
+    const ruled = resolvePrice(await marketCentsAt(best.variant_id, grade), rule);
+    price = autoPrice(ruled, prev, parseAutoPricePref(seller.auto_price_pref), seller.price_floor_cents).price;
   }
 
   const r = await one<{ id: number }>(
     `INSERT INTO scan_items(
       batch_id, seller_id, raw_input, image_url, back_image_url, matched_card_id, matched_variant_id,
       ai_confidence, alternatives, status, condition, language, quantity,
-      price_mode, price_pct, price_cents, prev_price_cents, created_at)
-     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+      price_mode, price_pct, price_cents, prev_price_cents, created_at, grade, grader, cert)
+     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21) RETURNING id`,
     [
       batchId,
       raw,
@@ -292,6 +461,9 @@ export async function addItemFromIdentify(
       prev,
       nowIso(),
       currentSellerId(),
+      grade,
+      grader,
+      opts.cert ?? null,
     ]
   );
   return r!.id;
@@ -332,7 +504,7 @@ const ITEM_FIELDS = new Set([
   "matched_card_id", "matched_variant_id", "status", "condition", "language",
   "quantity", "price_mode", "price_pct", "price_cents", "price_overridden",
   "sku", "title", "dup_of_item_id", "ai_confidence", "prev_price_cents", "alternatives",
-  "image_url", "back_image_url",
+  "image_url", "back_image_url", "grade", "grader", "cert",
 ]);
 const ITEM_BOOL = new Set(["price_overridden"]);
 const ITEM_JSON = new Set(["alternatives"]);
@@ -369,10 +541,10 @@ export async function replaceMatch(itemId: number, variantId: number): Promise<v
     status: item.status === "failed" || item.status === "needs_review" ? "matched" : item.status,
     ai_confidence: 1, // a human confirmed it
     alternatives: "[]",
-    prev_price_cents: await previousPrice(variantId, item.condition),
+    prev_price_cents: await previousPrice(variantId, item.grade || item.condition),
   };
   if (!item.price_overridden) {
-    patch.price_cents = resolvePrice(await marketCents(variantId), {
+    patch.price_cents = resolvePrice(await marketCentsAt(variantId, item.grade), {
       mode: item.price_mode,
       pct: item.price_pct,
     });
@@ -384,7 +556,7 @@ export async function replaceMatch(itemId: number, variantId: number): Promise<v
 export async function repriceItem(itemId: number): Promise<void> {
   const item = await getItem(itemId);
   if (!item || !item.matched_variant_id || item.price_overridden) return;
-  const price = resolvePrice(await marketCents(item.matched_variant_id), {
+  const price = resolvePrice(await marketCentsAt(item.matched_variant_id, item.grade), {
     mode: item.price_mode,
     pct: item.price_pct,
     fixed_cents: null,
@@ -401,7 +573,8 @@ export async function detectDuplicates(batchId: number): Promise<void> {
   const seen = new Map<string, number>();
   for (const it of items) {
     if (!it.matched_variant_id) continue;
-    const key = `${it.matched_variant_id}|${it.condition}|${it.language}`;
+    // Slabs are unique objects: a cert never merges with another cert.
+    const key = it.cert ? `cert:${it.cert}` : `${it.matched_variant_id}|${it.condition}|${it.language}|${it.grade ?? ""}`;
     if (seen.has(key)) {
       await updateItem(it.id, { dup_of_item_id: seen.get(key)! });
     } else {
@@ -456,8 +629,8 @@ export async function commitBatch(
       const inv = await c.query(
         `INSERT INTO inventory(
           seller_id, card_id, variant_id, sku, condition, language, quantity,
-          price_mode, price_pct, price_cents, source_item_id, status, created_at, updated_at)
-         VALUES ($13,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'in_stock',$11,$12) RETURNING id`,
+          price_mode, price_pct, price_cents, source_item_id, status, created_at, updated_at, grade, cert)
+         VALUES ($13,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'in_stock',$11,$12,$14,$15) RETURNING id`,
         [
           it.matched_card_id,
           it.matched_variant_id,
@@ -472,17 +645,19 @@ export async function commitBatch(
           nowIso(),
           nowIso(),
           sid,
+          it.grade ?? null,
+          it.cert ?? null,
         ]
       );
       const invId = Number(inv.rows[0].id);
       invByItem.set(it.id, invId);
       result.created.push(invId);
 
-      // remember the price for next time (spec §7)
+      // remember the price for next time (spec §7) — keyed by grade for slabs
       if (it.price_cents != null) {
         await c.query(
           "INSERT INTO inventory_price_history(seller_id, variant_id, condition, price_cents, recorded_at) VALUES ($5,$1,$2,$3,$4)",
-          [it.matched_variant_id, it.condition, it.price_cents, nowIso(), sid]
+          [it.matched_variant_id, it.grade || it.condition, it.price_cents, nowIso(), sid]
         );
       }
       await c.query("UPDATE scan_items SET status='approved', sku=$1 WHERE id=$2 AND seller_id=$3", [
@@ -546,7 +721,7 @@ export function getInventoryItem(id: number): Promise<(InventoryRow & VariantFul
   return one<InventoryRow & VariantFull>(`${INV_SELECT} WHERE inv.id=$1 AND inv.seller_id=$2`, [id, currentSellerId()]);
 }
 
-const INV_FIELDS = new Set(["condition", "language", "quantity", "price_cents", "price_mode", "price_pct", "status", "sku"]);
+const INV_FIELDS = new Set(["condition", "language", "quantity", "price_cents", "price_mode", "price_pct", "status", "sku", "grade", "cert"]);
 export async function updateInventory(id: number, patch: Record<string, unknown>): Promise<void> {
   const keys = Object.keys(patch).filter((k) => INV_FIELDS.has(k));
   if (!keys.length) return;
@@ -557,12 +732,26 @@ export async function updateInventory(id: number, patch: Record<string, unknown>
   );
 }
 
-export async function inventoryStats(): Promise<{ count: number; units: number; value_cents: number; listed: number }> {
-  return (await one<{ count: number; units: number; value_cents: number; listed: number }>(
-    `SELECT COUNT(*) AS count, COALESCE(SUM(quantity),0) AS units,
-            COALESCE(SUM(quantity * COALESCE(price_cents,0)),0) AS value_cents,
-            COALESCE(SUM(CASE WHEN status='listed' THEN 1 ELSE 0 END),0) AS listed
-     FROM inventory WHERE seller_id=$1`,
+export type InventoryStats = { count: number; units: number; value_cents: number; market_cents: number; listed: number };
+
+/**
+ * Inventory totals. `value_cents` = your prices × qty; `market_cents` = latest
+ * catalog market price × qty (CardUploader's "Price $ · Market $" header pair).
+ * Sold copies are excluded from both totals.
+ */
+export async function inventoryStats(): Promise<InventoryStats> {
+  return (await one<InventoryStats>(
+    `SELECT COUNT(*)::int AS count, COALESCE(SUM(inv.quantity),0)::int AS units,
+            COALESCE(SUM(CASE WHEN inv.status<>'sold' THEN inv.quantity * COALESCE(inv.price_cents,0) ELSE 0 END),0)::bigint AS value_cents,
+            COALESCE(SUM(CASE WHEN inv.status<>'sold' THEN inv.quantity * COALESCE(m.price_cents,0) ELSE 0 END),0)::bigint AS market_cents,
+            COALESCE(SUM(CASE WHEN inv.status='listed' THEN 1 ELSE 0 END),0)::int AS listed
+     FROM inventory inv
+     LEFT JOIN LATERAL (
+       SELECT price_cents FROM price_points
+       WHERE variant_id=inv.variant_id AND kind='market' AND grade IS NULL
+       ORDER BY observed_on DESC LIMIT 1
+     ) m ON true
+     WHERE inv.seller_id=$1`,
     [currentSellerId()]
   ))!;
 }
@@ -570,13 +759,13 @@ export async function inventoryStats(): Promise<{ count: number; units: number; 
 // ---- listings -------------------------------------------------------------
 
 export async function createListing(
-  l: Omit<Listing, "id" | "seller_id" | "created_at" | "status" | "external_ref"> & { status?: string }
+  l: Omit<Listing, "id" | "seller_id" | "created_at" | "status" | "external_ref" | "image_url"> & { status?: string; image_url?: string | null }
 ): Promise<number> {
   const r = await one<{ id: number }>(
     `INSERT INTO listings(
       seller_id, inventory_id, marketplace, format, title, description, category_id,
-      price_cents, start_cents, duration_days, quantity, sku, item_specifics, scheduled_at, status, created_at)
-     VALUES ($16,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15) RETURNING id`,
+      price_cents, start_cents, duration_days, quantity, sku, item_specifics, scheduled_at, status, created_at, image_url)
+     VALUES ($16,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$17) RETURNING id`,
     [
       l.inventory_id,
       l.marketplace,
@@ -594,15 +783,51 @@ export async function createListing(
       l.status ?? "draft",
       nowIso(),
       currentSellerId(),
+      l.image_url ?? null,
     ]
   );
   const id = r!.id;
-  await query("UPDATE inventory SET status='listed', updated_at=$1 WHERE id=$2 AND seller_id=$3", [
-    nowIso(),
-    l.inventory_id,
-    currentSellerId(),
-  ]);
+  if (l.inventory_id != null) {
+    await query("UPDATE inventory SET status='listed', updated_at=$1 WHERE id=$2 AND seller_id=$3", [
+      nowIso(),
+      l.inventory_id,
+      currentSellerId(),
+    ]);
+  }
   return id;
+}
+
+/** Listings by id (seller-scoped), for exports of blank listings. */
+export function getListings(ids: number[]): Promise<Listing[]> {
+  if (!ids.length) return Promise.resolve([]);
+  return query<Listing>("SELECT * FROM listings WHERE seller_id=$1 AND id = ANY($2::bigint[]) ORDER BY id", [currentSellerId(), ids]);
+}
+
+/** Blank (catalog-less) listing drafts. */
+export function listBlankListings(): Promise<Listing[]> {
+  return query<Listing>("SELECT * FROM listings WHERE seller_id=$1 AND inventory_id IS NULL ORDER BY id DESC LIMIT 200", [currentSellerId()]);
+}
+
+/** Listings that are (or are scheduled to be) live — the Automatic Inventory view. */
+export function listLiveListings(): Promise<Array<Listing & { card_name: string | null; image_small: string | null; in_stock: number | null }>> {
+  return query(
+    `SELECT l.*, c.name AS card_name, COALESCE(l.image_url, c.image_small) AS image_small, inv.quantity AS in_stock
+     FROM listings l
+     LEFT JOIN inventory inv ON inv.id=l.inventory_id
+     LEFT JOIN cards c ON c.id=inv.card_id
+     WHERE l.seller_id=$1 AND l.status IN ('scheduled','exported','published')
+     ORDER BY l.id DESC LIMIT 300`,
+    [currentSellerId()]
+  );
+}
+
+export async function setListingStatus(id: number, status: string): Promise<void> {
+  await query("UPDATE listings SET status=$1 WHERE id=$2 AND seller_id=$3", [status, id, currentSellerId()]);
+}
+
+export async function markListingsExported(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  await query("UPDATE listings SET status='exported' WHERE seller_id=$1 AND status IN ('draft','scheduled') AND id = ANY($2::bigint[])", [currentSellerId(), ids]);
 }
 
 export function getListing(id: number): Promise<Listing | undefined> {
@@ -616,17 +841,18 @@ export function listingsFor(inventoryId: number): Promise<Listing[]> {
   );
 }
 
-export function listListings(limit = 200): Promise<Array<Listing & VariantFull & { card_name: string }>> {
-  return query<Listing & VariantFull & { card_name: string }>(
-    `SELECT l.*, c.name AS card_name, c.number, c.image_small, c.image_large,
+export function listListings(limit = 200): Promise<Array<Listing & Partial<VariantFull> & { card_name: string | null }>> {
+  // LEFT JOINs: blank listings have no inventory/catalog row (image comes from l.image_url).
+  return query<Listing & Partial<VariantFull> & { card_name: string | null }>(
+    `SELECT l.*, c.name AS card_name, c.number, COALESCE(l.image_url, c.image_small) AS image_small, c.image_large,
             s.name AS set_name, g.name AS game_name, g.slug AS game_slug,
             v.finish_label
      FROM listings l
-     JOIN inventory inv ON inv.id=l.inventory_id
-     JOIN card_variants v ON v.id=inv.variant_id
-     JOIN cards c ON c.id=inv.card_id
-     JOIN sets s ON s.id=c.set_id
-     JOIN games g ON g.id=s.game_id
+     LEFT JOIN inventory inv ON inv.id=l.inventory_id
+     LEFT JOIN card_variants v ON v.id=inv.variant_id
+     LEFT JOIN cards c ON c.id=inv.card_id
+     LEFT JOIN sets s ON s.id=c.set_id
+     LEFT JOIN games g ON g.id=s.game_id
      WHERE l.seller_id=$1 ORDER BY l.id DESC LIMIT $2`,
     [currentSellerId(), limit]
   );

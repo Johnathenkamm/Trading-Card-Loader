@@ -125,7 +125,59 @@ top of `src/seed.ts` to change them.
 
 ### Seller workspace (`/app`)
 
+- **Dashboard** (`/app`) — plan card, stat tiles (inventory value vs. **market
+  value**, cards in stock, cards awaiting review), quick actions, a
+  getting-started checklist that ticks itself off, recent batches, and a
+  how-it-works accordion.
+- **Batches** (`/app/batches`) — every scan/paste with matched · review · failed
+  counts, the value that reached inventory, and a one-click way back into review.
+- **Graded cards** (`/app/graded`, `src/app/graded.ts`) — paste cert numbers or
+  ranges per grader (PSA/CGC/BGS/SGC/TAG/ACE); each cert becomes an item carrying
+  the cert, priced at the grade's catalog value when one exists, with a link-out
+  to the grader's cert page. Cert lookup is provider-based (`CERT_PROVIDER=none|mock`;
+  a PSA-API provider drops in). Grade/grader are editable in review and travel
+  to inventory, titles, item specifics and every export.
+- **Listing creator** (`/app/listing-creator`) — build listings from catalog
+  stock images: browse a game → set and tick cards with quantities, or search
+  and add; picks become confirmed review items. **Card search**
+  (`/app/card-search`) is the same catalog with filters and prices plus a
+  one-click "+ Add".
+- **Blank listing creator** (`/app/blank-listing`) — catalog-less listings
+  (sealed, lots, supplies) with item specifics; `listings.inventory_id` is
+  nullable for these.
+- **Pricing tool** (`/app/pricing-tool`) — free: upload or paste, get a priced
+  list (no inventory), create a public **share link** (`/p/<token>`), or turn
+  the batch into an inventory batch.
+- **Orders** (`/app/orders`, `src/app/orders.ts`) — pending/picked/shipped per
+  channel, manual orders, **TCGplayer pull-sheet CSV import** (matches by SKU,
+  then name + number), per-item pick toggles, a printable **picklist** grouped
+  by SKU, and "mark shipped" that decrements inventory (sold at zero). eBay /
+  Mana Pool order fetching are labeled seams.
+- **Automatic inventory** (`/app/inventory/automatic`) — exported / live
+  listings per channel with mark-live / end controls (the engine-sync seam).
+- **Inbox** (`/app/inbox`, `src/app/feedback.ts`) — feedback, bug and
+  missing-card notes with replies.
+- **eBay Sell APIs** (`src/app/ebay-sell.ts`) — Settings → eBay → **Connect eBay
+  account** (OAuth authorization-code; tokens stored per seller and refreshed),
+  **Sync policies** (Account API; shipping / payment / return chosen by ID with
+  names mirrored into the CSV fields), a ship-from **location** (Inventory API,
+  created on save), **Publish / Revise / End** on the listings page and "Save &
+  publish" in the listing builder (Inventory item → offer → publish, with a
+  pre-flight that reports every blocker at once), **Fetch eBay orders**
+  (Fulfillment API, deduped), mark-shipped pushed back to eBay, and quantity
+  sync to live listings when a non-eBay order ships. `EBAY_MOCK=1` runs the
+  whole flow on canned responses; real use needs a keyset + RuName (see
+  `.env.example`).
+- **Multi-channel exports** (`src/app/exporters.ts`) — eBay File Exchange,
+  TCGplayer inventory (ungraded only, optional My Store columns), Whatnot bulk
+  listing and Shopify product CSVs from inventory rows and blank listings, with
+  per-channel preferences from Settings → Shopify / Whatnot / TCGplayer / Mana Pool.
 - **Scan / add** (`/app/scan`) — two entry paths, both feeding the review queue:
+  - **Advanced matching options** on both forms: prioritize or exclude sets and
+    keywords for the batch (`src/app/matching.ts`). Exclusions filter candidates
+    before scoring; priorities add a bounded score boost so a card from a set
+    you said you're scanning wins over the same name elsewhere. Savable as your
+    defaults.
   - **Upload photos** (multipart → object storage): drag/drop or camera-capture
     card images, one item per photo, stored via the storage layer and shown in
     the queue. Identification runs through a **pluggable vision provider**
@@ -145,16 +197,22 @@ top of `src/seed.ts` to change them.
   inventory" commits matched cards, optionally merging duplicate quantities.
 - **Pricing** — rules per item or as a default: Market, Market ± %, or Fixed;
   manual override always wins; previous list price for the same printing is
-  recalled ("you listed at …").
-- **Inventory** (`/app`) — confirmed stock with auto-assigned SKUs
-  (`PREFIX-000001`), value/units stats, status/search/sort filters, and a bulk
-  toolbar (set condition/pricing, create listings, export CSV).
+  recalled ("you listed at …"). **Automatic pricing preference** (Settings →
+  Pricing): previous price first / rule only / previous only, plus a
+  "never price below $X" floor applied to automatic prices (`src/app/pricing.ts`).
+- **Inventory** (`/app/inventory`) — confirmed stock with auto-assigned SKUs
+  (`PREFIX-000001`), value and market-value stats, status/search/sort filters,
+  and a bulk toolbar (set condition/pricing, create listings, export CSV).
 - **eBay listings** — a listing builder (`/app/list/:id`) that generates an
   ≤ 80-char optimized title, item specifics, and description, plus fixed-price /
   auction / scheduling fields; a listings view (`/app/listings`); and an **eBay
   File Exchange CSV** export (`/app/export/ebay.csv`).
-- **Settings** (`/app/settings`) — SKU scheme, default pricing/condition/language,
-  title template, and saved eBay listing preferences (policies, location).
+- **Settings** (`/app/settings`) — sectioned like CardUploader's Configuration:
+  shop & SKU scheme, default pricing + automatic-pricing preference + floor,
+  default matching options, the visual title structure editor, **description
+  templates** (up to three, one active, `{variables}` inserted at the cursor,
+  live preview; the active template feeds the listing builder, bulk listing
+  creation and the CSV export), and saved eBay listing preferences.
 - **Accounts & login** (`/signup`, `/login`, `/logout`) — email + password
   sign-in (scrypt-hashed, HttpOnly `SameSite=Lax` session cookies stored in
   Postgres). The whole workspace is gated; the public catalog stays open for SEO.

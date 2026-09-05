@@ -82,8 +82,9 @@ function footer(): string {
     </div>
     <div>
       <h4>Seller tools</h4>
+      <a href="/app">Dashboard</a>
       <a href="/app/scan">Scan &amp; identify</a>
-      <a href="/app">Inventory &amp; pricing</a>
+      <a href="/app/inventory">Inventory &amp; pricing</a>
       <a href="/app/listings">eBay listings</a>
       <a href="/pricing">Pricing &amp; plans</a>
     </div>
