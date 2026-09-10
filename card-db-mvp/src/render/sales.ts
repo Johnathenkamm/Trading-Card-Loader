@@ -4,7 +4,7 @@
 
 import { esc, money, fmtDate } from "../util.ts";
 import { breadcrumb, sourceChip, demoNote } from "./components.ts";
-import type { SalesParams, SalesResult, SalesRow } from "../sales.ts";
+import { soldListingLink, type SalesParams, type SalesResult, type SalesRow } from "../sales.ts";
 import type { SoldSale } from "../db.ts";
 
 function qs(params: Record<string, string | undefined>): string {
@@ -29,12 +29,20 @@ function saleCell(s: SoldSale): string {
   return "";
 }
 
+/**
+ * `base` is the page the filter pills and search form post back to: the public
+ * `/sales`, or `/app/sales-lookup` when the same lookup is rendered inside the
+ * seller workspace (`embedded` then drops the public page chrome — wrap,
+ * breadcrumb, h1 — because the workspace header already carries those).
+ */
 export function renderSales(
   p: SalesParams,
-  r: SalesResult
+  r: SalesResult,
+  opts: { base?: string; embedded?: boolean } = {}
 ): { html: string; title: string; description: string; jsonLd: unknown[] } {
+  const base = opts.base ?? "/sales";
   const filt = (over: Partial<SalesParams>) =>
-    `/sales?${qs({ q: p.q, market: p.market, type: p.type, grade: p.grade, sort: p.sort, ...over })}`;
+    `${base}?${qs({ q: p.q, market: p.market, type: p.type, grade: p.grade, sort: p.sort, ...over })}`;
   const pill = (label: string, href: string, active: boolean) =>
     `<a class="${active ? "active" : ""}" href="${href}">${esc(label)}</a>`;
 
@@ -81,7 +89,24 @@ export function renderSales(
       (s) => `<tr>
       <td class="date">${esc(fmtDate(s.sold_on))}</td>
       <td>${sourceChip(s.marketplace)}</td>
-      <td class="title-cell">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener nofollow">${esc(s.title)}</a>` : esc(s.title)}${s.card_id && s.card_slug ? ` <a class="chip" href="/c/${esc(s.card_slug)}-${s.card_id}" title="Open this card in the catalog">card ↗</a>` : ""}</td>
+      <td class="title-cell">${(() => {
+        // Title opens OUR card page whenever the sale is canonicalized (always
+        // reachable, never a dead marketplace page); the original listing, when
+        // its URL passes soldListingLink, is a separate chip. Unmatched rows
+        // with a good listing URL link straight to the listing.
+        const cardHref = s.card_id && s.card_slug ? `/c/${esc(s.card_slug)}-${s.card_id}` : null;
+        const listing = soldListingLink(s);
+        const title = cardHref
+          ? `<a href="${cardHref}" title="Open this card — every archived sale, market price and grades">${esc(s.title)}</a>`
+          : listing
+            ? `<a href="${esc(listing)}" target="_blank" rel="noopener nofollow">${esc(s.title)}</a>`
+            : esc(s.title);
+        const chips = [
+          cardHref && listing ? `<a class="chip" href="${esc(listing)}" target="_blank" rel="noopener nofollow" title="Original listing on ${esc(s.marketplace)}">listing ↗</a>` : "",
+          s.is_demo ? `<span class="chip" title="Sample-feed row — the original listing page doesn't exist">sample</span>` : "",
+        ].filter(Boolean);
+        return title + (chips.length ? " " + chips.join(" ") : "");
+      })()}</td>
       <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
       <td>${saleCell(s)}</td>
       <td class="price">${money(s.price_cents, s.currency)}</td>
@@ -102,17 +127,11 @@ export function renderSales(
       )
     : "";
 
-  const html = `<div class="wrap">
-    ${breadcrumb([{ label: "Sales Lookup" }])}
-    <div class="sales-head">
-      <h1>Sold-price lookup</h1>
-      <p class="sub">Real sales from the archive — eBay, Goldin and Fanatics, with accepted Best Offer prices revealed and every recognized sale tied to its exact card.</p>
-      <form class="sales-search" action="/sales" method="get" role="search">
+  const searchForm = `<form class="sales-search" action="${esc(base)}" method="get" role="search">
         <input type="search" name="q" value="${esc(p.q ?? "")}" placeholder="e.g. Charizard PSA 10" aria-label="Search sold listings" autofocus>
         <button class="btn primary" type="submit">Search</button>
-      </form>
-    </div>
-    ${p.q || r.total ? stats : ""}
+      </form>`;
+  const body = `${p.q || r.total ? stats : ""}
     ${cardBanner}
     ${gradeNote}
     <div class="sales-filters">
@@ -121,7 +140,18 @@ export function renderSales(
       <div class="fgroup"><span class="fl">Sort</span>${sortBar}</div>
     </div>
     ${sampleNote}
-    ${table}
+    ${table}`;
+
+  const html = opts.embedded
+    ? `<div class="sales-head sales-head-embedded">${searchForm}</div>${body}`
+    : `<div class="wrap">
+    ${breadcrumb([{ label: "Sales Lookup" }])}
+    <div class="sales-head">
+      <h1>Sold-price lookup</h1>
+      <p class="sub">Real sales from the archive — eBay, Goldin and Fanatics, with accepted Best Offer prices revealed and every recognized sale tied to its exact card.</p>
+      ${searchForm}
+    </div>
+    ${body}
   </div>`;
 
   return {

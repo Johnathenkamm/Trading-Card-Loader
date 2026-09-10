@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   last_login_at     TEXT,
   display_name      TEXT NOT NULL DEFAULT 'My card shop',
   plan_tier         TEXT NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the seller workspace (app/billing.ts); Stripe checkout is the next seam.
+  last_seen_at      TEXT,                            -- bumped on every workspace request (activity tracking; see activity_log / admin_sessions in db/schema.postgres.sql)
   training_opt_in   INTEGER NOT NULL DEFAULT 0,      -- opt-in, off by default (customers keep their data)
 
   -- SKU scheme (spec §14): PREFIX-000001, auto-incrementing, custom prefix.

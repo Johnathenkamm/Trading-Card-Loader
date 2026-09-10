@@ -1,0 +1,50 @@
+41|Seel|Base|41/102|https://images.pokemontcg.io/base1/41.png
+368|Mirrorshell Crab|Kamigawa: Neon Dynasty|63|https://cards.scryfall.io/small/front/0/3/0394c8df-2e8a-4477-93b7-569934d7b936.jpg?1783923900
+357|Essence Capture|Kamigawa: Neon Dynasty|52|https://cards.scryfall.io/small/front/f/3/f39bf1fa-b530-4353-a683-843466227109.jpg?1783923906
+367|Mindlink Mech|Kamigawa: Neon Dynasty|62|https://cards.scryfall.io/small/front/2/8/28273a5b-57b3-4b7a-b017-5886c171c9c9.jpg?1783923900
+459|March of Reckless Joy|Kamigawa: Neon Dynasty|154|https://cards.scryfall.io/small/front/7/8/780e1bf1-e392-40f2-9e84-764dedc5fcd4.jpg?1783923863
+600|Island|Kamigawa: Neon Dynasty|295|https://cards.scryfall.io/small/front/f/0/f0578f26-1396-4e1d-9986-8fc6c55aeb66.jpg?1783923807
+283|Beauty|Vivid Voltage|181/185|https://images.pokemontcg.io/swsh4/181.png
+449|Go-Shintai of Ancient Wars|Kamigawa: Neon Dynasty|144|https://cards.scryfall.io/small/front/5/b/5b915e8d-b972-4ae1-a1c3-74d6623963c8.jpg?1783923866
+50|Gastly|Base|50/102|https://images.pokemontcg.io/base1/50.png
+63|Squirtle|Base|63/102|https://images.pokemontcg.io/base1/63.png
+93|Gust of Wind|Base|93/102|https://images.pokemontcg.io/base1/93.png
+148|Electrode|Vivid Voltage|46/185|https://images.pokemontcg.io/swsh4/46.png
+429|Tribute to Horobi // Echo of Death's Wail|Kamigawa: Neon Dynasty|124|https://cards.scryfall.io/small/front/5/4/54613f38-ca91-4764-b1fe-60cd83707fb4.jpg?1783923882
+21|Electrode|Base|21/102|https://images.pokemontcg.io/base1/21.png
+237|Whismur|Vivid Voltage|135/185|https://images.pokemontcg.io/swsh4/135.png
+90|Super Potion|Base|90/102|https://images.pokemontcg.io/base1/90.png
+170|Banette|Vivid Voltage|68/185|https://images.pokemontcg.io/swsh4/68.png
+117|Shaymin|Vivid Voltage|15/185|https://images.pokemontcg.io/swsh4/15.png
+84|PlusPower|Base|84/102|https://images.pokemontcg.io/base1/84.png
+182|Milcery|Vivid Voltage|80/185|https://images.pokemontcg.io/swsh4/80.png
+123|Orbeetle VMAX|Vivid Voltage|21/185|https://images.pokemontcg.io/swsh4/21.png
+595|Mountain|Kamigawa: Neon Dynasty|290|https://cards.scryfall.io/small/front/4/b/4b8489c0-b01c-466e-b33b-239406d7ea69.jpg?1783923809
+364|Jin-Gitaxias, Progress Tyrant|Kamigawa: Neon Dynasty|59|https://cards.scryfall.io/small/front/c/5/c57b4876-5387-4f73-b8e2-8e7bdca8b0bc.jpg?1783923901
+226|Ferrothorn|Vivid Voltage|124/185|https://images.pokemontcg.io/swsh4/124.png
+285|Nessa|Vivid Voltage|183/185|https://images.pokemontcg.io/swsh4/183.png
+134|Wailord|Vivid Voltage|32/185|https://images.pokemontcg.io/swsh4/32.png
+376|Network Disruptor|Kamigawa: Neon Dynasty|71|https://cards.scryfall.io/small/front/5/a/5a37719a-2a87-4870-8f25-12544ca2f2cf.jpg?1783923897
+87|Pokédex|Base|87/102|https://images.pokemontcg.io/base1/87.png
+437|Akki War Paint|Kamigawa: Neon Dynasty|132|https://cards.scryfall.io/small/front/f/1/f110698e-a343-4eff-ba23-ed7ac5a3f87b.jpg?1783923871
+331|Lion Sash|Kamigawa: Neon Dynasty|26|https://cards.scryfall.io/small/front/3/e/3e1766e9-2fa7-4446-a255-7beea1467ece.jpg?1783923917
+354|Covert Technician|Kamigawa: Neon Dynasty|49|https://cards.scryfall.io/small/front/d/b/dbae9991-43a2-4afb-a882-fff6b0d89d12.jpg?1783923906
+25|Dewgong|Base|25/102|https://images.pokemontcg.io/base1/25.png
+332|Lucky Offering|Kamigawa: Neon Dynasty|27|https://cards.scryfall.io/small/front/2/4/24bbdeb0-9165-4874-a853-d19c20c250ef.jpg?1783923916
+2|Blastoise|Base|2/102|https://images.pokemontcg.io/base1/2.png
+578|Rugged Highlands|Kamigawa: Neon Dynasty|273|https://cards.scryfall.io/small/front/5/8/58d511be-60e0-4755-abec-18eebb530605.jpg?1783923815
+412|Lethal Exploit|Kamigawa: Neon Dynasty|107|https://cards.scryfall.io/small/front/8/d/8d8edf8f-c2bd-4fd1-8abf-d3162e068b17.jpg?1783923883
+266|Stone Fighting Energy|Vivid Voltage|164/185|https://images.pokemontcg.io/swsh4/164.png
+178|Whimsicott|Vivid Voltage|76/185|https://images.pokemontcg.io/swsh4/76.png
+552|High-Speed Hoverbike|Kamigawa: Neon Dynasty|247|https://cards.scryfall.io/small/front/7/c/7c619116-1eae-439d-9b1f-639643458a23.jpg?1783923825
+507|Master's Rebuke|Kamigawa: Neon Dynasty|202|https://cards.scryfall.io/small/front/7/d/7d42ca7c-5b36-45a9-b235-4f90e66f4377.jpg?1783923843
+225|Ferroseed|Vivid Voltage|123/185|https://images.pokemontcg.io/swsh4/123.png
+46|Charmander|Base|46/102|https://images.pokemontcg.io/base1/46.png
+360|Go-Shintai of Lost Wisdom|Kamigawa: Neon Dynasty|55|https://cards.scryfall.io/small/front/7/e/7ec1192c-25b8-4975-ae6c-86be28ac1840.jpg?1783923903
+545|Bronze Cudgels|Kamigawa: Neon Dynasty|240|https://cards.scryfall.io/small/front/4/5/45fa226c-cc31-4c22-a167-40985706557b.jpg?1783923827
+399|Dokuchi Shadow-Walker|Kamigawa: Neon Dynasty|94|https://cards.scryfall.io/small/front/8/1/81496a81-c986-4749-a28c-45341764e28f.jpg?1783923888
+468|Simian Sling|Kamigawa: Neon Dynasty|163|https://cards.scryfall.io/small/front/3/7/37a00f95-d563-4d51-a5f2-af139261921a.jpg?1783923860
+525|Greasefang, Okiba Boss|Kamigawa: Neon Dynasty|220|https://cards.scryfall.io/small/front/5/6/56a0d43b-4d38-40a7-be6c-8324ab3bf773.jpg?1783923836
+508|Orochi Merge-Keeper|Kamigawa: Neon Dynasty|203|https://cards.scryfall.io/small/front/7/3/736c3278-6ee2-47f9-aab0-1457e90137b1.jpg?1783923843
+57|Pidgey|Base|57/102|https://images.pokemontcg.io/base1/57.png
+164|Pincurchin|Vivid Voltage|62/185|https://images.pokemontcg.io/swsh4/62.png

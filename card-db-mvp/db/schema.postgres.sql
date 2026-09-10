@@ -125,7 +125,13 @@ CREATE TABLE IF NOT EXISTS sold_sales (
 
   is_demo          boolean NOT NULL DEFAULT false,
   raw              jsonb,                              -- untouched feed row
-  created_at       timestamptz NOT NULL DEFAULT now()
+  created_at       timestamptz NOT NULL DEFAULT now(),
+
+  -- link health (scripts/check-sold-links.ts): last HTTP status for `url`.
+  -- Renderers hide the link on 404/410 so Sales Lookup never sends a buyer to
+  -- a dead listing page; null = unchecked, other codes = inconclusive.
+  url_status       integer,
+  url_checked_at   timestamptz
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sold_ext     ON sold_sales(source, external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sold_variant       ON sold_sales(variant_id, grade, sold_on DESC);
@@ -186,6 +192,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   last_login_at     timestamptz,
   display_name      text    NOT NULL DEFAULT 'My card shop',
   plan_tier         text    NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the seller workspace (app/billing.ts); Stripe checkout is the next seam.
+  last_seen_at      timestamptz,                       -- bumped on every workspace request (activity tracking, owner console)
   training_opt_in   boolean NOT NULL DEFAULT false,
 
   -- SKU scheme: PREFIX-000001, auto-incrementing, custom prefix.
@@ -232,6 +239,32 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at  timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_seller ON sessions(seller_id);
+
+-- Owner-console login sessions (app/admin.ts). The owner signs in at
+-- /admin/login with ADMIN_EMAIL / ADMIN_PASSWORD from the environment — a
+-- separate login from customer accounts, with its own cookie.
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token       text        PRIMARY KEY,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  ip          text
+);
+
+-- User-activity log for the owner console (app/admin.ts): one row per login /
+-- sign-up / page view / action / plan change. by_owner is true when the event
+-- happened inside a customer's workspace in owner mode.
+CREATE TABLE IF NOT EXISTS activity_log (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  seller_id   bigint      NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+  by_owner    boolean     NOT NULL DEFAULT false,
+  kind        text        NOT NULL,                    -- login | signup | logout | page | action | plan_change | owner
+  method      text        NOT NULL DEFAULT 'GET',
+  path        text        NOT NULL DEFAULT '',
+  detail      text,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_activity_seller ON activity_log(seller_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_recent ON activity_log(id DESC);
 
 -- One row per scan/upload batch; drives the review-queue progress UI.
 CREATE TABLE IF NOT EXISTS scan_batches (

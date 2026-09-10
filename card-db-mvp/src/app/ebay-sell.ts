@@ -79,6 +79,82 @@ export async function ensureEbaySchema(): Promise<void> {
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS ebay_offer_id text`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS last_error text`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS published_at timestamptz`);
+  await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS publish_attempts integer NOT NULL DEFAULT 0`);
+}
+
+// ---- scheduled / staggered publishing -------------------------------------
+// CardUploader's "schedule start time" + "Space Out" stagger: drafts carry a
+// scheduled_at; a small in-process runner publishes each one when its time
+// comes (for sellers with a live connection). Three failed attempts park the
+// listing back as a draft with the error on its row, so nothing loops forever.
+
+const MAX_ATTEMPTS = 3;
+
+export type DueListing = { id: number; seller_id: number; title: string; scheduled_at: string };
+
+/** Scheduled listings whose time has come, for sellers connected to eBay. */
+export function dueScheduled(sellerId?: number): Promise<DueListing[]> {
+  return query<DueListing>(
+    `SELECT l.id, l.seller_id, l.title, l.scheduled_at FROM listings l
+     JOIN ebay_connections c ON c.seller_id=l.seller_id
+     WHERE l.status='scheduled' AND l.marketplace='ebay' AND l.scheduled_at IS NOT NULL AND l.scheduled_at <= now()
+       AND l.publish_attempts < $1 ${sellerId ? "AND l.seller_id=$2" : ""}
+     ORDER BY l.scheduled_at, l.id LIMIT 50`,
+    sellerId ? [MAX_ATTEMPTS, sellerId] : [MAX_ATTEMPTS]
+  );
+}
+
+/**
+ * Publish every due listing (each inside its seller's scope). Returns a
+ * summary; failures bump publish_attempts and keep the error on the row.
+ */
+export async function runScheduledPublishes(
+  runAs: <T>(sellerId: number, fn: () => Promise<T>) => Promise<T>,
+  sellerId?: number
+): Promise<{ published: number; failed: number; parked: number }> {
+  const out = { published: 0, failed: 0, parked: 0 };
+  for (const d of await dueScheduled(sellerId)) {
+    try {
+      await runAs(d.seller_id, () => publishListing(d.id));
+      out.published++;
+    } catch (err) {
+      out.failed++;
+      const r = await one<{ publish_attempts: number }>(
+        "UPDATE listings SET publish_attempts=publish_attempts+1 WHERE id=$1 RETURNING publish_attempts",
+        [d.id]
+      );
+      if ((r?.publish_attempts ?? 0) >= MAX_ATTEMPTS) {
+        await query("UPDATE listings SET status='draft' WHERE id=$1", [d.id]);
+        out.parked++;
+      }
+      if (!(err instanceof EbayError)) console.error("scheduled publish:", err);
+    }
+  }
+  return out;
+}
+
+let schedulerTimer: NodeJS.Timeout | null = null;
+
+/** Start the in-process runner (every SCHEDULER_INTERVAL_MS, default 60s). Idempotent. */
+export function startScheduler(runAs: <T>(sellerId: number, fn: () => Promise<T>) => Promise<T>): void {
+  if (schedulerTimer) return;
+  const every = Math.max(10_000, Number(process.env.SCHEDULER_INTERVAL_MS) || 60_000);
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const r = await runScheduledPublishes(runAs);
+      if (r.published || r.failed) console.log(`  scheduler: published ${r.published}, failed ${r.failed}${r.parked ? `, parked ${r.parked}` : ""}`);
+    } catch (err) {
+      console.error("scheduler tick:", err);
+    } finally {
+      busy = false;
+    }
+  };
+  schedulerTimer = setInterval(tick, every);
+  schedulerTimer.unref?.();
+  setTimeout(tick, 5_000).unref?.();
 }
 
 // ---- types ----------------------------------------------------------------

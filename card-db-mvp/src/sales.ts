@@ -17,6 +17,55 @@ import type { SoldSale } from "./db.ts";
 import { identify } from "./app/identify.ts";
 import { parseInput } from "./app/identify.ts";
 
+/**
+ * Link-health columns on sold_sales (idempotent, runs at server start like the
+ * other ensure*Schema bootstraps). Populated by `npm run check:sold-links`.
+ */
+export async function ensureSalesSchema(): Promise<void> {
+  await query(`ALTER TABLE sold_sales ADD COLUMN IF NOT EXISTS url_status integer`);
+  await query(`ALTER TABLE sold_sales ADD COLUMN IF NOT EXISTS url_checked_at timestamptz`);
+}
+
+// ---- Listing links ----------------------------------------------------------
+//
+// A sold row's `url` is only rendered as a link when we have good reason to
+// believe the page exists. Two layers, because marketplaces can't be trusted
+// to answer a server-side probe honestly (eBay 403s every bot, Goldin and
+// TCGplayer return 200 for nonexistent pages):
+//
+//   1. Shape: the URL must be http(s), must not be a sample/placeholder, and
+//      for eBay must be a real item URL (/itm/<12-digit id>).
+//   2. Health: a definitive 404/410 recorded by check:sold-links hides the link.
+//      Anything else (never checked, 403, timeouts) is inconclusive → keep it.
+
+/** HTTP statuses that prove a listing page is gone. */
+export const DEAD_LINK_STATUSES = new Set([404, 410]);
+
+const PLACEHOLDER_URL = /(^|[/._-])(sample|placeholder|example|test)\d*([/._-]|$)|example\.(com|org|net)/i;
+const EBAY_ITEM_PATH = /^\/itm\/(?:[^/?#]+\/)?\d{12}(?:[/?#]|$)/;
+
+type LinkFields = Pick<SoldSale, "url" | "is_demo" | "url_status">;
+
+/** The href to render for a sold row, or null to show the title as plain text. */
+export function soldListingLink(s: LinkFields): string | null {
+  if (!s.url || s.is_demo) return null;
+  if (s.url_status != null && DEAD_LINK_STATUSES.has(s.url_status)) return null;
+  let u: URL;
+  try {
+    u = new URL(s.url);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  if (PLACEHOLDER_URL.test(u.hostname + u.pathname)) return null;
+  const host = u.hostname.toLowerCase();
+  if (host === "ebay.com" || host.endsWith(".ebay.com") || /(^|\.)ebay\.[a-z.]+$/.test(host)) {
+    // Search / category / signed-in pages aren't listings; only /itm/<id> is.
+    if (!EBAY_ITEM_PATH.test(u.pathname)) return null;
+  }
+  return s.url;
+}
+
 export type SalesParams = {
   q?: string;
   market?: string; // ebay | goldin | fanatics

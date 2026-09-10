@@ -193,6 +193,7 @@ export type Listing = {
   ebay_offer_id?: string | null; // eBay Inventory API offer id (app/ebay-sell.ts)
   last_error?: string | null; // last publish/revise failure, for the listings page
   published_at?: string | null;
+  publish_attempts?: number; // scheduler retries (parked as draft after 3)
   created_at: string;
 };
 
@@ -823,6 +824,26 @@ export function listLiveListings(): Promise<Array<Listing & { card_name: string 
 
 export async function setListingStatus(id: number, status: string): Promise<void> {
   await query("UPDATE listings SET status=$1 WHERE id=$2 AND seller_id=$3", [status, id, currentSellerId()]);
+}
+
+/** Schedule (or unschedule with null) a draft: sets scheduled_at + status, resets attempt count. */
+export async function scheduleListing(id: number, scheduledAtIso: string | null): Promise<void> {
+  await query(
+    `UPDATE listings SET scheduled_at=$1, status=CASE WHEN $1::timestamptz IS NULL THEN 'draft' ELSE 'scheduled' END,
+            publish_attempts=0, last_error=NULL
+     WHERE id=$2 AND seller_id=$3 AND status IN ('draft','scheduled','exported')`,
+    [scheduledAtIso, id, currentSellerId()]
+  );
+}
+
+/** Count of this seller's listings waiting on the scheduler. */
+export async function scheduledCounts(): Promise<{ scheduled: number; due: number }> {
+  return (await one<{ scheduled: number; due: number }>(
+    `SELECT COUNT(*) FILTER (WHERE status='scheduled')::int AS scheduled,
+            COUNT(*) FILTER (WHERE status='scheduled' AND scheduled_at <= now())::int AS due
+     FROM listings WHERE seller_id=$1`,
+    [currentSellerId()]
+  ))!;
 }
 
 export async function markListingsExported(ids: number[]): Promise<void> {

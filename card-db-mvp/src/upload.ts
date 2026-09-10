@@ -20,20 +20,60 @@ export function boundaryOf(contentType: string | undefined): string | null {
 export const MAX_UPLOAD_FILES = 40;
 export const MAX_UPLOAD_BYTES = 60_000_000;
 
-/** Collect the full request body as a Buffer, rejecting bodies over `limit`. */
+/** Thrown by readBodyBuffer when a request body exceeds the byte limit. */
+export class UploadTooLargeError extends Error {
+  readonly bytes: number;
+  readonly limit: number;
+  /** True when `bytes` is only what was read before giving up (chunked body, no Content-Length). */
+  readonly partial: boolean;
+  constructor(bytes: number, limit: number, partial = false) {
+    super(`upload of ${bytes} bytes exceeds the ${limit}-byte limit`);
+    this.name = "UploadTooLargeError";
+    this.bytes = bytes;
+    this.limit = limit;
+    this.partial = partial;
+  }
+}
+
+/** Human-readable "Upload too large" message naming both sizes. */
+export function tooLargeMessage(err: unknown, limit = MAX_UPLOAD_BYTES): string {
+  const mb = (b: number) => (b >= 10_000_000 ? Math.round(b / 1_000_000) : (b / 1_000_000).toFixed(1)) + " MB";
+  let yours = "";
+  if (err instanceof UploadTooLargeError) yours = err.partial ? ` (this batch was over ${mb(limit)})` : ` (this batch was about ${mb(err.bytes)})`;
+  return `Upload too large — max ${mb(limit)} per batch${yours}. Try fewer or smaller images.`;
+}
+
+/**
+ * Collect the full request body as a Buffer, rejecting bodies over `limit`.
+ *
+ * On overflow the socket is deliberately NOT destroyed: killing it mid-upload
+ * makes the browser show a connection-reset error instead of our redirect.
+ * Instead the rest of the body is drained (discarded) so the response the
+ * caller writes goes out cleanly. Browsers always send Content-Length for form
+ * posts, so the common case is refused before a single byte is buffered.
+ */
 export function readBodyBuffer(req: IncomingMessage, limit = MAX_UPLOAD_BYTES): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > limit) {
+      req.resume();
+      reject(new UploadTooLargeError(declared, limit));
+      return;
+    }
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (c: Buffer) => {
+    const onData = (c: Buffer) => {
       size += c.length;
       if (size > limit) {
-        reject(new Error("body too large"));
-        req.destroy();
+        req.off("data", onData);
+        chunks.length = 0;
+        req.resume();
+        reject(new UploadTooLargeError(size, limit, true));
         return;
       }
       chunks.push(c);
-    });
+    };
+    req.on("data", onData);
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });

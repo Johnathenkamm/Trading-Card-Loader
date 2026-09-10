@@ -8,8 +8,8 @@ import { esc, money } from "../util.ts";
 import { getVariants, getAllSets } from "../pg.ts";
 import { finishChip } from "./components.ts";
 import {
-  getSeller, listInventory, inventoryStats, listBatches, listBatchesWithStats, workspaceCounts, getBatch, getItems,
-  listingsFor, listListings, marketCents, getVariantFull, getInventoryItem,
+  getSeller, listInventory, inventoryStats, listBatches, listBatchesOfKind, listBatchesWithStats, workspaceCounts, getBatch, getItems,
+  listingsFor, listListings, marketCents, getVariantFull, getInventoryItem, scheduledCounts,
   type ScanItem, type ScanBatch, type Seller, type InventoryRow, type VariantFull,
   type InventoryFilter, type BatchStats,
 } from "../app/store.ts";
@@ -29,6 +29,7 @@ import { GRADERS, GRADE_VALUES, certUrl, splitGrade } from "../app/graded.ts";
 import { EXPORT_FORMATS, parseChannelPrefs } from "../app/exporters.ts";
 import { marketCentsAt } from "../app/store.ts";
 import { ebaySellConfigured, ebayIsMock, ebayMarketplace, getConnection, policiesOf, policyIdsOf, locationOf } from "../app/ebay-sell.ts";
+import { currentAccount } from "../app/session-context.ts";
 
 const dollars = (c: number | null | undefined): string => (c == null ? "" : (c / 100).toFixed(2));
 
@@ -47,26 +48,104 @@ export function ruleOptions(sel: string): string {
 
 // ---- workspace chrome -----------------------------------------------------
 
-// CardUploader's sidebar, as a grouped strip: Dashboard · Orders · Batches |
-// Inventory: All, Automatic | List cards: Ungraded, Graded, Listing creator,
-// Blank listing, Listings | Tools: Pricing tool, Card search, Sales lookup |
-// Inbox · Settings.
-function subnav(active: string): string {
+// The sidebar. Groups are named by what the seller DOES there, so the pages
+// that take cards in ("Add cards") read as one block, and the read-only tools
+// ("Look up") and stock/orders ("Manage") don't look like places to upload.
+// Free accounts see a "Pro" marker on gated pages before they click.
+// (Sept 8 CardUploader research: their List Cards / Tools split is the only
+// signal of which pages upload, and their dashboard has no upload control.)
+
+/** Nav keys whose page takes cards in — no "+ Add cards" button is added on these. */
+const ADD_KEYS = new Set(["scan", "graded", "creator", "blank", "pricing-tool"]);
+/** Nav keys behind the Pro plan (mirrors `proRequired()` in server.ts). */
+const PRO_KEYS = new Set(["scan", "graded", "creator", "blank", "batches", "inventory", "automatic", "listings", "orders"]);
+
+// 20×20 stroke icons; the collapsed rail shows only these.
+const NAV_ICONS: Record<string, string> = {
+  home: `<path d="M3 9.5 10 4l7 5.5V16a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1z"/>`,
+  scan: `<path d="M3 7h3l1.5-2h5L14 7h3v9H3z"/><circle cx="10" cy="11.5" r="2.5"/>`,
+  graded: `<circle cx="10" cy="8" r="4.5"/><path d="M7 11.5 6 17l4-2 4 2-1-5.5"/>`,
+  creator: `<path d="M4 5h9M4 10h9M4 15h6M15 12v6M12 15h6"/>`,
+  blank: `<path d="M5 3h7l4 4v10H5z"/><path d="M12 3v4h4"/>`,
+  "pricing-tool": `<path d="M3 10V4h6l8 8-6 6z"/><circle cx="6.5" cy="7.5" r="1"/>`,
+  batches: `<path d="m10 4 7 3.5-7 3.5-7-3.5z"/><path d="m3 11 7 3.5 7-3.5"/>`,
+  inventory: `<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/>`,
+  automatic: `<path d="M16 9a6 6 0 0 0-11-2M4 11a6 6 0 0 0 11 2"/><path d="M15 3v4h-4M5 17v-4h4"/>`,
+  listings: `<path d="M3 8l1.5-4h11L17 8M4 8v9h12V8M8 17v-5h4v5"/>`,
+  orders: `<path d="m3 6 7-3 7 3v8l-7 3-7-3z"/><path d="M3 6l7 3 7-3M10 9v8"/>`,
+  "card-search": `<circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/>`,
+  sales: `<path d="M3 15l5-5 3 3 6-6"/><path d="M13 7h4v4"/>`,
+  inbox: `<path d="M3 11h4l1.5 2h3L13 11h4v6H3z"/><path d="M5 11V4h10v7"/>`,
+  settings: `<path d="M4 6h12M4 10h12M4 14h12"/><circle cx="8" cy="6" r="1.5"/><circle cx="13" cy="10" r="1.5"/><circle cx="7" cy="14" r="1.5"/>`,
+};
+function navIcon(key: string): string {
+  return `<svg class="nav-ic" viewBox="0 0 20 20" aria-hidden="true" focusable="false">${NAV_ICONS[key] ?? ""}</svg>`;
+}
+
+/** Is the workspace being viewed on a Pro plan? (Owner mode uses the customer's plan.) */
+function currentPlanIsPro(): boolean {
+  const a = currentAccount();
+  if (!a) return true;
+  if (a.acting) return isPro(a.acting.plan_tier);
+  if (a.id == null) return true;
+  return isPro(a.plan_tier);
+}
+
+export type NavMode = "auto" | "open" | "collapsed";
+
+// Collapse control: the choice persists per browser (auto pages). Pages that
+// pass a forced mode (review grid → collapsed, settings → open) start there but
+// the button still works for the visit; only 'auto' pages save the preference.
+// Runs inline right after the nav so the collapsed rail paints without a flash.
+const NAV_JS = `<script>(function(){
+  var s=document.currentScript,nav=s&&s.previousElementSibling;if(!nav||!nav.classList.contains('ws-nav'))return;
+  var wrap=nav.parentElement,mode=nav.getAttribute('data-mode')||'auto',KEY='ci-ws-nav';
+  function saved(){try{return localStorage.getItem(KEY);}catch(e){return null;}}
+  var collapsed=mode==='collapsed'?true:mode==='open'?false:saved()==='collapsed';
+  var btn=nav.querySelector('.ws-collapse');
+  function apply(){wrap.classList.toggle('nav-collapsed',collapsed);if(btn){btn.setAttribute('aria-expanded',collapsed?'false':'true');btn.title=collapsed?'Expand menu':'Collapse menu';}}
+  apply();
+  if(btn)btn.addEventListener('click',function(){collapsed=!collapsed;apply();if(mode==='auto'){try{localStorage.setItem(KEY,collapsed?'collapsed':'open');}catch(e){}}});
+})();</script>`;
+
+function subnav(active: string, navMode: NavMode = "auto"): string {
+  const pro = currentPlanIsPro();
   const groups: Array<[string, Array<[string, string, string]>]> = [
-    ["", [["/app", "Dashboard", "home"], ["/app/orders", "Orders", "orders"], ["/app/batches", "Batches", "batches"]]],
-    ["Inventory", [["/app/inventory", "All inventory", "inventory"], ["/app/inventory/automatic", "Automatic", "automatic"]]],
-    ["List cards", [["/app/scan", "Ungraded", "scan"], ["/app/graded", "Graded", "graded"], ["/app/listing-creator", "Listing creator", "creator"], ["/app/blank-listing", "Blank listing", "blank"], ["/app/listings", "Listings", "listings"]]],
-    ["Tools", [["/app/pricing-tool", "Pricing tool", "pricing-tool"], ["/app/card-search", "Card search", "card-search"], ["/sales", "Sales lookup", "sales"]]],
-    ["", [["/app/inbox", "Inbox", "inbox"], ["/app/settings", "Settings", "settings"]]],
+    ["", [["/app", "Dashboard", "home"]]],
+    [
+      "Add cards",
+      [
+        ["/app/scan?mode=inventory", "Ungraded", "scan"],
+        ["/app/graded", "Graded", "graded"],
+        ["/app/listing-creator", "Listing creator", "creator"],
+        ["/app/blank-listing", "Blank listing", "blank"],
+        ["/app/scan?mode=price", "Pricing tool", "pricing-tool"],
+      ],
+    ],
+    [
+      "Manage",
+      [
+        ["/app/batches", "Batches", "batches"],
+        ["/app/inventory", "Inventory", "inventory"],
+        ["/app/inventory/automatic", "Automatic inventory", "automatic"],
+        ["/app/listings", "Listings", "listings"],
+        ["/app/orders", "Orders", "orders"],
+      ],
+    ],
+    ["Look up", [["/app/card-search", "Card search", "card-search"], ["/app/sales-lookup", "Sales lookup", "sales"]]],
+    ["Account", [["/app/inbox", "Inbox", "inbox"], ["/app/settings", "Settings", "settings"]]],
   ];
-  return `<nav class="ws-nav" aria-label="Workspace">${groups
+  const item = ([href, text, key]: [string, string, string]) =>
+    `<a href="${href}" class="${key === active ? "active" : ""}${ADD_KEYS.has(key) ? " adds" : ""}" title="${esc(text)}${ADD_KEYS.has(key) ? " — takes cards in" : ""}">${navIcon(key)}<span class="nav-t">${text}</span>${
+      !pro && PRO_KEYS.has(key) ? `<span class="nav-pro" title="Pro plan">Pro</span>` : ""
+    }</a>`;
+  const collapse = `<button type="button" class="ws-collapse" aria-expanded="true" title="Collapse menu"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M12 5l-5 5 5 5"/><path d="M4 4v12" /></svg><span class="sr-only">Collapse menu</span></button>`;
+  return `<nav class="ws-nav" aria-label="Workspace" data-mode="${navMode}">${collapse}${groups
     .map(
       ([label, items]) =>
-        `<div class="ws-group">${label ? `<span class="ws-glabel">${label}</span>` : ""}${items
-          .map(([href, text, key]) => `<a href="${href}" class="${key === active ? "active" : ""}">${text}</a>`)
-          .join("")}</div>`
+        `<div class="ws-group">${label ? `<span class="ws-glabel">${label}</span>` : ""}${items.map(item).join("")}</div>`
     )
-    .join("")}</nav>`;
+    .join("")}</nav>${NAV_JS}`;
 }
 
 const DEFAULT_SHOP_NAME = "My card shop";
@@ -86,7 +165,11 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
     <div>
       <div class="eyebrow">Your plan</div>
       <div class="plan-line"><b>${pro ? "Pro" : "Free"}</b>${pro ? ` · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : ""} <span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span></div>
-      <p class="hint">${pro ? "Unlimited scans, inventory and listings." : "Upgrade to Pro to unlock the seller workspace."} <a href="/pricing">Plans &amp; pricing</a></p>
+      <p class="hint">${
+        pro
+          ? "Unlimited scans, inventory and listings."
+          : "Pricing tool, card search and sales lookup are included. Pro adds scanning, inventory and eBay listings."
+      } <a href="/pricing${pro ? "" : "?upgrade=1"}">${pro ? "Plans &amp; pricing" : "Upgrade to Pro"}</a></p>
     </div>
     <div class="home-plan-shop"><div class="eyebrow">Shop</div><b>${esc(seller.display_name)}</b><div class="hint">Next SKU <span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span></div></div>
   </div>`;
@@ -99,12 +182,14 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
     <div class="stat${counts.review_items ? " attn" : ""}"><div class="k">Awaiting review</div><div class="v mono">${counts.review_items}</div><div class="s">${counts.review_items ? `<a href="/app/batches">open batches →</a>` : "nothing waiting on you"}</div></div>
   </div>`;
 
+  // Free accounts see which tiles are Pro before they click (mirrors the nav).
+  const proTag = pro ? "" : `<span class="nav-pro">Pro</span>`;
   const quick = `<div class="quick-grid">
-    <a class="quick" href="/app/scan"><span class="qi">📷</span><b>Ungraded cards</b><span>Upload photos or paste a list → identified, priced, queued for review.</span></a>
-    <a class="quick" href="/app/graded"><span class="qi">🏅</span><b>Graded cards</b><span>Paste cert numbers; priced at the grade, listed with the slab details.</span></a>
-    <a class="quick" href="/app/listing-creator"><span class="qi">🗂️</span><b>Listing creator</b><span>Build listings from catalog images — browse a set, tick the cards.</span></a>
-    <a class="quick" href="/app/pricing-tool"><span class="qi">🔎</span><b>Pricing tool</b><span>Free: price a binder or a list and share the result by link.</span></a>
-    <a class="quick" href="/app/orders"><span class="qi">📦</span><b>Orders</b><span>Pull sheets, picklists, and stock that comes off when you ship.</span></a>
+    <a class="quick" href="/app/scan?mode=inventory"><span class="qi">📷</span><b>Ungraded cards ${proTag}</b><span>Upload photos or paste a list → identified, priced, queued for review.</span></a>
+    <a class="quick" href="/app/graded"><span class="qi">🏅</span><b>Graded cards ${proTag}</b><span>Paste cert numbers; priced at the grade, listed with the slab details.</span></a>
+    <a class="quick" href="/app/listing-creator"><span class="qi">🗂️</span><b>Listing creator ${proTag}</b><span>Build listings from catalog images — browse a set, tick the cards.</span></a>
+    <a class="quick" href="/app/scan?mode=price"><span class="qi">🔎</span><b>Pricing tool</b><span>Free: price a binder or a list and share the result by link — nothing added to stock.</span></a>
+    <a class="quick" href="/app/orders"><span class="qi">📦</span><b>Orders ${proTag}</b><span>Pull sheets, picklists, and stock that comes off when you ship.</span></a>
     <a class="quick" href="/app/settings"><span class="qi">⚙️</span><b>Settings</b><span>SKUs, pricing, matching, titles, descriptions, every channel.</span></a>
   </div>`;
 
@@ -203,17 +288,22 @@ export async function renderBatches(msg?: string): Promise<{ html: string; title
   return { html, title: "Batches — Seller workspace | CardIndex", description: "Your previous scan batches." };
 }
 
-export function wsHead(active: string, title: string, sub: string, actions = ""): string {
-  return `<div class="ws-head">
+// The nav is emitted as a sibling of the header (not inside it) so the page
+// grid can place it in a sidebar column on desktop; see `.wrap.ws` in styles.css.
+// Every page that doesn't itself take cards in gets a "+ Add cards" action, so
+// Orders, Inventory, Card search etc. always offer the way in.
+export function wsHead(active: string, title: string, sub: string, actions = "", opts: { navMode?: NavMode } = {}): string {
+  const addCta =
+    ADD_KEYS.has(active) || actions.includes('href="/app/scan"') ? "" : `<a class="btn primary" href="/app/scan">+ Add cards</a>`;
+  return `${subnav(active, opts.navMode ?? "auto")}<div class="ws-head">
     <div class="ws-title-row">
       <div>
         <div class="eyebrow">Seller workspace</div>
         <h1>${esc(title)}</h1>
         <p class="ws-sub">${sub}</p>
       </div>
-      <div class="ws-actions">${actions}</div>
+      <div class="ws-actions">${actions}${addCta}</div>
     </div>
-    ${subnav(active)}
   </div>`;
 }
 
@@ -386,73 +476,183 @@ export function setDatalist(sets: SetRef[]): string {
   return `<datalist id="setlist">${sets.map((s) => `<option value="${esc(s.name)}">`).join("")}</datalist>`;
 }
 
-export async function renderScan(msg?: string, prefill?: string): Promise<{ html: string; title: string; description: string }> {
-  const [seller, batches, sets] = await Promise.all([getSeller(), listBatches(8), getAllSets()]);
+// ---- Add cards (one page, two outcomes) --------------------------------------
+// The former Scan page and Pricing tool shared the same two forms and the same
+// server code; the only difference was where a batch ended up. Now the seller
+// picks the outcome first, and each choice shows what happens to the photos:
+//   price     → identified, priced at market, shown as a shareable table; the
+//               photos are kept only as thumbnails on that list.  (Free)
+//   inventory → identified, confirmed in review, given SKUs; the photos are
+//               stored with each card and become its listing images.  (Pro)
+
+export type AddMode = "price" | "inventory";
+
+const FLOW_ICONS: Record<string, string> = {
+  photo: NAV_ICONS.scan,
+  identify: NAV_ICONS["card-search"],
+  price: NAV_ICONS["pricing-tool"],
+  share: `<path d="M8 12l4-4"/><path d="M11 5.5 12.5 4a2.5 2.5 0 0 1 3.5 3.5L14.5 9"/><path d="M9 15l-1.5 1.5A2.5 2.5 0 0 1 4 13l1.5-1.5"/>`,
+  review: `<path d="M4 10.5 8 14l8-8"/>`,
+  inventory: NAV_ICONS.inventory,
+  listing: NAV_ICONS.listings,
+};
+
+function flow(steps: Array<[string, string]>): string {
+  return `<div class="mode-flow" aria-hidden="true">${steps
+    .map(
+      ([ic, label], i) =>
+        `${i ? `<span class="mf-arr">→</span>` : ""}<span class="mf-step"><svg class="nav-ic" viewBox="0 0 20 20">${FLOW_ICONS[ic]}</svg><small>${label}</small></span>`
+    )
+    .join("")}</div>`;
+}
+
+function modeChooser(mode: AddMode, pro: boolean, prefill: string): string {
+  const keep = prefill ? `&add=${encodeURIComponent(prefill)}` : "";
+  const card = (m: AddMode, name: string, plan: string, steps: Array<[string, string]>, body: string) =>
+    `<a class="mode-card${mode === m ? " on" : ""}" href="/app/scan?mode=${m}${keep}"${mode === m ? ' aria-current="page"' : ""}>
+      <div class="mode-head"><span class="mode-name">${name}</span><span class="pill ${plan === "Pro" ? (pro ? "sold" : "") : "listed"}">${plan}</span></div>
+      ${flow(steps)}
+      <p>${body}</p>
+    </a>`;
+  return `<div class="mode-pick" role="group" aria-label="What should happen with these cards?">
+    ${card(
+      "price",
+      "Price only",
+      "Free",
+      [["photo", "photos or list"], ["identify", "identified"], ["price", "market price"], ["share", "share by link"]],
+      `Each card is read, matched to the catalog and priced at market, then shown as a table you can share by link. <b>Nothing goes into inventory</b>; photos are kept only as thumbnails on that list.`
+    )}
+    ${card(
+      "inventory",
+      "Add to inventory",
+      "Pro",
+      [["photo", "photos or list"], ["identify", "identified"], ["review", "you confirm"], ["inventory", "SKU + stock"], ["listing", "listing images"]],
+      `Each card is read and matched, you confirm anything uncertain in review, and every card gets a SKU in your inventory. <b>Photos are stored with the card</b> and become its listing images.`
+    )}
+  </div>`;
+}
+
+export async function renderScan(
+  msg?: string,
+  prefill?: string,
+  opts: { mode?: AddMode; pro?: boolean } = {}
+): Promise<{ html: string; title: string; description: string }> {
+  const pro = opts.pro ?? true;
+  const mode: AddMode = opts.mode ?? (pro ? "inventory" : "price");
+  const priceMode = mode === "price";
+  const [seller, batches, sets] = await Promise.all([
+    getSeller(),
+    priceMode ? listBatchesOfKind("pricing", 8) : listBatches(8),
+    getAllSets(),
+  ]);
   const pref = (prefill ?? "").replace(/\s+/g, " ").trim();
   const prefs = parseMatchingPrefs(seller.matching_prefs);
   const matchVals = prefsToForm(prefs, sets);
   const savedMatching = !isEmptyPrefs(prefs);
+  const modeField = `<input type="hidden" name="mode" value="${mode}">`;
 
-  const html = `<div class="wrap ws">
-    ${wsHead("scan", "Scan / add cards", `Upload photos or paste a list — every card is identified against the catalog, scored for confidence, and anything uncertain waits in a review queue.`)}
-    ${flash(msg)}
-    ${setDatalist(sets)}
-    <div class="scan-grid">
-      <div class="scan-main">
-        <form class="ws-panel upload-form" method="post" action="/app/scan/upload" enctype="multipart/form-data">
-          <div class="ws-panel-head"><h2>Upload photos</h2><span class="eyebrow">phone or scanner</span></div>
+  const sub = priceMode
+    ? "Price a binder page, a stack, or a list against the catalog. Nothing is added to inventory, and the priced list can be shared by link."
+    : "Upload photos or paste a list. Every card is identified against the catalog, scored for confidence, and anything uncertain waits in review before it reaches inventory.";
+
+  // Fields that only matter when cards are going into stock.
+  const stockFields = priceMode
+    ? ""
+    : `<div class="fld-row">
+            <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
+            <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
+          </div>`;
+  const languageField = priceMode
+    ? ""
+    : `<label class="fld"><span>Default language</span><select name="language">${languageOptions(seller.default_language)}</select></label>`;
+
+  const uploadForm = `<form class="ws-panel upload-form" method="post" action="/app/scan/upload" enctype="multipart/form-data">
+          ${modeField}
+          <div class="ws-panel-head"><h2>Upload photos</h2><span class="eyebrow">${priceMode ? "single cards · binder pages · loose cards" : "phone or scanner"}</span></div>
           <label class="dropzone" id="dropzone" data-max-files="${MAX_UPLOAD_FILES}" data-max-bytes="${MAX_UPLOAD_BYTES}">
             <input type="file" name="images" id="imgInput" accept="image/*" capture="environment" multiple hidden>
             <div class="dz-inner">
               <div class="dz-ic">📷</div>
               <div class="dz-main"><b>Tap to choose</b> or drag &amp; drop card photos</div>
               <div class="dz-hint">JPG / PNG / WebP / HEIC · one card per image · front side · up to ${MAX_UPLOAD_FILES} photos or ${Math.round(MAX_UPLOAD_BYTES / 1_000_000)} MB per batch</div>
+              <div class="dz-what">${
+                priceMode
+                  ? `These photos are used to <b>identify and price</b> the cards. They stay only as thumbnails on the priced list.`
+                  : `These photos are <b>stored with each card</b> and become its listing images.`
+              }</div>
             </div>
             <div class="dz-preview" id="dzPreview" hidden></div>
           </label>
           <div class="fld-row">
-            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Binder A"></label>
-            <label class="fld"><span>Default condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
-            <label class="fld"><span>Default language</span><select name="language">${languageOptions(seller.default_language)}</select></label>
+            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Binder page 4" : "e.g. Binder A"}"></label>
+            <label class="fld"><span>${priceMode ? "Condition" : "Default condition"}</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
+            ${languageField}
           </div>
-          <div class="fld-row">
-            <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
-            <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
-          </div>
+          ${stockFields}
           ${matchingPanel(matchVals, savedMatching, "u")}
           <div class="scan-submit">
-            <button class="btn primary" type="submit" id="uploadBtn">Upload &amp; identify →</button>
+            <button class="btn primary" type="submit" id="uploadBtn">${priceMode ? "Price photos →" : "Upload &amp; identify →"}</button>
             <span class="hint" id="dzCount">No photos selected yet</span>
           </div>
-        </form>
+        </form>`;
 
-        <form class="scan-form ws-panel" method="post" action="/app/scan" id="paste">
+  const pasteForm = `<form class="scan-form ws-panel" method="post" action="/app/scan" id="paste">
+          ${modeField}
           <div class="ws-panel-head"><h2>Or paste a list</h2><button type="button" class="btn sm" id="loadsample">Load sample</button></div>
           <label class="fld">
             <span>Cards <small>one per line — name, number (4/102 or #119), set, finish, condition, language, qty (e.g. 3x)</small></span>
             <textarea name="lines" id="lines" rows="7" placeholder="Charizard 4/102 Base Set holo NM&#10;3x Pikachu 58/102 Base&#10;The Wandering Emperor Neon Dynasty foil">${esc(pref)}</textarea>
           </label>
           <div class="fld-row">
-            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Box break 8/25"></label>
+            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Trade binder" : "e.g. Box break 8/25"}"></label>
             <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
-            <label class="fld"><span>Language</span><select name="language">${languageOptions(seller.default_language)}</select></label>
+            ${priceMode ? "" : `<label class="fld"><span>Language</span><select name="language">${languageOptions(seller.default_language)}</select></label>`}
           </div>
-          <div class="fld-row">
+          ${
+            priceMode
+              ? ""
+              : `<div class="fld-row">
             <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
             <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
             <label class="fld ckbox"><input type="checkbox" name="save_defaults" value="1"> <span>Save as my defaults</span></label>
-          </div>
+          </div>`
+          }
           ${matchingPanel(matchVals, savedMatching, "p")}
           <div class="scan-submit">
-            <button class="btn primary" type="submit">Identify cards →</button>
-            <span class="hint">You'll review and edit every match before anything is added to inventory.</span>
+            <button class="btn primary" type="submit">${priceMode ? "Price list →" : "Identify cards →"}</button>
+            <span class="hint">${priceMode ? "Market prices from the catalog; nothing is added to inventory." : "You'll review and edit every match before anything is added to inventory."}</span>
           </div>
-        </form>
-      </div>
+        </form>`;
 
-      <aside class="ws-panel scan-side">
-        <h2>How it works</h2>
-        <p><b>Photos</b> are stored and dropped straight into the review queue, one item per image. The recognizer reads each card (or we take a first guess from the filename, e.g. <span class="mono">charizard-4-102.jpg</span>); anything we can't place waits in the queue where you <b>search and confirm</b> it.</p>
+  // A Free account that picks "Add to inventory" sees what it unlocks, not a
+  // form that would bounce on submit.
+  const locked = `<div class="ws-panel mode-lock">
+          <div class="ws-panel-head"><h2>Add to inventory is part of Pro</h2><span class="pill">Pro · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}</span></div>
+          <p>With Pro, the same photos and lists go through review into your inventory: every card gets a SKU, its photos are stored as listing images, and it's ready to publish to eBay or export.</p>
+          <div class="scan-submit"><a class="btn primary" href="/pricing?upgrade=1">Upgrade to Pro</a><a class="btn" href="/app/scan?mode=price">Price these cards for free instead</a></div>
+        </div>`;
+
+  const forms = mode === "inventory" && !pro ? locked : `${uploadForm}\n${pasteForm}`;
+
+  const aside = priceMode
+    ? `<aside class="ws-panel scan-side">
+        <h2>Recent pricings</h2>
+        ${
+          batches.length
+            ? `<div class="batch-list">${batches
+                .map(
+                  (b) => `<a class="batch-row" href="/app/pricing/${b.id}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Pricing")}</span><span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"}${b.share_token ? " · shared" : ""}</span></a>`
+                )
+                .join("")}</div>`
+            : `<p class="hint">No pricings yet.</p>`
+        }
+        <h3 style="margin-top:18px">What happens to the photos</h3>
+        <p>Each photo is read by the recognizer and matched to a catalog printing. The priced list keeps a thumbnail so you and whoever you share it with can see which card is which. Nothing is created in inventory, and any pricing can be turned into an inventory batch later from its results page.</p>
+        <div class="seam-note"><span class="i">◆</span><div><b>Binder-page detection</b> (several cards in one photo, auto-cropped) plugs into the same upload — today each photo is treated as one card.</div></div>
+      </aside>`
+    : `<aside class="ws-panel scan-side">
+        <h2>What happens to the photos</h2>
+        <p><b>Photos</b> are stored and dropped straight into the review queue, one item per image. The recognizer reads each card (or we take a first guess from the filename, e.g. <span class="mono">charizard-4-102.jpg</span>); anything we can't place waits in the queue where you <b>search and confirm</b> it. Approved cards keep their photo as the listing image.</p>
         <p><b>Pasted lines</b> are parsed for name, number, set, finish, condition, language and quantity, then matched against the catalog — <b>${Math.round(0.9 * 100)}%+</b> auto-matches, the rest route to review.</p>
         <p><b>Know what's in the binder?</b> Open <b>Advanced matching options</b> and prioritize its sets — same-name cards from other sets stop stealing matches. Exclude sets or keywords you never sell.</p>
         <p><b>Prices</b> follow your rule, or the price you last listed the same printing at (<a href="/app/settings#s-pricing">automatic pricing</a>).</p>
@@ -461,18 +661,33 @@ export async function renderScan(msg?: string, prefill?: string): Promise<{ html
           batches.length
             ? `<h3 style="margin-top:18px">Recent batches</h3><div class="batch-list">${batches
                 .map(
-                  (b) => `<a class="batch-row" href="/app/review/${b.id}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Batch")}</span><span class="bmeta">${b.total} · ${b.status}</span></a>`
+                  (b) => `<a class="batch-row" href="${b.kind === "pricing" ? `/app/pricing/${b.id}` : `/app/review/${b.id}`}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Batch")}</span><span class="bmeta">${b.total} · ${b.status}</span></a>`
                 )
                 .join("")}</div>`
             : ""
         }
-      </aside>
+      </aside>`;
+
+  const html = `<div class="wrap ws">
+    ${wsHead(priceMode ? "pricing-tool" : "scan", "Add cards", sub)}
+    ${flash(msg)}
+    ${setDatalist(sets)}
+    ${modeChooser(mode, pro, pref)}
+    <div class="scan-grid">
+      <div class="scan-main">
+        ${forms}
+      </div>
+      ${aside}
     </div>
     <script>window.__SAMPLE__=${JSON.stringify(SAMPLE_LINES)};</script>
     ${APP_JS}
   </div>`;
 
-  return { html, title: "Scan / add cards — Seller workspace | CardIndex", description: "Bulk-identify cards and route them to a review queue." };
+  return {
+    html,
+    title: `${priceMode ? "Price cards" : "Add cards"} — Seller workspace | CardIndex`,
+    description: priceMode ? "Free ungraded card pricing." : "Bulk-identify cards and route them to a review queue.",
+  };
 }
 
 // ---- Review queue ---------------------------------------------------------
@@ -656,7 +871,7 @@ export async function renderReview(batchId: number, filterTab: string | undefine
   const commitReady = all.filter((i) => i.matched_variant_id && (i.status === "matched" || i.status === "approved")).length;
 
   const html = `<div class="wrap ws">
-    ${wsHead("scan", `Review batch #${batch.id}`, esc(batch.label || "Identify, correct, price, then add to inventory."), `<a class="btn" href="/app/scan">New batch</a>`)}
+    ${wsHead("scan", `Review batch #${batch.id}`, esc(batch.label || "Identify, correct, price, then add to inventory."), `<a class="btn" href="/app/scan">New batch</a>`, { navMode: "collapsed" })}
     ${flash(msg)}
     <div class="batch-progress">
       <div class="bp-bar"><div class="bp-fill" style="width:${pctDone}%"></div></div>
@@ -734,7 +949,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
         <div class="fld-row">
           <label class="fld"><span>Quantity</span><input type="number" name="quantity" min="1" value="${inv.quantity}" class="mono"></label>
           <label class="fld"><span>Grade (optional)</span><input type="text" name="grade" placeholder="e.g. PSA 10" value=""></label>
-          <label class="fld"><span>Schedule (optional)</span><input type="datetime-local" name="scheduled_at"></label>
+          <label class="fld"><span>Schedule (optional)</span><input type="datetime-local" name="scheduled_at"><input type="hidden" name="tz_offset" class="tz-offset"></label>
         </div>
         <label class="fld"><span>eBay category</span><input type="text" name="category" value="${esc(preview.category)}" class="mono"></label>
         <label class="fld"><span>Description</span><textarea name="description" rows="7">${esc(preview.description)}</textarea></label>
@@ -770,19 +985,20 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
 // ---- Listings list --------------------------------------------------------
 
 export async function renderListings(msg?: string): Promise<{ html: string; title: string; description: string }> {
-  const [rows, ebayConn] = await Promise.all([listListings(), getConnection()]);
+  const [rows, ebayConn, sched] = await Promise.all([listListings(), getConnection(), scheduledCounts()]);
   const ebayItemUrl = (id: string) => (ebayIsMock() ? "#" : `https://www.${ebayMarketplace() === "EBAY_GB" ? "ebay.co.uk" : "ebay.com"}/itm/${encodeURIComponent(id)}`);
   const body = rows.length
     ? rows
         .map(
           (l) => `<tr class="${l.last_error ? "has-error" : ""}">
+        <td class="chk"><input type="checkbox" class="rowsel" name="sel" value="${l.id}" aria-label="Select listing ${l.id}"></td>
         <td class="mono">${l.id}</td>
         <td class="thumb">${l.image_small ? `<img src="${esc(l.image_small)}" alt="" loading="lazy">` : ""}</td>
         <td>${esc(l.title)}<div class="sub mono">${esc(l.sku ?? "")}${l.inventory_id == null ? " · blank" : ""}</div>${l.last_error ? `<div class="sub err">⚠ ${esc(l.last_error)}</div>` : ""}</td>
         <td>${esc(l.marketplace)}${l.status === "published" && l.external_ref ? `<div class="sub"><a href="${ebayItemUrl(l.external_ref)}" target="_blank" rel="noopener" class="mono">${esc(l.external_ref)}</a></div>` : ""}</td>
         <td>${esc(l.format)}</td>
         <td class="mono">${money(l.price_cents ?? l.start_cents)}<div class="mkt">× ${l.quantity}</div></td>
-        <td>${l.scheduled_at ? esc(l.scheduled_at.replace("T", " ").slice(0, 16)) : "immediate"}</td>
+        <td>${l.scheduled_at ? `${esc(l.scheduled_at.replace("T", " ").slice(0, 16))}${l.status === "scheduled" && l.publish_attempts ? `<div class="mkt warn">${l.publish_attempts} failed attempt${l.publish_attempts === 1 ? "" : "s"}</div>` : ""}` : "immediate"}</td>
         <td><span class="pill ${l.status}">${esc(l.status)}</span></td>
         <td class="act">${
           ebayConn
@@ -802,11 +1018,28 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
     ${flash(msg)}
     ${
       rows.length
-        ? `<div class="tablewrap"><table class="inv-table"><thead><tr><th>#</th><th></th><th>Title</th><th>Channel</th><th>Format</th><th>Price</th><th>Schedule</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+        ? `<form id="bulkform" method="post" action="/app/listings/bulk">
+           <input type="hidden" name="ids" id="bulk-ids"><input type="hidden" name="tz_offset" class="tz-offset">
+           <div class="bulkbar" id="bulkbar" hidden>
+             <span class="n"><b id="bulk-count">0</b> selected</span>
+             ${ebayConn ? `<button class="btn sm primary" name="do" value="publish" type="submit">Publish now</button>` : ""}
+             <label>Start <input type="datetime-local" name="start" class="mono"></label>
+             <label>every <input type="number" name="gap" value="5" min="0" max="1440" class="mono" style="width:64px"> min</label>
+             <button class="btn sm" name="do" value="schedule" type="submit" title="Space the selected listings out from the start time (CardUploader's Space Out)">Schedule &amp; space out</button>
+             <button class="btn sm" name="do" value="unschedule" type="submit">Back to draft</button>
+             ${ebayConn ? `<button class="btn sm ghost" name="do" value="end" type="submit">End</button>` : ""}
+           </div>
+           <div class="tablewrap"><table class="inv-table"><thead><tr><th class="chk"><input type="checkbox" id="selall" aria-label="Select all"></th><th>#</th><th></th><th>Title</th><th>Channel</th><th>Format</th><th>Price</th><th>Schedule</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+           </form>
+           ${
+             sched.scheduled
+               ? `<div class="sched-note"><b>${sched.scheduled}</b> scheduled${sched.due ? ` · <b class="warn">${sched.due} due now</b>` : ""} — the runner checks every minute${ebayConn ? "" : " (needs your eBay connection to publish)"}. ${ebayConn && sched.due ? `<form method="post" action="/app/listings/bulk" class="inline"><input type="hidden" name="do" value="run-due"><button class="btn sm" type="submit">Publish due now</button></form>` : ""}</div>`
+               : ""
+           }
            ${
              ebayConn
-               ? `<p class="hint" style="margin-top:12px"><b>Publish</b> creates the live eBay listing through the Inventory API (pre-flight first); <b>Revise</b> pushes title, price and quantity to a live listing; <b>End</b> withdraws it. Shipping a non-eBay order syncs quantity to eBay automatically.</p>`
-               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings#s-ebay"><b>Connect eBay</b></a> to publish, revise and end listings from here and pull orders. Drafts export as a File Exchange CSV meanwhile.</div></div>`
+               ? `<p class="hint" style="margin-top:12px"><b>Publish</b> creates the live eBay listing through the Inventory API (pre-flight first); <b>Revise</b> pushes title, price and quantity to a live listing; <b>End</b> withdraws it. Select rows to publish in bulk or <b>schedule &amp; space out</b> — one listing every N minutes from a start time. Shipping a non-eBay order syncs quantity to eBay automatically.</p>`
+               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings#s-ebay"><b>Connect eBay</b></a> to publish, revise and end listings from here and pull orders. Drafts export as a File Exchange CSV meanwhile; scheduling still works and publishes once connected.</div></div>`
            }`
         : `<div class="ws-empty"><h3>No listings yet</h3><p>Open a card in your <a href="/app/inventory">inventory</a> and build a listing.</p></div>`
     }
@@ -903,7 +1136,7 @@ export async function renderSettings(msg?: string): Promise<{ html: string; titl
         <label class="fld"><span>Notes</span><input name="manapool_note" value="${esc(ch.manapool_note)}" placeholder="e.g. store slug, pricing policy"></label>
         <div class="seam-note"><span class="i">◆</span><div><b>Connect Mana Pool</b> (API key) → fetch orders, auto mark-shipped when picked, quantity sync on Listed / Sold.</div></div>
       </div>`;
-  const planPanel = `<div class="ws-panel plan-panel">
+  const planPanel = `<div class="ws-panel plan-panel" id="s-plan">
     <div>
       <div class="eyebrow">Your plan</div>
       <div class="plan-line">
@@ -913,13 +1146,13 @@ export async function renderSettings(msg?: string): Promise<{ html: string; titl
       <p class="hint">${
         pro
           ? "Thanks for subscribing. Online billing management is coming soon."
-          : "Upgrade to Pro to unlock the seller workspace."
-      } <a href="/pricing">View plans</a></p>
+          : "Free includes the pricing tool, card search and sales lookup. Pro adds scanning, inventory and listings."
+      } <a href="/pricing${pro ? "" : "?upgrade=1"}">${pro ? "View plans" : "Upgrade to Pro"}</a></p>
     </div>
   </div>`;
 
   const html = `<div class="wrap ws">
-    ${wsHead("settings", "Settings", "Set once, reuse on every scan and listing — SKU scheme, pricing, matching, titles, descriptions, and eBay preferences.")}
+    ${wsHead("settings", "Settings", "Set once, reuse on every scan and listing — SKU scheme, pricing, matching, titles, descriptions, and eBay preferences.", "", { navMode: "open" })}
     ${flash(msg)}
     ${planPanel}
     ${sectionNav}
@@ -1169,6 +1402,9 @@ const TITLE_EDITOR_JS = `<script>(function(){
 // manual card search.
 export const APP_JS = `<script>(function(){
   if(window.__wsInit)return; window.__wsInit=1;
+
+  // datetime-local inputs are wall time; tell the server the browser's offset
+  document.querySelectorAll('input.tz-offset').forEach(function(i){i.value=String(new Date().getTimezoneOffset());});
 
   // load sample lines on the scan page
   var ls=document.getElementById('loadsample');

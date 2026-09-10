@@ -6,7 +6,7 @@
 // in `sellers` (the workspace tables already carry seller_id), so an account is
 // just a seller with an email + password_hash.
 
-import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { query, one } from "../pg.ts";
 
@@ -40,6 +40,16 @@ export async function ensureAuthSchema(): Promise<void> {
       expires_at  timestamptz NOT NULL
     )`);
   await query(`CREATE INDEX IF NOT EXISTS idx_sessions_seller ON sessions(seller_id)`);
+  // Password-reset links: only the sha256 of the emailed token is stored, so a
+  // read of this table can't be replayed as a link. One-hour expiry, single use.
+  await query(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      token_hash  text PRIMARY KEY,
+      seller_id   bigint NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      expires_at  timestamptz NOT NULL,
+      used_at     timestamptz
+    )`);
 }
 
 // ---- password hashing -----------------------------------------------------
@@ -82,7 +92,7 @@ export function isValidEmail(email: string): boolean {
 
 // ---- accounts -------------------------------------------------------------
 
-export type Account = { id: number; email: string | null; display_name: string };
+export type Account = { id: number; email: string | null; display_name: string; plan_tier: string };
 
 export async function findSellerByEmail(email: string): Promise<{ id: number; password_hash: string | null } | undefined> {
   return one<{ id: number; password_hash: string | null }>(
@@ -92,7 +102,7 @@ export async function findSellerByEmail(email: string): Promise<{ id: number; pa
 }
 
 export async function getAccount(sellerId: number): Promise<Account | undefined> {
-  return one<Account>(`SELECT id, email, display_name FROM sellers WHERE id = $1`, [sellerId]);
+  return one<Account>(`SELECT id, email, display_name, plan_tier FROM sellers WHERE id = $1`, [sellerId]);
 }
 
 export class AuthError extends Error {}
@@ -145,6 +155,64 @@ export async function authenticate(emailRaw: string, password: string): Promise<
   if (!seller || !(await verifyPassword(password, seller.password_hash))) return null;
   await query(`UPDATE sellers SET last_login_at = now() WHERE id = $1`, [seller.id]);
   return seller.id;
+}
+
+// ---- password reset -------------------------------------------------------
+
+const RESET_MINUTES = 60;
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Start a password reset for an email. Returns the raw token (to put in the
+ * emailed link) or null when no account matches — the caller shows the same
+ * "check your inbox" copy either way so the form never reveals whether an
+ * email is registered. Any earlier unused links for the account are voided.
+ */
+export async function createPasswordReset(emailRaw: string): Promise<{ token: string; sellerId: number } | null> {
+  const seller = await findSellerByEmail(emailRaw);
+  if (!seller || !seller.password_hash) return null;
+  await query(`DELETE FROM password_resets WHERE seller_id = $1 AND used_at IS NULL`, [seller.id]);
+  const token = randomBytes(32).toString("base64url");
+  const expires = new Date(Date.now() + RESET_MINUTES * 60_000).toISOString();
+  await query(`INSERT INTO password_resets (token_hash, seller_id, expires_at) VALUES ($1, $2, $3)`, [
+    hashToken(token),
+    seller.id,
+    expires,
+  ]);
+  return { token, sellerId: seller.id };
+}
+
+/** Is this reset token live (exists, unused, unexpired)? Used to render the new-password form. */
+export async function resetTokenValid(token: string): Promise<boolean> {
+  if (!token) return false;
+  const row = await one<{ seller_id: number }>(
+    `SELECT seller_id FROM password_resets WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+    [hashToken(token)]
+  );
+  return !!row;
+}
+
+/**
+ * Finish a reset: set the new password, burn the token, and sign out every
+ * existing session for the account (whoever had the old password loses access).
+ * Returns the seller id so the caller can start a fresh session, or null.
+ */
+export async function consumePasswordReset(token: string, password: string): Promise<number | null> {
+  if (password.length < PASSWORD_MIN) throw new AuthError(`Password must be at least ${PASSWORD_MIN} characters.`);
+  const row = await one<{ seller_id: number }>(
+    `UPDATE password_resets SET used_at = now()
+      WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+      RETURNING seller_id`,
+    [hashToken(token)]
+  );
+  if (!row) return null;
+  const password_hash = await hashPassword(password);
+  await query(`UPDATE sellers SET password_hash = $1 WHERE id = $2`, [password_hash, row.seller_id]);
+  await query(`DELETE FROM sessions WHERE seller_id = $1`, [row.seller_id]);
+  return row.seller_id;
 }
 
 // ---- sessions -------------------------------------------------------------

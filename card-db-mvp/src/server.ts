@@ -15,7 +15,7 @@ import {
   sitemapUrls,
 } from "./render/pages.ts";
 import { search, suggest, type SearchParams } from "./search.ts";
-import { searchSales, type SalesParams } from "./sales.ts";
+import { searchSales, ensureSalesSchema, type SalesParams } from "./sales.ts";
 import { renderSales } from "./render/sales.ts";
 import { money } from "./util.ts";
 
@@ -40,8 +40,8 @@ import {
   renderWorkspaceHome, renderInventory, renderBatches, renderScan, renderReview, renderListingBuilder, renderListings, renderSettings,
 } from "./render/app.ts";
 import {
-  renderGraded, renderListingCreator, renderBlankListing, renderPricingTool, renderPricingResults, renderCardSearch,
-  renderOrders, renderPicklist, renderAutomaticInventory, renderInbox,
+  renderGraded, renderListingCreator, renderBlankListing, renderPricingResults, renderCardSearch,
+  renderOrders, renderPicklist, renderAutomaticInventory, renderInbox, renderSalesLookup,
 } from "./render/workspace2.ts";
 import {
   addItemFromCatalog, shareBatch, unshareBatch, getBatchByToken, getItemsPublic, setBatchKind, getBatch,
@@ -54,14 +54,16 @@ import {
 import {
   ensureEbaySchema, ebaySellConfigured, beginConnect, completeConnect, disconnect as ebayDisconnect, syncPolicies, setPolicyIds, ensureLocation,
   getConnection, publishListing, endListing, syncQuantityForInventory, fetchOpenOrders, markShippedOnEbay, touchOrderSync, EbayError,
+  startScheduler, runScheduledPublishes,
 } from "./app/ebay-sell.ts";
+import { scheduleListing } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import {
   itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
 } from "./app/exporters.ts";
 import { formatSku } from "./app/sku.ts";
 import { parseInput, type IdentifyResult } from "./app/identify.ts";
-import { readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, MAX_UPLOAD_FILES, type UploadedFile } from "./upload.ts";
+import { readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, tooLargeMessage, MAX_UPLOAD_FILES, type UploadedFile } from "./upload.ts";
 import { storage, keyFor, localUploadsDir, contentTypeForExt } from "./storage.ts";
 import { visionIdentify } from "./app/vision.ts";
 
@@ -69,12 +71,26 @@ import { visionIdentify } from "./app/vision.ts";
 import {
   ensureAuthSchema, authenticate, createAccount, createSession, destroySession,
   sellerForSession, getAccount, parseCookies, sessionCookie, clearSessionCookie,
-  SESSION_COOKIE, AuthError,
+  SESSION_COOKIE, AuthError, isValidEmail,
+  createPasswordReset, resetTokenValid, consumePasswordReset,
 } from "./app/auth.ts";
-import { runWithSeller, runWithRequest, currentAccount, type HeaderAccount } from "./app/session-context.ts";
-import { renderLogin, renderSignup, safeNext } from "./render/auth.ts";
-import { ensureBillingSchema, planTier, isPro } from "./app/billing.ts";
+import { sendMail, mailMode, appBaseUrl } from "./app/mailer.ts";
+import { runWithSeller, runWithRequest, currentAccount, currentSellerId, type HeaderAccount } from "./app/session-context.ts";
+import { renderLogin, renderSignup, renderResetRequest, renderResetForm, safeNext } from "./render/auth.ts";
+import { ensureBillingSchema, planTier, isPro, setPlanTier } from "./app/billing.ts";
 import { renderPricing } from "./render/pricing.ts";
+
+// ---- owner CRM (/admin) ---------------------------------------------------
+import {
+  ensureAdminSchema, logActivity, describeActivity, listUsers, getUser, userUsage, overview, listActivity, dailyActive,
+  listAllFeedback, userBatches, actAsCookie, clearActAsCookie, ACT_AS_COOKIE,
+  ADMIN_COOKIE, adminConfigured, adminAuthenticate, adminLockedFor, adminSessionValid, createAdminSession, destroyAdminSession,
+  adminCookie, clearAdminCookie,
+} from "./app/admin.ts";
+import { replyFeedback, closeFeedback } from "./app/feedback.ts";
+import {
+  renderAdminHome, renderAdminUsers, renderAdminUser, renderAdminActivity, renderAdminFeedback, renderAdminUpload, renderAdminLogin,
+} from "./render/admin.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5173);
@@ -115,10 +131,21 @@ try {
   await ensureOrdersSchema();
   await ensureFeedbackSchema();
   await ensureEbaySchema();
+  await ensureSalesSchema();
 } catch (err) {
   console.error("\n  Failed to prepare the workspace schema (seller prefs, graded columns, orders, feedback).\n", err);
   process.exit(1);
 }
+
+// Owner console: sellers.last_seen_at, the activity_log and admin_sessions
+// tables. See app/admin.ts. The console itself needs ADMIN_EMAIL + ADMIN_PASSWORD.
+try {
+  await ensureAdminSchema();
+} catch (err) {
+  console.error("\n  Failed to prepare the owner-console schema (activity_log, admin_sessions).\n", err);
+  process.exit(1);
+}
+if (!adminConfigured()) console.warn("  Owner console disabled: set ADMIN_EMAIL and ADMIN_PASSWORD to enable /admin.");
 
 const STYLES = readFileSync(join(here, "..", "public", "styles.css"), "utf8");
 
@@ -151,12 +178,38 @@ function redirectWithCookie(res: ServerResponse, location: string, cookie: strin
  * the public catalog pay nothing.
  */
 async function resolveAccount(req: IncomingMessage): Promise<HeaderAccount> {
-  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (!token) return null;
-  const sellerId = await sellerForSession(token);
-  if (!sellerId) return null;
-  const acct = await getAccount(sellerId);
-  return acct ? { id: acct.id, display_name: acct.display_name } : null;
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies[SESSION_COOKIE];
+  const adminToken = cookies[ADMIN_COOKIE];
+  if (!token && !adminToken) return null;
+
+  // Customer account (normal login).
+  let acct: Awaited<ReturnType<typeof getAccount>> | undefined;
+  if (token) {
+    const sellerId = await sellerForSession(token);
+    if (sellerId) acct = await getAccount(sellerId);
+  }
+  // Owner-console session (separate login, separate cookie).
+  const admin = adminConfigured() && (await adminSessionValid(adminToken));
+  if (!acct && !admin) return null;
+
+  // Owner mode: the act-as cookie is only honored alongside a live owner
+  // session, and only while the target still exists — anyone else's cookie is
+  // ignored outright.
+  let acting: NonNullable<HeaderAccount>["acting"] = null;
+  const actAs = Number(cookies[ACT_AS_COOKIE]);
+  if (admin && Number.isInteger(actAs) && actAs > 0) {
+    const target = await getAccount(actAs);
+    if (target) acting = { id: target.id, display_name: target.display_name, email: target.email, plan_tier: target.plan_tier };
+  }
+  return { id: acct?.id ?? null, display_name: acct?.display_name ?? "Owner", plan_tier: acct?.plan_tier ?? null, admin, acting };
+}
+
+/** Client IP for the owner-login throttle (first X-Forwarded-For hop behind Railway's proxy). */
+function clientIp(req: IncomingMessage): string {
+  const xf = req.headers["x-forwarded-for"];
+  const first = (Array.isArray(xf) ? xf[0] : xf ?? "").split(",")[0].trim();
+  return first || req.socket.remoteAddress || "unknown";
 }
 
 function notFound(res: ServerResponse) {
@@ -211,6 +264,23 @@ const toCents = (v: unknown): number | null => {
   return Number.isFinite(n) ? Math.round(n * 100) : null;
 };
 
+/**
+ * A <input type="datetime-local"> value ("2026-09-05T14:30") is the USER's wall
+ * time with no zone. Forms send the browser's offset (tz_offset, minutes, as
+ * Date#getTimezoneOffset) so we can turn it into a real instant; without it we
+ * fall back to the server's zone. Returns ISO or null when unparseable.
+ */
+function localToIso(v: string | undefined, tzOffsetMin: string | undefined): string | null {
+  const m = (v ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1).map(Number);
+  const off = Number(tzOffsetMin);
+  if (Number.isFinite(off) && tzOffsetMin !== undefined && tzOffsetMin !== "") {
+    return new Date(Date.UTC(y, mo - 1, d, h, mi) + off * 60_000).toISOString();
+  }
+  return new Date(y, mo - 1, d, h, mi).toISOString();
+}
+
 /** Redirect back to the referring page when it's a review page, else fallback. */
 function redirectBack(req: IncomingMessage, res: ServerResponse, fallback: string) {
   const ref = req.headers.referer;
@@ -233,7 +303,15 @@ const identifyOpts = (p: MatchingPrefs): IdentifyOptions => (isEmptyPrefs(p) ? {
 
 /** Where a finished batch goes: pricing batches to their results page, the rest to review. */
 const batchLanding = (kind: string, batchId: number): string => (kind === "pricing" ? `/app/pricing/${batchId}` : `/app/review/${batchId}`);
-const scanPageFor = (kind: string): string => (kind === "pricing" ? "/app/pricing-tool" : "/app/scan");
+// Both outcomes live on one page now; the mode query selects which forms show.
+const scanPageFor = (kind: string): string => (kind === "pricing" ? "/app/scan?mode=price" : "/app/scan?mode=inventory");
+/** Form field `mode` → batch kind. */
+const kindForMode = (mode: string | undefined): string => (mode === "price" ? "pricing" : "scan");
+/** Is the current workspace on Pro? Owner mode never hits the paywall. */
+async function workspacePro(): Promise<boolean> {
+  if (currentAccount()?.acting) return true;
+  return isPro(await planTier(currentSellerId()));
+}
 
 /** Generate titles for every matched item (after any batch build). */
 async function titleBatch(batchId: number, seller: Seller): Promise<void> {
@@ -264,7 +342,7 @@ async function handleScan(f: Record<string, string>, kind = "scan"): Promise<str
     .filter(Boolean)
     .slice(0, 500);
 
-  if (!lines.length) return scanPageFor(kind) + "?msg=" + encodeURIComponent("Paste at least one card line.");
+  if (!lines.length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Paste at least one card line.");
 
   const batchId = await createBatch("paste", f.label?.trim() || null, kind);
   for (const line of lines) {
@@ -380,7 +458,7 @@ async function handleBlank(f: Record<string, string>): Promise<string> {
     await updateSeller({ sku_next: seller.sku_next + 1 });
   }
   const description = (f.description ?? "").trim() || [title, "", ...Object.entries(specifics).filter(([k]) => k !== "Graded").map(([k, v]) => `${k}: ${v}`)].join("\n");
-  const scheduled = f.scheduled_at?.trim() || null;
+  const scheduled = localToIso(f.scheduled_at, f.tz_offset);
   await createListing({
     inventory_id: null,
     marketplace: "ebay",
@@ -445,7 +523,7 @@ async function handleScanUpload(fields: Record<string, string>, files: UploadedF
   const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
 
   const imgs = files.filter((f) => f.field === "images" && isImage(f)).slice(0, MAX_UPLOAD_FILES);
-  if (!imgs.length) return scanPageFor(kind) + "?msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
+  if (!imgs.length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
 
   const store = storage();
   const batchId = await createBatch("upload", fields.label?.trim() || null, kind);
@@ -614,7 +692,7 @@ async function handleCreateListing(invId: number, f: Record<string, string>): Pr
   const grade = f.grade?.trim() || null;
   const pv = await inventoryListingPreview(inv, { grade, titleOverride: f.title });
   const specifics = pv ? pv.specifics : {};
-  const scheduled = f.scheduled_at?.trim() || null;
+  const scheduled = localToIso(f.scheduled_at, f.tz_offset);
 
   const id = await createListing({
     inventory_id: inv.id,
@@ -648,6 +726,64 @@ async function publishAndRedirect(listingId: number, label: string): Promise<str
   }
 }
 
+/**
+ * Listings bulk bar: publish now, schedule with spacing ("Space Out": one
+ * listing every N minutes from a start time), back to draft, end, or run
+ * whatever is due right now.
+ */
+async function handleListingsBulk(f: Record<string, string>, sellerId: number): Promise<string> {
+  const ids = (f.ids || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
+  const back = (msg: string) => "/app/listings?msg=" + encodeURIComponent(msg);
+  if (f.do === "run-due") {
+    const r = await runScheduledPublishes((sid, fn) => runWithSeller(sid, fn), sellerId);
+    return back(`Ran the scheduler: ${r.published} published, ${r.failed} failed${r.parked ? `, ${r.parked} parked as drafts` : ""}.`);
+  }
+  if (!ids.length) return back("Select at least one listing.");
+  if (f.do === "schedule") {
+    const startIso = localToIso(f.start, f.tz_offset);
+    const start = startIso ? new Date(startIso) : new Date(Date.now() + 60_000);
+    const gapMin = Math.max(0, Math.min(1440, intOr(f.gap, 5)));
+    let n = 0;
+    for (const id of ids) {
+      await scheduleListing(id, new Date(start.getTime() + n * gapMin * 60_000).toISOString());
+      n++;
+    }
+    const last = new Date(start.getTime() + (n - 1) * gapMin * 60_000);
+    // Echo times in the user's own zone (tz_offset), not the server's.
+    const off = Number.isFinite(Number(f.tz_offset)) && f.tz_offset !== "" ? Number(f.tz_offset) : new Date().getTimezoneOffset();
+    const wall = (d: Date) => new Date(d.getTime() - off * 60_000).toISOString().slice(0, 16).replace("T", " ");
+    return back(`Scheduled ${n} listing${n === 1 ? "" : "s"} from ${wall(start)}${n > 1 ? ` to ${wall(last)}, ${gapMin} min apart` : ""} (your local time).`);
+  }
+  if (f.do === "unschedule") {
+    for (const id of ids) await scheduleListing(id, null);
+    return back(`${ids.length} listing${ids.length === 1 ? "" : "s"} back to draft.`);
+  }
+  if (f.do === "end") {
+    let n = 0;
+    for (const id of ids) {
+      try {
+        await endListing(id);
+        n++;
+      } catch (err) {
+        console.error("bulk end:", err);
+      }
+    }
+    return back(`Ended ${n} of ${ids.length} listing${ids.length === 1 ? "" : "s"}.`);
+  }
+  // publish now
+  let ok = 0;
+  const errors: string[] = [];
+  for (const id of ids) {
+    try {
+      await publishListing(id);
+      ok++;
+    } catch (err) {
+      errors.push(`#${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return back(`Published ${ok} of ${ids.length}.${errors.length ? " " + errors.slice(0, 3).join(" · ") + (errors.length > 3 ? ` (+${errors.length - 3} more — see the rows)` : "") : ""}`);
+}
+
 /** Pull open eBay orders into the orders table (skipping ones already imported). */
 async function fetchEbayOrders(): Promise<string> {
   try {
@@ -678,8 +814,8 @@ async function afterShip(orderId: number): Promise<string> {
   if (!o || !(await getConnection())) return "";
   try {
     if (o.platform === "ebay" && o.external_ref) {
-      await markShippedOnEbay(o.external_ref);
-      return " Marked shipped on eBay.";
+      await markShippedOnEbay(o.external_ref, o.tracking_number ? { carrier: o.tracking_carrier ?? "Other", number: o.tracking_number } : undefined);
+      return o.tracking_number ? ` Marked shipped on eBay with ${o.tracking_carrier ?? ""} tracking ${o.tracking_number}.` : " Marked shipped on eBay.";
     }
     let n = 0;
     for (const it of o.items) if (it.inventory_id != null) n += await syncQuantityForInventory(it.inventory_id);
@@ -839,9 +975,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       );
     }
 
-    // ---- auth (login / signup / logout) ----
+    // ---- auth (login / signup / logout / password reset) ----
     if (path === "/login" || path === "/signup" || path === "/logout") {
       return await handleAuth(req, res, url, path, method);
+    }
+    if (path === "/reset-password" || path.startsWith("/reset-password/")) {
+      return await handleReset(req, res, url, path, method);
     }
 
     // ---- public share page for a priced list (token is the capability) ----
@@ -854,6 +993,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return runWithSeller(b.seller_id, async () =>
         sendPage(res, await renderPricingResults(b, items, { isPublic: true, shareUrl: null, shopName: acct?.display_name ?? "a CardIndex seller" }), `/p/${token}`)
       );
+    }
+
+    // ---- owner console (owner-role-gated) ----
+    if (path === "/admin" || path.startsWith("/admin/")) {
+      return await handleAdmin(req, res, url, path, method, msg);
     }
 
     // ---- seller workspace (login-gated) ----
@@ -940,7 +1084,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return sendPage(res, { ...renderSales(sp, await searchSales(sp)) }, "/sales");
     }
     if (path === "/pricing") {
-      const tier = account ? await planTier(account.id) : "free";
+      const tier = account?.id != null ? await planTier(account.id) : "free";
       const upgrade = url.searchParams.get("upgrade") === "1";
       return sendPage(res, renderPricing({ account, tier, upgrade }), "/pricing");
     }
@@ -1017,6 +1161,7 @@ async function handleAuth(
 
   if (path === "/logout") {
     if (method === "POST") {
+      if (acct?.id != null) await logActivity({ sellerId: acct.id, kind: "logout", method, path, detail: "Logged out" });
       await destroySession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
       return redirectWithCookie(res, "/", clearSessionCookie());
     }
@@ -1026,7 +1171,7 @@ async function handleAuth(
   const isSignup = path === "/signup";
 
   if (method === "GET") {
-    if (acct) return redirect(res, "/app"); // already signed in
+    if (acct?.id != null) return redirect(res, "/app"); // already signed in
     const next = url.searchParams.get("next") ?? undefined;
     return sendPage(res, isSignup ? renderSignup({ next }) : renderLogin({ next }), path);
   }
@@ -1039,9 +1184,17 @@ async function handleAuth(
 
     if (isSignup) {
       try {
-        const sellerId = await createAccount(email, password, String(f.display_name ?? ""));
+        const displayName = String(f.display_name ?? "").trim();
+        const sellerId = await createAccount(email, password, displayName);
         const token = await createSession(sellerId);
-        return redirectWithCookie(res, next, sessionCookie(token));
+        await logActivity({ sellerId, kind: "signup", method, path, detail: "Created account" });
+        // Land signed in, on the dashboard, with a welcome — never back on a login screen.
+        const acct = await getAccount(sellerId);
+        const landing =
+          next === "/app"
+            ? "/app?msg=" + encodeURIComponent(`Welcome, ${acct?.display_name ?? (displayName || "there")}! Your workspace is ready.`)
+            : next;
+        return redirectWithCookie(res, landing, sessionCookie(token));
       } catch (err) {
         const message = err instanceof AuthError ? err.message : "Could not create your account. Please try again.";
         if (!(err instanceof AuthError)) console.error("signup error:", err);
@@ -1060,13 +1213,268 @@ async function handleAuth(
       console.error("login error:", err);
     }
     if (!sellerId) {
-      return sendPage(res, renderLogin({ error: "Wrong email or password.", email, next: f.next }), "/login");
+      // Keep the email filled in and offer the reset path right in the error,
+      // so a forgotten password never dead-ends.
+      return sendPage(res, renderLogin({ error: "Wrong email or password.", email, next: f.next, showForgot: true }), "/login");
     }
     const token = await createSession(sellerId);
+    await logActivity({ sellerId, kind: "login", method, path, detail: "Signed in" });
     return redirectWithCookie(res, next, sessionCookie(token));
   }
 
   return redirect(res, "/login");
+}
+
+// ---- password reset ---------------------------------------------------------
+// /reset-password           GET form · POST email → emailed link (same copy
+//                           whether or not the address is registered)
+// /reset-password/<token>   GET new-password form · POST sets it, signs the
+//                           user in, and signs out every other session
+
+async function handleReset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  path: string,
+  method: string
+) {
+  const next = url.searchParams.get("next") ?? undefined;
+  const m = path.match(/^\/reset-password\/([A-Za-z0-9_-]{20,})$/);
+
+  if (m) {
+    const token = m[1];
+    if (method === "GET") {
+      return sendPage(res, renderResetForm({ token, valid: await resetTokenValid(token), next }), "/reset-password");
+    }
+    if (method === "POST") {
+      const f = parseForm(await readBody(req));
+      try {
+        const sellerId = await consumePasswordReset(token, String(f.password ?? ""));
+        if (!sellerId) return sendPage(res, renderResetForm({ token, valid: false, next: f.next }), "/reset-password");
+        const session = await createSession(sellerId);
+        await logActivity({ sellerId, kind: "login", method, path: "/reset-password", detail: "Set a new password and signed in" });
+        const to = safeNext(f.next);
+        const landing = to === "/app" ? "/app?msg=" + encodeURIComponent("Password updated — you're signed in.") : to;
+        return redirectWithCookie(res, landing, sessionCookie(session));
+      } catch (err) {
+        const message = err instanceof AuthError ? err.message : "Could not set that password. Please try again.";
+        if (!(err instanceof AuthError)) console.error("reset error:", err);
+        return sendPage(res, renderResetForm({ token, valid: true, error: message, next: f.next }), "/reset-password");
+      }
+    }
+    return redirect(res, "/reset-password");
+  }
+
+  if (path !== "/reset-password") return notFound(res);
+
+  if (method === "GET") {
+    return sendPage(res, renderResetRequest({ email: url.searchParams.get("email") ?? "", next }), "/reset-password");
+  }
+  if (method === "POST") {
+    const f = parseForm(await readBody(req));
+    const email = String(f.email ?? "").trim();
+    if (!isValidEmail(email)) {
+      return sendPage(res, renderResetRequest({ email, next: f.next, error: "Enter a valid email address." }), "/reset-password");
+    }
+    try {
+      const r = await createPasswordReset(email);
+      if (r) {
+        const link = `${appBaseUrl(url.origin)}/reset-password/${r.token}${f.next ? "?next=" + encodeURIComponent(f.next) : ""}`;
+        await sendMail({
+          to: email,
+          subject: "Reset your CardIndex password",
+          text:
+            `Someone (hopefully you) asked to reset the password for this CardIndex account.\n\n` +
+            `Set a new password here — the link works once and expires in 60 minutes:\n${link}\n\n` +
+            `If you didn't ask for this, ignore this email; your password hasn't changed.`,
+          html:
+            `<p>Someone (hopefully you) asked to reset the password for this CardIndex account.</p>` +
+            `<p><a href="${link}">Set a new password</a> — the link works once and expires in 60 minutes.</p>` +
+            `<p>If you didn't ask for this, ignore this email; your password hasn't changed.</p>`,
+        });
+        await logActivity({ sellerId: r.sellerId, kind: "action", method, path, detail: "Requested a password reset link" });
+      }
+    } catch (err) {
+      console.error("reset email error:", err);
+      return sendPage(
+        res,
+        renderResetRequest({ email, next: f.next, error: "We couldn't send the email just now. Please try again in a minute." }),
+        "/reset-password"
+      );
+    }
+    return sendPage(res, renderResetRequest({ email, next: f.next, sent: true, mode: mailMode() }), "/reset-password");
+  }
+  return redirect(res, "/reset-password");
+}
+
+// ---- owner console sub-router ---------------------------------------------
+
+/**
+ * The owner's CRM. Gate: a live OWNER session (its own login at /admin/login,
+ * its own cookie). Customer accounts — Free, Pro, any of them — never get in;
+ * without an owner session every /admin URL just shows the owner sign-in.
+ * Data access here is deliberately cross-tenant (app/admin.ts); anything that
+ * ADDS cards for a customer runs inside that customer's seller scope through
+ * the very same handlers the customer's own pages use.
+ */
+async function handleAdmin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  path: string,
+  method: string,
+  msg: string | undefined
+) {
+  const acct = currentAccount();
+  const admin = !!acct?.admin;
+
+  // ---- owner sign-in / sign-out (no session needed) ----
+  if (path === "/admin/login") {
+    if (method === "POST") {
+      const f = parseForm(await readBody(req));
+      const ip = clientIp(req);
+      const email = String(f.email ?? "");
+      const next = f.next && f.next.startsWith("/admin") && !f.next.startsWith("//") ? f.next : "/admin";
+      if (!adminConfigured()) return sendPage(res, renderAdminLogin({ configured: false }), "/admin/login");
+      if (adminAuthenticate(email, String(f.password ?? ""), ip)) {
+        const token = await createAdminSession(ip);
+        return redirectWithCookie(res, next, adminCookie(token));
+      }
+      const locked = adminLockedFor(ip);
+      return sendPage(res, renderAdminLogin({ configured: true, email, error: "Wrong owner email or password.", lockedMinutes: locked || undefined, next: f.next }), "/admin/login");
+    }
+    if (admin) return redirect(res, "/admin");
+    return sendPage(res, renderAdminLogin({ configured: adminConfigured(), lockedMinutes: adminLockedFor(clientIp(req)) || undefined, next: url.searchParams.get("next") ?? undefined }), "/admin/login");
+  }
+  if (path === "/admin/logout") {
+    if (method === "POST") {
+      await destroyAdminSession(parseCookies(req.headers.cookie)[ADMIN_COOKIE]);
+      // Ending the owner session also ends owner mode.
+      res.writeHead(303, { location: "/admin/login", "set-cookie": [clearAdminCookie(), clearActAsCookie()] });
+      return res.end();
+    }
+    return redirect(res, "/admin");
+  }
+
+  // ---- everything else needs the owner session ----
+  if (!admin || !acct) {
+    if (method === "GET") return redirect(res, "/admin/login?next=" + encodeURIComponent(path + (url.search || "")));
+    return redirect(res, "/admin/login");
+  }
+
+  let m: RegExpMatchArray | null;
+  const back = (id: number, note: string) => `/admin/users/${id}?msg=` + encodeURIComponent(note);
+
+  if (method === "POST") {
+    if (path === "/admin/stop-acting") {
+      const to = acct.acting ? `/admin/users/${acct.acting.id}` : "/admin";
+      return redirectWithCookie(res, to, clearActAsCookie());
+    }
+
+    const ctype = String(req.headers["content-type"] ?? "");
+    // Photo upload on behalf of a customer (multipart) — same pipeline as /app/scan/upload.
+    if ((m = path.match(/^\/admin\/users\/(\d+)\/add-photos$/)) && ctype.startsWith("multipart/form-data")) {
+      const id = Number(m[1]);
+      const target = await getUser(id);
+      if (!target) return notFound(res);
+      const boundary = boundaryOf(ctype);
+      let mp = { fields: {} as Record<string, string>, files: [] as UploadedFile[] };
+      try {
+        const buf = await readBodyBuffer(req);
+        if (boundary) mp = parseMultipart(buf, boundary);
+      } catch (err) {
+        return redirect(res, back(id, tooLargeMessage(err)));
+      }
+      const landing = await runWithSeller(id, () => handleScanUpload(mp.fields, mp.files));
+      if (!landing.startsWith("/app/review/")) return redirect(res, back(id, decodeURIComponent(landing.split("msg=")[1] ?? "Nothing uploaded.")));
+      await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: `Owner uploaded ${mp.files.length} photo${mp.files.length === 1 ? "" : "s"} for review` });
+      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`Owner mode — photos added to ${target.display_name}'s review queue.`), actAsCookie(id));
+    }
+
+    const f = parseForm(await readBody(req));
+
+    if ((m = path.match(/^\/admin\/users\/(\d+)\/(act-as|plan|add-cards)$/))) {
+      const id = Number(m[1]);
+      const target = await getUser(id);
+      if (!target) return notFound(res);
+
+      if (m[2] === "act-as") {
+        await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: "Owner opened this workspace" });
+        return redirectWithCookie(res, safeNext(f.next), actAsCookie(id));
+      }
+
+      if (m[2] === "plan") {
+        const tier = f.tier === "pro" ? "pro" : "free";
+        if (tier !== target.plan_tier) {
+          await setPlanTier(id, tier);
+          await logActivity({ sellerId: id, byOwner: true, kind: "plan_change", method, path, detail: `Plan changed ${target.plan_tier === "pro" ? "Pro" : "Free"} → ${tier === "pro" ? "Pro" : "Free"} by owner` });
+        }
+        return redirect(res, back(id, `${target.display_name} is now on the ${tier === "pro" ? "Pro" : "Free"} tier.`));
+      }
+
+      // add-cards: paste lines → identify → the customer's review queue, then
+      // land the owner on that queue in owner mode to confirm + add to inventory.
+      const landing = await runWithSeller(id, () => handleScan(f));
+      if (!landing.startsWith("/app/review/")) return redirect(res, back(id, "Paste at least one card line."));
+      const n = (f.lines ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
+      await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: `Owner added ${n} card line${n === 1 ? "" : "s"} for review` });
+      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`Owner mode — ${n} card${n === 1 ? "" : "s"} queued in ${target.display_name}'s review queue. Confirm and add to inventory.`), actAsCookie(id));
+    }
+
+    if ((m = path.match(/^\/admin\/feedback\/(\d+)\/reply$/))) {
+      const id = Number(m[1]);
+      const reply = (f.reply ?? "").trim();
+      if (f.close === "1") {
+        await closeFeedback(id, reply);
+      } else if (reply) {
+        await replyFeedback(id, reply);
+      }
+      const ret = (req.headers.referer ?? "").includes("/admin/users/") ? req.headers.referer! : "/admin/feedback";
+      return redirect(res, ret.split("?")[0] + "?msg=" + encodeURIComponent(f.close === "1" ? "Closed." : reply ? "Reply sent — it's in their inbox." : "Nothing to send.") + `#fb-${id}`);
+    }
+
+    return redirect(res, "/admin");
+  }
+
+  // ---- GET pages ----
+  if (path === "/admin") {
+    const [ov, daily, recent, newest] = await Promise.all([overview(), dailyActive(14), listActivity({}, 25), listUsers({ sort: "newest" }, 6)]);
+    return sendPage(res, renderAdminHome(ov, daily, recent, newest, msg), "/admin");
+  }
+  if (path === "/admin/users") {
+    const f = { q: url.searchParams.get("q") ?? undefined, tier: url.searchParams.get("tier") ?? undefined, sort: url.searchParams.get("sort") ?? undefined };
+    return sendPage(res, renderAdminUsers(await listUsers(f), f, msg), "/admin/users");
+  }
+  if ((m = path.match(/^\/admin\/users\/(\d+)$/))) {
+    const id = Number(m[1]);
+    const u = await getUser(id);
+    if (!u) return notFound(res);
+    const [usage, seller, batches, activity, feedback] = await Promise.all([
+      userUsage(id),
+      runWithSeller(id, () => getSeller()),
+      userBatches(id, 8),
+      listActivity({ sellerId: id }, 40),
+      listAllFeedback({ sellerId: id }, 20),
+    ]);
+    return sendPage(res, renderAdminUser(u, usage, seller, batches, activity, feedback, msg), path);
+  }
+  if (path === "/admin/upload") {
+    const users = await listUsers({ sort: "name" });
+    const id = num(url.searchParams.get("user"));
+    const target = id ? users.find((u) => u.id === id) ?? null : null;
+    const seller = target ? await runWithSeller(target.id, () => getSeller()) : null;
+    return sendPage(res, renderAdminUpload(users, target, seller, msg), "/admin/upload");
+  }
+  if (path === "/admin/activity") {
+    const f = { sellerId: num(url.searchParams.get("user")), kind: url.searchParams.get("kind") ?? undefined };
+    const [rows, users] = await Promise.all([listActivity(f, 200), listUsers({ sort: "name" })]);
+    return sendPage(res, renderAdminActivity(rows, f, users, msg), "/admin/activity");
+  }
+  if (path === "/admin/feedback") {
+    const status = url.searchParams.get("status") ?? "all";
+    return sendPage(res, renderAdminFeedback(await listAllFeedback({ status }), status, msg), "/admin/feedback");
+  }
+  return notFound(res);
 }
 
 // ---- app sub-router -------------------------------------------------------
@@ -1085,18 +1493,62 @@ async function handleApp(
   msg: string | undefined
 ) {
   const acct = currentAccount();
-  if (!acct) {
+  // Owner mode: the owner session + act-as cookie run the whole request as the
+  // customer being helped (no customer login needed, and no paywall — the owner
+  // may well be adding cards for a Free-tier account).
+  if (acct?.acting) {
+    const sellerId = acct.acting.id;
+    if (!path.startsWith("/api/")) {
+      await logActivity({ sellerId, byOwner: true, kind: method === "POST" ? "action" : "page", method, path, detail: describeActivity(method, path) });
+    }
+    return runWithSeller(sellerId, () => handleAppAuthed(req, res, url, path, method, msg));
+  }
+  if (!acct || acct.id == null) {
+    // No customer account: an owner-only session goes back to the console.
+    if (acct?.admin) return redirect(res, "/admin/users?msg=" + encodeURIComponent("Pick a user and open their workspace, or sign in to a customer account for your own."));
     if (method === "GET") {
       return redirect(res, "/login?next=" + encodeURIComponent(path + (url.search || "")));
     }
     return redirect(res, "/login");
   }
-  // Pro paywall: the whole seller workspace requires an active Pro subscription.
-  // Free accounts are bounced to /pricing (the public catalog stays open to them).
-  if (!isPro(await planTier(acct.id))) {
+  // Pro paywall. Free accounts get the dashboard, the pricing tool, card search,
+  // sales lookup, inbox and settings (CardUploader's free surface); anything
+  // that adds cards to inventory, manages stock, or publishes is Pro and bounces
+  // to /pricing.
+  if (proRequired(path) && !isPro(await planTier(acct.id))) {
     return redirect(res, "/pricing?upgrade=1");
   }
+  // Activity tracking (feeds the owner console). API calls are skipped — they're
+  // type-ahead noise; every page view and form action is one row.
+  if (!path.startsWith("/api/")) {
+    await logActivity({ sellerId: acct.id, kind: method === "POST" ? "action" : "page", method, path, detail: describeActivity(method, path) });
+  }
   return runWithSeller(acct.id, () => handleAppAuthed(req, res, url, path, method, msg));
+}
+
+/** Workspace paths a Free account may use; everything else under /app is Pro. */
+const FREE_APP_PATHS = new Set([
+  "/app",
+  // Add cards: the page itself is open (its "price only" outcome is free);
+  // the inventory outcome is gated where the form is handled (see kindForMode).
+  "/app/scan",
+  "/app/scan/upload",
+  "/app/pricing-tool",
+  "/app/pricing-tool/upload",
+  "/app/card-search",
+  "/app/sales-lookup",
+  "/app/inbox",
+  "/app/settings",
+  "/api/identify",
+  "/api/title-preview",
+  "/api/description-preview",
+]);
+function proRequired(path: string): boolean {
+  if (FREE_APP_PATHS.has(path)) return false;
+  // Priced lists (results + share links) belong to the free pricing tool;
+  // converting one into an inventory batch does not.
+  if (/^\/app\/pricing\/\d+(\/(share|unshare))?$/.test(path)) return false;
+  return true;
 }
 
 async function handleAppAuthed(
@@ -1154,11 +1606,19 @@ async function handleAppAuthed(
       try {
         const buf = await readBodyBuffer(req);
         if (boundary) mp = parseMultipart(buf, boundary);
-      } catch {
-        return redirect(res, "/app/scan?msg=" + encodeURIComponent("Upload too large — try fewer or smaller images."));
+      } catch (err) {
+        // Send the user back to the page they uploaded from, not always /app/scan.
+        const mi = path.match(/^\/app\/review\/(\d+)\/item\/\d+\/image$/);
+        // (The multipart body couldn't be parsed, so the mode field is unknown; the
+        // page picks its default by plan.)
+        const back = mi ? `/app/review/${mi[1]}` : path === "/app/orders/import" ? "/app/orders" : path === "/app/pricing-tool/upload" ? "/app/scan?mode=price" : "/app/scan";
+        return redirect(res, back + (back.includes("?") ? "&" : "?") + "msg=" + encodeURIComponent(tooLargeMessage(err)));
       }
-      if (path === "/app/scan/upload") return redirect(res, await handleScanUpload(mp.fields, mp.files));
-      if (path === "/app/pricing-tool/upload") return redirect(res, await handleScanUpload(mp.fields, mp.files, "pricing"));
+      if (path === "/app/scan/upload" || path === "/app/pricing-tool/upload") {
+        const kind = path === "/app/pricing-tool/upload" ? "pricing" : kindForMode(mp.fields.mode);
+        if (kind === "scan" && !(await workspacePro())) return redirect(res, "/pricing?upgrade=1");
+        return redirect(res, await handleScanUpload(mp.fields, mp.files, kind));
+      }
       if (path === "/app/orders/import") {
         const file = mp.files.find((x) => x.field === "csv");
         if (!file) return redirect(res, "/app/orders?msg=" + encodeURIComponent("Choose a CSV file."));
@@ -1176,8 +1636,11 @@ async function handleAppAuthed(
     const body = await readBody(req);
     const f = parseForm(body);
 
-    if (path === "/app/scan") return redirect(res, await handleScan(f));
-    if (path === "/app/pricing-tool") return redirect(res, await handleScan(f, "pricing"));
+    if (path === "/app/scan" || path === "/app/pricing-tool") {
+      const kind = path === "/app/pricing-tool" ? "pricing" : kindForMode(f.mode);
+      if (kind === "scan" && !(await workspacePro())) return redirect(res, "/pricing?upgrade=1");
+      return redirect(res, await handleScan(f, kind));
+    }
     if (path === "/app/graded") return redirect(res, await handleGraded(f));
     if (path === "/app/listing-creator") return redirect(res, await handleCreator(f));
     if (path === "/app/blank-listing") return redirect(res, await handleBlank(f));
@@ -1204,7 +1667,7 @@ async function handleAppAuthed(
       const id = Number(m[1]);
       if (m[2] === "pick") await setItemPicked(id, intOr(f.item, 0), f.picked === "1");
       else if (m[2] === "ship") {
-        const r = await shipOrder(id);
+        const r = await shipOrder(id, (f.tracking ?? "").trim() ? { carrier: f.carrier ?? "Other", number: f.tracking } : null);
         const extra = await afterShip(id);
         return redirect(res, "/app/orders?msg=" + encodeURIComponent(`Order #${id} shipped — ${r.adjusted} inventory row${r.adjusted === 1 ? "" : "s"} adjusted.${extra}`));
       } else await deleteOrder(id);
@@ -1223,6 +1686,7 @@ async function handleAppAuthed(
         return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Policy sync failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
       }
     }
+    if (path === "/app/listings/bulk") return redirect(res, await handleListingsBulk(f, currentSellerId()));
     if ((m = path.match(/^\/app\/listings\/(\d+)\/(publish|end)$/))) {
       const id = Number(m[1]);
       if (m[2] === "publish") return redirect(res, await publishAndRedirect(id, `#${id}`));
@@ -1279,7 +1743,8 @@ async function handleAppAuthed(
   if (path === "/app/listing-creator")
     return sendPage(res, await renderListingCreator({ game: url.searchParams.get("game") ?? undefined, set: url.searchParams.get("set") ?? undefined }, msg), path);
   if (path === "/app/blank-listing") return sendPage(res, await renderBlankListing(msg), path);
-  if (path === "/app/pricing-tool") return sendPage(res, await renderPricingTool(msg), path);
+  // The pricing tool is the "price only" outcome of the Add cards page.
+  if (path === "/app/pricing-tool") return redirect(res, "/app/scan?mode=price" + (msg ? "&msg=" + encodeURIComponent(msg) : ""));
   if ((m = path.match(/^\/app\/pricing\/(\d+)$/))) {
     const b = await getBatch(Number(m[1]));
     if (!b) return notFound(res);
@@ -1326,9 +1791,24 @@ async function handleAppAuthed(
       return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connection failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
     }
   }
+  if (path === "/app/sales-lookup") {
+    const sp: SalesParams = {
+      q: url.searchParams.get("q") ?? undefined,
+      market: url.searchParams.get("market") ?? undefined,
+      type: url.searchParams.get("type") ?? undefined,
+      grade: url.searchParams.get("grade") ?? undefined,
+      sort: url.searchParams.get("sort") ?? undefined,
+    };
+    return sendPage(res, renderSalesLookup(sp, await searchSales(sp), msg), path);
+  }
   if (path === "/app/orders/picklist") return sendPage(res, renderPicklist(await picklist()), path);
   if (path === "/app/inbox") return sendPage(res, renderInbox(await listFeedback(), msg), path);
-  if (path === "/app/scan") return sendPage(res, await renderScan(msg, url.searchParams.get("add") ?? undefined), "/app/scan");
+  if (path === "/app/scan") {
+    const pro = await workspacePro();
+    const m = url.searchParams.get("mode");
+    const mode = m === "price" || m === "inventory" ? m : pro ? "inventory" : "price";
+    return sendPage(res, await renderScan(msg, url.searchParams.get("add") ?? undefined, { mode, pro }), "/app/scan");
+  }
   if (path === "/app/listings") return sendPage(res, await renderListings(msg), "/app/listings");
   if (path === "/app/settings") return sendPage(res, await renderSettings(msg), "/app/settings");
 
@@ -1348,4 +1828,7 @@ async function handleAppAuthed(
 
 server.listen(PORT, () => {
   console.log(`\n  CardIndex MVP running -> http://localhost:${PORT}\n`);
+  // Scheduled / spaced-out eBay publishing (app/ebay-sell.ts). Set SCHEDULER_DISABLED=1
+  // when running several instances so only one publishes.
+  if (process.env.SCHEDULER_DISABLED !== "1") startScheduler((sid, fn) => runWithSeller(sid, fn));
 });

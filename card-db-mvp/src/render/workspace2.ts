@@ -18,12 +18,34 @@ import {
 import { ruleKey } from "../app/pricing.ts";
 import { parseMatchingPrefs, prefsToForm, isEmptyPrefs } from "../app/matching.ts";
 import { GRADERS, GRADE_VALUES, certUrl, certProviderName } from "../app/graded.ts";
-import { ORDER_PLATFORMS, platformLabel, type OrderWithItems } from "../app/orders.ts";
+import { ORDER_PLATFORMS, CARRIERS, platformLabel, type OrderWithItems } from "../app/orders.ts";
 import { FEEDBACK_KINDS, FEEDBACK_TITLE_MAX, FEEDBACK_BODY_MAX, type Feedback } from "../app/feedback.ts";
 import type { SearchParams, SearchResult } from "../search.ts";
+import type { SalesParams, SalesResult } from "../sales.ts";
+import { renderSales } from "./sales.ts";
 import { EXPORT_FORMATS } from "../app/exporters.ts";
+import { MAX_UPLOAD_FILES, MAX_UPLOAD_BYTES } from "../upload.ts";
 
 type Page = { html: string; title: string; description: string };
+
+// ---- Sales lookup (inside the workspace) ------------------------------------
+// The public /sales page rendered inside the workspace chrome, so a seller
+// checking comps doesn't lose the sidebar and the "Add cards" action.
+
+export function renderSalesLookup(p: SalesParams, r: SalesResult, msg?: string): Page {
+  const inner = renderSales(p, r, { base: "/app/sales-lookup", embedded: true });
+  const html = `<div class="wrap ws">
+    ${wsHead("sales", "Sales lookup", "Real sold prices from the archive — eBay, Goldin and Fanatics — with accepted Best Offer prices revealed. Same data as the public page, inside your workspace.")}
+    ${flash(msg)}
+    <div class="sales-embed">${inner.html}</div>
+    ${APP_JS}
+  </div>`;
+  return {
+    html,
+    title: p.q ? `“${p.q}” sold prices — Seller workspace | CardIndex` : "Sales lookup — Seller workspace | CardIndex",
+    description: "Sold-price lookup inside your seller workspace.",
+  };
+}
 const dollars = (c: number | null | undefined): string => (c == null ? "" : (c / 100).toFixed(2));
 
 // ---- Graded cards ---------------------------------------------------------
@@ -217,7 +239,7 @@ export async function renderBlankListing(msg?: string): Promise<Page> {
         </div>
         <label class="fld"><span>Image URL <small>optional</small></span><input name="image_url" placeholder="https://…"></label>
         <label class="fld"><span>Description</span><textarea name="description" rows="6" placeholder="Leave blank to generate from the fields above."></textarea></label>
-        <label class="fld"><span>Schedule (optional)</span><input type="datetime-local" name="scheduled_at"></label>
+        <label class="fld"><span>Schedule (optional)</span><input type="datetime-local" name="scheduled_at"><input type="hidden" name="tz_offset" class="tz-offset"></label>
         <div class="list-actions"><button class="btn primary" type="submit">Create listing draft</button></div>
       </form>
       <aside class="ws-panel scan-side">
@@ -235,52 +257,8 @@ export async function renderBlankListing(msg?: string): Promise<Page> {
 }
 
 // ---- Ungraded pricing tool ------------------------------------------------
-
-export async function renderPricingTool(msg?: string): Promise<Page> {
-  const [seller, sets, batches] = await Promise.all([getSeller(), getAllSets(), listBatchesOfKind("pricing", 10)]);
-  const prefs = parseMatchingPrefs(seller.matching_prefs);
-  const matchVals = prefsToForm(prefs, sets);
-  const html = `<div class="wrap ws">
-    ${wsHead("pricing-tool", "Ungraded pricing tool", "Free · price a binder page, a stack, or a list against the catalog without adding anything to inventory. Share the priced list with a buyer or vendor by link.")}
-    ${flash(msg)}
-    ${setDatalist(sets)}
-    <div class="scan-grid">
-      <div class="scan-main">
-        <form class="ws-panel upload-form" method="post" action="/app/pricing-tool/upload" enctype="multipart/form-data">
-          <div class="ws-panel-head"><h2>Upload photos</h2><span class="eyebrow">single cards · binder pages · loose cards</span></div>
-          <label class="dropzone" id="dropzone" data-max-files="100" data-max-bytes="60000000">
-            <input type="file" name="images" id="imgInput" accept="image/*" capture="environment" multiple hidden>
-            <div class="dz-inner"><div class="dz-ic">📷</div><div class="dz-main"><b>Tap to choose</b> or drag &amp; drop</div><div class="dz-hint">Cards vertical and fully visible · up to 100 files</div></div>
-            <div class="dz-preview" id="dzPreview" hidden></div>
-          </label>
-          <div class="fld-row">
-            <label class="fld"><span>Label</span><input type="text" name="label" placeholder="e.g. Binder page 4"></label>
-            <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
-          </div>
-          ${matchingPanel(matchVals, !isEmptyPrefs(prefs), "pu")}
-          <div class="scan-submit"><button class="btn primary" type="submit" id="uploadBtn">Price photos →</button><span class="hint" id="dzCount">No photos selected yet</span></div>
-        </form>
-        <form class="ws-panel scan-form" method="post" action="/app/pricing-tool">
-          <div class="ws-panel-head"><h2>Or paste a list</h2></div>
-          <label class="fld"><span>Cards <small>one per line</small></span><textarea name="lines" rows="6" placeholder="Charizard 4/102 Base Set holo&#10;3x Pikachu 58/102 Base"></textarea></label>
-          <div class="fld-row">
-            <label class="fld"><span>Label</span><input type="text" name="label" placeholder="e.g. Trade binder"></label>
-            <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
-          </div>
-          ${matchingPanel(matchVals, !isEmptyPrefs(prefs), "pp")}
-          <div class="scan-submit"><button class="btn primary" type="submit">Price list →</button><span class="hint">Prices are TCGplayer-market based; nothing is added to inventory.</span></div>
-        </form>
-      </div>
-      <aside class="ws-panel scan-side">
-        <h2>Recent pricings</h2>
-        ${batches.length ? `<div class="batch-list">${batches.map((b) => `<a class="batch-row" href="/app/pricing/${b.id}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Pricing")}</span><span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"}${b.share_token ? " · shared" : ""}</span></a>`).join("")}</div>` : `<p class="hint">No pricings yet.</p>`}
-        <div class="seam-note"><span class="i">◆</span><div><b>Binder-page detection</b> (several cards in one photo, auto-cropped) plugs into the same upload — today each photo is treated as one card.</div></div>
-      </aside>
-    </div>
-    ${APP_JS}
-  </div>`;
-  return { html, title: "Pricing tool — Seller workspace | CardIndex", description: "Free ungraded card pricing." };
-}
+// The upload/paste forms now live on the Add cards page (render/app.ts,
+// `mode=price`); this file keeps the priced results + public share page.
 
 type PricedLine = { item: ScanItem; name: string; set: string; number: string | null; finish: string; finishLabel: string; image: string | null; market: number | null; slug: string; card_id: number };
 
@@ -348,7 +326,7 @@ export async function renderPricingResults(
   const html = `<div class="wrap ws">
     ${wsHead("pricing-tool", batch.label || `Pricing #${batch.id}`, `Priced against catalog market. ${matched < lines.length ? `${lines.length - matched} card${lines.length - matched === 1 ? "" : "s"} didn't match — fix them in review.` : "Every card matched."}`, `<a class="btn" href="/app/review/${batch.id}">Review matches</a><form method="post" action="/app/pricing/${batch.id}/convert" onsubmit="return confirm('Turn this pricing into an inventory batch? Cards will go through review and get SKUs when you add them.')"><button class="btn primary" type="submit">Turn into inventory batch →</button></form>`)}
     ${flash(o.msg)}
-    <div class="pricing-actions">${share}<a class="btn" href="/app/pricing-tool">← Pricing tool</a></div>
+    <div class="pricing-actions">${share}<a class="btn" href="/app/scan?mode=price">← Price more cards</a></div>
     ${table}
     ${APP_JS}
   </div>`;
@@ -427,7 +405,15 @@ export function renderOrders(orders: OrderWithItems[], f: { platform: string; st
           ${o.ship_to ? `<div class="hint">Ship to: ${esc(o.ship_to)}</div>` : ""}
           <div class="tablewrap"><table class="inv-table order-items"><tbody>${items}</tbody></table></div>
           <div class="order-actions">
-            ${o.status !== "shipped" ? `<form method="post" action="/app/orders/${o.id}/ship" onsubmit="return confirm('Mark shipped? Quantities come off inventory.')"><button class="btn sm primary" type="submit">Mark shipped</button></form><form method="post" action="/app/orders/${o.id}/delete" onsubmit="return confirm('Delete this order?')"><button class="btn sm ghost" type="submit">Delete</button></form>` : `<span class="hint">Shipped ${esc((o.shipped_at ?? "").slice(0, 10))}</span>`}
+            ${
+              o.status !== "shipped"
+                ? `<form method="post" action="/app/orders/${o.id}/ship" class="ship-form" onsubmit="return confirm('Mark shipped? Quantities come off inventory.')">
+                    <select name="carrier" aria-label="Carrier">${CARRIERS.map((c) => opt(c, c, "USPS")).join("")}</select>
+                    <input name="tracking" placeholder="Tracking # (optional)" class="mono" aria-label="Tracking number">
+                    <button class="btn sm primary" type="submit">Mark shipped</button>
+                  </form><form method="post" action="/app/orders/${o.id}/delete" onsubmit="return confirm('Delete this order?')"><button class="btn sm ghost" type="submit">Delete</button></form>`
+                : `<span class="hint">Shipped ${esc((o.shipped_at ?? "").slice(0, 10))}${o.tracking_number ? ` · ${esc(o.tracking_carrier ?? "")} <span class="mono">${esc(o.tracking_number)}</span>` : ""}</span>`
+            }
             ${o.note ? `<span class="hint">${esc(o.note)}</span>` : ""}
           </div>
         </div>`;

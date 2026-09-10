@@ -56,9 +56,18 @@ export function listFeedback(limit = 100): Promise<Feedback[]> {
   return query<Feedback>("SELECT * FROM feedback WHERE seller_id=$1 ORDER BY id DESC LIMIT $2", [currentSellerId(), limit]);
 }
 
-/** Operator reply (unscoped on purpose — an admin answers any seller's note). */
+/** Operator reply (unscoped on purpose — the owner answers any seller's note from /admin/feedback). */
 export async function replyFeedback(id: number, reply: string): Promise<void> {
   await query("UPDATE feedback SET reply=$1, status='answered', replied_at=now() WHERE id=$2", [reply.trim(), id]);
+}
+
+/** Close a note (owner action); an accompanying reply, if any, is saved too. */
+export async function closeFeedback(id: number, reply?: string): Promise<void> {
+  const r = (reply ?? "").trim();
+  await query(
+    "UPDATE feedback SET status='closed', reply=COALESCE(NULLIF($1,''), reply), replied_at=CASE WHEN NULLIF($1,'') IS NULL THEN replied_at ELSE now() END WHERE id=$2",
+    [r, id]
+  );
 }
 
 export async function unreadCount(): Promise<number> {

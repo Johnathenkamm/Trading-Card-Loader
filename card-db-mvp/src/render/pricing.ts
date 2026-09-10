@@ -19,9 +19,10 @@ function featureList(items: string[]): string {
 const FREE_FEATURES = [
   "Browse the full price catalog",
   "Search every card, set & variant",
-  "Live market prices",
-  "Price history &amp; sold comps",
+  "Live market prices, history &amp; sold comps",
   "Per-grade values (PSA · BGS · CGC)",
+  "<b>Ungraded pricing tool</b> — price a binder page by photo, share by link",
+  "Card search &amp; sales lookup inside your workspace",
 ];
 
 const PRO_FEATURES = [
@@ -47,15 +48,18 @@ export function renderPricing(opts: {
   const banner = upgrade
     ? `<div class="pay-banner" role="status">
         <span aria-hidden="true">🔒</span>
-        <span>The <b>seller workspace</b> is a Pro feature. Subscribe to Pro (${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL})
-        to scan, price and list your cards. Browsing the price catalog stays free.</span>
+        <span><b>Scanning, inventory and listings</b> are Pro features. Subscribe to Pro (${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL})
+        to add cards, build inventory and list on eBay. The catalog, pricing tool, card search and sales lookup stay free.</span>
       </div>`
     : "";
 
   // Free plan CTA — the catalog needs no account, so this is always an entry point.
   const freeCta = onFree
-    ? `<span class="plan-current on">✓ Your current plan</span>`
-    : `<a class="btn lg ghost" href="/browse">Browse the catalog</a>`;
+    ? `<span class="plan-current on">✓ Your current plan</span>
+      <a class="btn lg ghost" href="/app">Open your workspace →</a>`
+    : loggedIn
+    ? `<a class="btn lg ghost" href="/browse">Browse the catalog</a>`
+    : `<a class="btn lg ghost" href="/signup">Start free</a>`;
 
   // Pro plan CTA — state-aware. Online checkout is the next seam, so a signed-in
   // free user sees an honest "coming soon" rather than a button that can't charge.
@@ -87,7 +91,7 @@ export function renderPricing(opts: {
       <div class="plan${onFree ? " current" : ""}">
         <div class="plan-name">Free</div>
         <div class="plan-price"><span class="amt">$0</span><span class="per">/ forever</span></div>
-        <div class="plan-sub">The public price catalog — no account required.</div>
+        <div class="plan-sub">The price catalog needs no account. A free account adds the pricing tool and lookups.</div>
         ${featureList(FREE_FEATURES)}
         <div class="plan-cta">${freeCta}</div>
       </div>

@@ -16,6 +16,7 @@ import {
   cardHeadlinePrice,
 } from "../pg.ts";
 import type { Game, CardSet, Card, Variant, SoldSale } from "../db.ts";
+import { soldListingLink } from "../sales.ts";
 import {
   cardTile,
   cardUrl,
@@ -356,7 +357,7 @@ export async function renderCard(
       .slice(0, 40)
       .map(
         (s) => `<tr title="${esc(s.title)}">
-          <td class="date">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener nofollow">${esc(fmtDate(s.sold_on))}</a>` : esc(fmtDate(s.sold_on))}</td>
+          <td class="date">${(() => { const href = soldListingLink(s); return href ? `<a href="${esc(href)}" target="_blank" rel="noopener nofollow">${esc(fmtDate(s.sold_on))}</a>` : esc(fmtDate(s.sold_on)); })()}</td>
           <td>${sourceChip(s.marketplace)}</td>
           <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
           <td>${saleCell(s)}</td>
@@ -459,7 +460,7 @@ export async function renderCard(
           <a class="btn primary" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">+ Add to my inventory</a>
           <a class="btn" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">List on eBay</a>
           ${card.tcgplayer_url ? `<a class="btn" href="${esc(card.tcgplayer_url)}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
-          <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}&LH_Sold=1&LH_Complete=1" target="_blank" rel="noopener nofollow" title="Completed eBay sales for this card, on eBay itself">eBay sold ↗</a>
+          <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card in Sales Lookup">Sold prices</a>
           <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
         </div>
 

@@ -12,6 +12,7 @@
     "sync:tcgcsv": "node --env-file-if-exists=.env src/scripts/sync-tcgcsv.ts",
     "hash:catalog": "node --env-file-if-exists=.env src/scripts/hash-catalog.ts",
     "import:sold": "node --env-file-if-exists=.env src/scripts/import-sold.ts",
+    "check:sold-links": "node --env-file-if-exists=.env src/scripts/check-sold-links.ts",
     "grant-pro": "node --env-file-if-exists=.env src/scripts/grant-pro.ts",
     "start": "node --env-file-if-exists=.env src/server.ts",
     "dev": "node --watch --env-file-if-exists=.env src/server.ts",

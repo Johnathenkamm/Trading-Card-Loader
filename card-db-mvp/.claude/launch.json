@@ -14,6 +14,17 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5300,
       "autoPort": true
+    },
+    {
+      "name": "cardindex-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5400,
+      "autoPort": true
+    },
+    {
+      "name": "cardindex-attach",
+      "url": "http://localhost:5173"
     }
   ]
 }

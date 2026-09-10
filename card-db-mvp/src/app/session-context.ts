@@ -19,7 +19,21 @@ const storage = new AsyncLocalStorage<SellerContext>();
 // every render call. Distinct from the seller data scope above: this is display
 // state; that one gates data access and is only set inside the /app auth gate.
 
-export type HeaderAccount = { id: number; display_name: string } | null;
+/**
+ * Who is behind this request. `id` is the logged-in CUSTOMER account (null when
+ * only the owner-console session exists). `admin` is true for a live owner
+ * session (see app/admin.ts) — a separate login with its own cookie. `acting`
+ * is set when the owner has opened a customer's workspace: the /app routes then
+ * run inside THAT seller's data scope, and the page shell shows a banner.
+ */
+export type HeaderAccount = {
+  id: number | null;
+  display_name: string;
+  /** 'free' | 'pro' for the customer account; null for an owner-only session. */
+  plan_tier: string | null;
+  admin: boolean;
+  acting: { id: number; display_name: string; email: string | null; plan_tier: string } | null;
+} | null;
 
 const requestStore = new AsyncLocalStorage<{ account: HeaderAccount }>();
 

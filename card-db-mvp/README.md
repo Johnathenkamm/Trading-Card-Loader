@@ -43,6 +43,11 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # land sold listings in the canonical sold_sales archive, deduped and
                       # CANONICALIZED to card/variant/grade via the identify() parser.
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
+npm run check:sold-links [-- --force | --limit=N]
+                      # probe every archived listing URL and record its HTTP status on the
+                      # row; Sales Lookup and card pages hide the link on 404/410 so no one
+                      # lands on a dead listing (demo rows and malformed/eBay-search URLs
+                      # are never linked, regardless). Re-run weekly alongside import:sold.
 npm run hash:catalog  # build the photo-ID index: perceptual-hash every catalog reference
                       # image (re-run after adding sets; only new/changed cards fetch).
                       # Powers VISION_PROVIDER=hash — real photo identification, no API.
@@ -165,9 +170,14 @@ top of `src/seed.ts` to change them.
   publish" in the listing builder (Inventory item → offer → publish, with a
   pre-flight that reports every blocker at once), **Fetch eBay orders**
   (Fulfillment API, deduped), mark-shipped pushed back to eBay, and quantity
-  sync to live listings when a non-eBay order ships. `EBAY_MOCK=1` runs the
-  whole flow on canned responses; real use needs a keyset + RuName (see
-  `.env.example`).
+  sync to live listings when a non-eBay order ships. **Scheduled & spaced-out
+  publishing**: select listings → "Schedule & space out" (start time + every N
+  minutes, CardUploader's "Space Out"); an in-process runner publishes each one
+  when due (every `SCHEDULER_INTERVAL_MS`, default 60 s; `SCHEDULER_DISABLED=1`
+  on extra instances), parks a listing back as a draft after three failed
+  attempts with the error on its row. Shipping takes a carrier + tracking
+  number, which is passed to eBay. `EBAY_MOCK=1` runs the whole flow on canned
+  responses; real use needs a keyset + RuName (see `.env.example`).
 - **Multi-channel exports** (`src/app/exporters.ts`) — eBay File Exchange,
   TCGplayer inventory (ungraded only, optional My Store columns), Whatnot bulk
   listing and Shopify product CSVs from inventory rows and blank listings, with
@@ -213,12 +223,59 @@ top of `src/seed.ts` to change them.
   templates** (up to three, one active, `{variables}` inserted at the cursor,
   live preview; the active template feeds the listing builder, bulk listing
   creation and the CSV export), and saved eBay listing preferences.
-- **Accounts & login** (`/signup`, `/login`, `/logout`) — email + password
-  sign-in (scrypt-hashed, HttpOnly `SameSite=Lax` session cookies stored in
-  Postgres). The whole workspace is gated; the public catalog stays open for SEO.
-  Every customer's inventory, scans, listings, and settings are private to their
-  account — each store query is scoped to the logged-in seller. The first signup
-  claims the legacy single-tenant data; every account after is isolated.
+- **Accounts & login** (`/signup`, `/login`, `/logout`, `/reset-password`) —
+  email + password sign-in (scrypt-hashed, HttpOnly `SameSite=Lax` session
+  cookies stored in Postgres). Sign-up asks for a shop name, email and password
+  (show-password toggle, rule shown inline); sign-in has a "Forgot?" link on the
+  password row and offers the reset path in the error after a wrong password.
+  **Password reset** is email → single-use link (sha256 of the token stored,
+  60-minute expiry) → new password, which signs the user in and signs out every
+  other session. Email goes through `src/app/mailer.ts`: `MAIL_PROVIDER=log`
+  (default) prints the link to the server log so the flow works locally;
+  `MAIL_PROVIDER=resend` + `RESEND_API_KEY` sends for real (set `APP_BASE_URL`
+  behind a proxy). Deep links survive login via `?next=`, and a new signup lands
+  on the dashboard with a welcome, never on a login screen. Every customer's
+  inventory, scans, listings, and settings are private to their account — each
+  store query is scoped to the logged-in seller. The first signup claims the
+  legacy single-tenant data; every account after is isolated.
+- **Free vs. Pro inside the workspace** — a Free account gets the dashboard,
+  the ungraded pricing tool, card search, sales lookup, inbox and settings
+  (CardUploader's free surface); anything that adds cards, manages stock or
+  publishes is Pro and redirects to `/pricing?upgrade=1` (`proRequired()` in
+  `server.ts`). The sidebar and dashboard tiles mark Pro pages with a "Pro"
+  chip for Free accounts, and the header shows a plan pill on every page.
+- **Add cards is one page with two outcomes** (`/app/scan?mode=price|inventory`).
+  The old Scan page and Pricing tool shared the same forms and server code, so
+  they are merged: the seller picks the outcome first, and each choice shows a
+  small pipeline of what happens to the photos — *Price only* (Free: identified,
+  priced at market, shareable list, photos kept only as thumbnails) or *Add to
+  inventory* (Pro: review, SKUs, photos stored as listing images). Pro-only
+  fields (pricing rule, SKU prefix) appear only for the inventory outcome; a
+  Free account choosing it sees what Pro unlocks instead of a form that would
+  bounce. `/app/pricing-tool` redirects to the price outcome.
+- **Workspace navigation** — a sticky left sidebar grouped by what you do
+  there: *Add cards* (Ungraded, Graded, Listing creator, Blank listing, Pricing
+  tool), *Manage* (Batches, Inventory, Automatic inventory, Listings, Orders),
+  *Look up* (Card search, Sales lookup — the public `/sales` rendered inside the
+  workspace), *Account*. Pages that don't take cards in carry a persistent
+  "+ Add cards" action; the rail collapses to icons (preference persisted per
+  browser; forced collapsed on review pages, open on Settings).
+- **Owner console / CRM** (`/admin`) — the operator's back-office, behind its
+  **own login**: set `ADMIN_EMAIL` + `ADMIN_PASSWORD`, sign in at
+  `/admin/login`, and the owner session (its own HttpOnly cookie, 24 h, 5
+  failed attempts locks the IP for 15 min) unlocks the console. Customer
+  accounts, Free or Pro, never get in — every `/admin` URL just shows the owner
+  sign-in. The console shows every account with its **Free or Pro tier**, last
+  login / last seen, 7-day activity and inventory counts; a per-user profile
+  with an upgrade/downgrade button, usage stats, their batches, feedback and a
+  full **activity timeline** (every login, page view and action is logged to
+  `activity_log`); a site-wide activity feed; a feedback queue with replies that
+  land in the user's inbox; and an **owner uploader** (`/admin/upload`: pick a
+  customer, then upload photos or paste a list — same identify → review pipeline
+  as the customer's scan page). "Open workspace" enters **owner mode**: the
+  whole `/app` runs inside that seller's data scope with no paywall, a banner
+  shows whose account it is, and every change is tagged "by owner" in the log.
+  See `src/app/admin.ts` / `src/render/admin.ts`.
 
 Photo **upload, storage, review, and a pluggable vision hook** work end-to-end.
 Vision recognition is provider-based (`VISION_PROVIDER=none|mock|http`, see
@@ -243,7 +300,9 @@ card-db-mvp/
     server.ts             node:http router (public site + auth + /app workspace + POST handling)
     util.ts               esc/slug/money/rng/levenshtein helpers
     app/                  seller workspace logic
-      auth.ts             password hashing (scrypt), sessions, account creation, cookies
+      auth.ts             password hashing (scrypt), sessions, account creation, password-reset tokens, cookies
+      mailer.ts           outbound email (log | resend) for reset links
+      admin.ts            owner login (ADMIN_EMAIL/ADMIN_PASSWORD, admin_sessions), activity log, cross-tenant CRM queries, owner-mode cookie
       session-context.ts  request-scoped seller + account (AsyncLocalStorage) for tenant isolation
       identify.ts         parse a card line → catalog match + alternatives + confidence
       pricing.ts          pricing rules (market / ±% / fixed), conditions, languages
@@ -256,6 +315,7 @@ card-db-mvp/
       components.ts        card tile, SVG price chart, chips, pager, breadcrumb
       pages.ts            home, browse, set, card, search renderers + sitemap
       app.ts              inventory, scan, review, listing builder, listings, settings
+      admin.ts            owner console: overview, users, user profile, activity, feedback
       auth.ts             login + signup pages
   public/styles.css       design system (dark-navy default, cobalt-blue accent, Bricolage/IBM Plex)
   data/catalog.db         generated by `npm run seed`
@@ -289,8 +349,9 @@ card-db-mvp/
   `sellers` row is a customer (workspace tables already carried `seller_id`);
   `src/app/auth.ts` handles scrypt hashing, sessions, and cookies, and
   `src/app/session-context.ts` scopes every query to the logged-in seller.
-  Still a seam: Stripe billing/plan tiers, email verification + password reset,
-  OAuth sign-in, and per-request CSRF tokens (session cookies are `SameSite=Lax`).
+  Password reset is done (email link via `src/app/mailer.ts`). Still a seam:
+  Stripe billing checkout, email verification, Google sign-in, and per-request
+  CSRF tokens (session cookies are `SameSite=Lax`).
 - **Still to build**: graded-card slab scanner (OCR/QR + cert lookup), eBay
   variation listings, and the non-eBay marketplace exporters (TCGplayer, Whatnot,
   Shopify, …) — the inventory/listing records are already marketplace-agnostic.

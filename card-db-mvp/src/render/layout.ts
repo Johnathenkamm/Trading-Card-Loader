@@ -23,16 +23,54 @@ export const BRAND_MARK = `<svg class="mark" viewBox="0 0 32 32" width="27" heig
 function accountControls(): string {
   const acct = currentAccount();
   if (acct) {
+    const owner = acct.admin ? `<a class="hdr-owner" href="/admin" title="Owner console: users, plans, activity">Owner</a>` : "";
+    if (acct.id == null) {
+      // Owner-console session only (no customer account signed in).
+      return `<div class="hdr-acct">
+      ${owner}
+      <form method="post" action="/admin/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Sign out</button></form>
+    </div>`;
+    }
+    // Plan state on every page (CardUploader keeps this in the account menu):
+    // a Free / Pro pill plus the one plan action that applies.
+    const pro = acct.plan_tier === "pro";
+    const plan = pro
+      ? `<a class="hdr-plan pro" href="/app/settings#s-plan" title="Your plan and billing">Pro</a>`
+      : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free — upgrade to Pro to scan, build inventory and list">Upgrade</a>`;
     return `<div class="hdr-acct">
+      ${owner}
       <a class="acct-name" href="/app" title="Your seller workspace">${esc(acct.display_name)}</a>
+      ${plan}
       <form method="post" action="/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Log out</button></form>
     </div>`;
   }
   return `<a class="hdr-signin" href="/login">Sign in</a>
-    <a class="btn primary hdr-cta" href="/app/scan">Start free</a>`;
+    <a class="btn primary hdr-cta" href="/signup">Start free</a>`;
+}
+
+/**
+ * Owner mode banner: shown on every page while the owner is working inside a
+ * customer's workspace, so it's never ambiguous whose data a form will touch.
+ */
+function actingBanner(): string {
+  const acct = currentAccount();
+  const a = acct?.acting;
+  if (!a) return "";
+  return `<div class="owner-banner" role="status">
+    <div class="wrap owner-banner-in">
+      <span class="ob-ic">👁</span>
+      <span>Owner mode — you're in <b>${esc(a.display_name)}</b>'s workspace${a.email ? ` <span class="mono">(${esc(a.email)})</span>` : ""} · <span class="pill ${a.plan_tier === "pro" ? "sold" : ""}">${a.plan_tier === "pro" ? "Pro" : "Free"}</span>. Everything you add or change lands in their account.</span>
+      <a class="btn sm" href="/admin/users/${a.id}">Their profile</a>
+      <form method="post" action="/admin/stop-acting" class="inline-form"><button class="btn sm" type="submit">Exit owner mode</button></form>
+    </div>
+  </div>`;
 }
 
 function header(searchValue = ""): string {
+  // Logged out, the workspace link says where it goes: the sign-in page, with
+  // the workspace as the return path (the same rewrite CardUploader's header does).
+  const acct = currentAccount();
+  const appHref = acct && acct.id != null ? "/app" : "/login?next=%2Fapp";
   return `
 <header class="site-header">
   <div class="wrap bar">
@@ -44,7 +82,7 @@ function header(searchValue = ""): string {
       <a href="/search">Search</a>
       <a href="/sales">Sales Lookup</a>
       <a href="/pricing">Pricing</a>
-      <a href="/app" class="nav-app">Seller tools</a>
+      <a href="${appHref}" class="nav-app">Seller tools</a>
     </nav>
     <div class="header-search">
       <div class="searchbox">
@@ -180,6 +218,7 @@ ${ld}
 </head>
 <body>
 ${header(o.searchValue)}
+${actingBanner()}
 <main>
 ${o.html ?? o.body ?? ""}
 </main>

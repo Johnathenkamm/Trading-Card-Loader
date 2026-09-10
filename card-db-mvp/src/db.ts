@@ -86,6 +86,9 @@ export type SoldSale = {
   condition: string | null;
   canon_confidence: number | null;
   is_demo: boolean;
+  /** Last HTTP status seen for `url` by check:sold-links (null = never checked). */
+  url_status: number | null;
+  url_checked_at: string | null;
 };
 export type Variant = {
   id: number;

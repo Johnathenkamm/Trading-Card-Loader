@@ -34,7 +34,12 @@ export async function ensureOrdersSchema(): Promise<void> {
     )`);
   await query(`CREATE INDEX IF NOT EXISTS idx_orders_seller ON orders(seller_id, status)`);
   await query(`CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`);
+  await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_carrier text`);
+  await query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_number text`);
 }
+
+export const CARRIERS = ["USPS", "UPS", "FedEx", "DHL", "Royal Mail", "Canada Post", "Australia Post", "Other"];
+export type Tracking = { carrier: string; number: string };
 
 export const ORDER_PLATFORMS: Array<{ key: string; label: string; live: boolean }> = [
   { key: "ebay", label: "eBay", live: false },
@@ -57,6 +62,8 @@ export type Order = {
   total_cents: number | null;
   created_at: string;
   shipped_at: string | null;
+  tracking_carrier: string | null;
+  tracking_number: string | null;
 };
 export type OrderItem = {
   id: number;
@@ -188,11 +195,19 @@ export async function setItemPicked(orderId: number, itemId: number, picked: boo
  * zero is marked sold), the order is stamped shipped. Mirrors CardUploader's
  * "marking Sold records the sale and takes the cards off the platform".
  */
-export async function shipOrder(orderId: number): Promise<{ adjusted: number }> {
+export async function shipOrder(orderId: number, tracking?: Tracking | null): Promise<{ adjusted: number }> {
   const o = await getOrder(orderId);
   if (!o || o.status === "shipped") return { adjusted: 0 };
   const sid = currentSellerId();
   return tx(async (c) => {
+    if (tracking?.number) {
+      await c.query("UPDATE orders SET tracking_carrier=$1, tracking_number=$2 WHERE id=$3 AND seller_id=$4", [
+        tracking.carrier || "Other",
+        tracking.number.trim().slice(0, 64),
+        orderId,
+        sid,
+      ]);
+    }
     const items = (await c.query("SELECT inventory_id, quantity FROM order_items WHERE order_id=$1", [orderId])).rows;
     let adjusted = 0;
     for (const it of items) {
