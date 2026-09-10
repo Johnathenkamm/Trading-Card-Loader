@@ -18,12 +18,54 @@ import { identify } from "./app/identify.ts";
 import { parseInput } from "./app/identify.ts";
 
 /**
- * Link-health columns on sold_sales (idempotent, runs at server start like the
- * other ensure*Schema bootstraps). Populated by `npm run check:sold-links`.
+ * Sold-sales archive schema (idempotent, runs at server start like the other
+ * ensure*Schema bootstraps). Creates `sold_sales` when the database was
+ * provisioned before the archive existed — a deploy must never crash on a
+ * missing table — and adds the link-health columns populated by
+ * `npm run check:sold-links`. Mirrors db/schema.postgres.sql.
  */
 export async function ensureSalesSchema(): Promise<void> {
+  await query(`
+    CREATE TABLE IF NOT EXISTS sold_sales (
+      id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      source           text NOT NULL,
+      marketplace      text NOT NULL,
+      external_id      text,
+      title            text NOT NULL,
+      price_cents      integer NOT NULL,
+      list_price_cents integer,
+      currency         text NOT NULL DEFAULT 'USD',
+      sale_type        text NOT NULL DEFAULT 'unknown',
+      bids             integer,
+      sold_on          date NOT NULL,
+      url              text,
+      image_url        text,
+      card_id          bigint REFERENCES cards(id) ON DELETE SET NULL,
+      variant_id       bigint REFERENCES card_variants(id) ON DELETE SET NULL,
+      grade            text,
+      condition        text,
+      canon_confidence real,
+      is_demo          boolean NOT NULL DEFAULT false,
+      raw              jsonb,
+      created_at       timestamptz NOT NULL DEFAULT now(),
+      url_status       integer,
+      url_checked_at   timestamptz
+    )`);
   await query(`ALTER TABLE sold_sales ADD COLUMN IF NOT EXISTS url_status integer`);
   await query(`ALTER TABLE sold_sales ADD COLUMN IF NOT EXISTS url_checked_at timestamptz`);
+  await query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_sold_ext ON sold_sales(source, external_id) WHERE external_id IS NOT NULL`
+  );
+  await query(`CREATE INDEX IF NOT EXISTS idx_sold_variant ON sold_sales(variant_id, grade, sold_on DESC)`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_sold_card ON sold_sales(card_id, sold_on DESC)`);
+  // Trigram index needs pg_trgm; the extension may need privileges we lack on a
+  // managed database, so a failure here only costs search speed, never the boot.
+  try {
+    await query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_sold_title_trgm ON sold_sales USING gin (title gin_trgm_ops)`);
+  } catch (err) {
+    console.warn("  sold_sales: trigram index not created (pg_trgm unavailable):", (err as Error).message);
+  }
 }
 
 // ---- Listing links ----------------------------------------------------------
