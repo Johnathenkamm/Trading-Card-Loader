@@ -482,6 +482,18 @@ function altRow(a: Candidate) {
   };
 }
 
+/**
+ * Count photos into an open batch as each upload chunk lands, so the batch
+ * list (and the cap check on the next chunk) can see how far along it is
+ * before finalizeBatch() settles the totals from the item rows.
+ */
+export async function bumpBatchProgress(batchId: number, n: number): Promise<void> {
+  await query(
+    "UPDATE scan_batches SET total=total+$1, processed=processed+$1 WHERE id=$2 AND seller_id=$3",
+    [n, batchId, currentSellerId()]
+  );
+}
+
 export async function finalizeBatch(batchId: number): Promise<void> {
   const total = (await one<{ n: number }>(
     "SELECT COUNT(*) n FROM scan_items WHERE batch_id=$1",

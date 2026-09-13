@@ -190,7 +190,16 @@ top of `src/seed.ts` to change them.
     defaults.
   - **Upload photos** (multipart → object storage): drag/drop or camera-capture
     card images, one item per photo, stored via the storage layer and shown in
-    the queue. Identification runs through a **pluggable vision provider**
+    the queue. Batches are **chunked**: the dropzone script shrinks each photo
+    on the device to 1600 px JPEG (`UPLOAD_MAX_EDGE`; a 12 MP phone photo goes
+    from ~4 MB to ~300 KB, no accuracy cost for the hasher; undecodable formats
+    such as HEIC are sent as-is), opens a batch
+    (`/app/scan/upload/start`), sends the photos in groups of 20
+    (`/app/scan/upload/:batch/chunk`, each under the 60 MB request limit) with
+    a progress bar and resume-on-retry, then closes it (`…/finish`). Caps are
+    **100 photos per batch on Free, 500 on Pro** (`src/upload.ts`; the owner's
+    `/admin/upload` gets the Pro cap). Without script the form posts once.
+    Identification runs through a **pluggable vision provider**
     (`VISION_PROVIDER`, `src/app/vision.ts`) — a recognizer's labels resolve
     against the catalog exactly like typed input; with none configured it falls
     back to a filename hint (`charizard-4-102.jpg`), then manual search. Front
@@ -270,11 +279,16 @@ top of `src/seed.ts` to change them.
   with an upgrade/downgrade button, usage stats, their batches, feedback and a
   full **activity timeline** (every login, page view and action is logged to
   `activity_log`); a site-wide activity feed; a feedback queue with replies that
-  land in the user's inbox; and an **owner uploader** (`/admin/upload`: pick a
-  customer, then upload photos or paste a list — same identify → review pipeline
-  as the customer's scan page). "Open workspace" enters **owner mode**: the
-  whole `/app` runs inside that seller's data scope with no paywall, a banner
-  shows whose account it is, and every change is tagged "by owner" in the log.
+  land in the user's inbox; and the owner's **personal uploader**
+  (`/admin/upload`: upload photos or paste a list — same identify → review
+  pipeline as the customer's scan page — into the **owner's own account**, a
+  seller row flagged `sellers.is_owner` that is created on boot from
+  `ADMIN_EMAIL`, hidden from the user lists, and never a customer's). With an
+  owner session, `/app` is that own workspace (inventory, batches, listings,
+  settings), so nothing the owner adds ever lands in someone else's account.
+  "Open workspace" on a user's profile enters **owner mode**: the whole `/app`
+  runs inside that customer's data scope with no paywall, a banner shows whose
+  account it is, and every change is tagged "by owner" in the log.
   See `src/app/admin.ts` / `src/render/admin.ts`.
 
 Photo **upload, storage, review, and a pluggable vision hook** work end-to-end.

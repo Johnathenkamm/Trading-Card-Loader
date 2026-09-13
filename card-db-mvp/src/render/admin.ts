@@ -9,7 +9,7 @@ import { BRAND_MARK } from "./layout.ts";
 import { ruleKey } from "../app/pricing.ts";
 import { FEEDBACK_KINDS } from "../app/feedback.ts";
 import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL } from "../app/billing.ts";
-import { MAX_UPLOAD_FILES, MAX_UPLOAD_BYTES } from "../upload.ts";
+import { MAX_UPLOAD_FILES_PRO, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_FILES, UPLOAD_MAX_EDGE } from "../upload.ts";
 import type { Seller } from "../app/store.ts";
 import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow } from "../app/admin.ts";
 
@@ -60,7 +60,7 @@ function subnav(active: string): string {
   const items: Array<[string, string, string]> = [
     ["/admin", "Overview", "home"],
     ["/admin/users", "Users", "users"],
-    ["/admin/upload", "Upload cards", "upload"],
+    ["/admin/upload", "My uploader", "upload"],
     ["/admin/activity", "Activity", "activity"],
     ["/admin/feedback", "Feedback", "feedback"],
   ];
@@ -231,7 +231,7 @@ export function renderAdminUsers(rows: UserRow[], f: UserFilter, msg?: string): 
     .join("");
 
   const html = `<div class="wrap ws">
-    ${adminHead("users", "Users", "Every account, its plan tier, and how active it is. Open a profile to change the plan, add cards, or work inside their workspace.")}
+    ${adminHead("users", "Users", "Every account, its plan tier, and how active it is. Open a profile to change the plan or work inside their workspace.")}
     ${flash(msg)}
     <form class="inv-toolbar" method="get" action="/admin/users">
       <div class="tabs">${tierTabs}</div>
@@ -306,25 +306,6 @@ export function renderAdminUser(
     </div>
   </div>`;
 
-  const addCards = `<div class="ws-panel">
-    <div class="ws-panel-head"><h2>Add cards for ${esc(u.display_name)}</h2><a class="btn sm" href="/admin/upload?user=${u.id}">Full uploader →</a></div>
-    <form method="post" action="/admin/users/${u.id}/add-cards" class="scan-form">
-      <label class="fld">
-        <span>Cards <small>one per line — name, number (4/102 or #119), set, finish, condition, language, qty (e.g. 3x)</small></span>
-        <textarea name="lines" rows="5" placeholder="Charizard 4/102 Base Set holo NM&#10;3x Pikachu 58/102 Base&#10;The Wandering Emperor Neon Dynasty foil"></textarea>
-      </label>
-      <div class="fld-row">
-        <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Added by owner · consignment"></label>
-        <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
-        <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
-      </div>
-      <div class="scan-submit">
-        <button class="btn primary" type="submit">Identify &amp; queue for review →</button>
-        <span class="hint">Photos? Use the <a href="/admin/upload?user=${u.id}">uploader</a>.</span>
-      </div>
-    </form>
-  </div>`;
-
   const batchPanel = `<div class="ws-panel">
     <div class="ws-panel-head"><h2>Recent batches</h2></div>
     ${
@@ -353,7 +334,7 @@ export function renderAdminUser(
     ${flash(msg)}
     ${usageCard}
     <div class="home-grid">
-      <div>${actAs}${addCards}${actPanel}</div>
+      <div>${actAs}${actPanel}</div>
       <div>${planCard}${idCard}${batchPanel}${fbPanel}</div>
     </div>
     ${APP_JS}
@@ -362,53 +343,65 @@ export function renderAdminUser(
 }
 
 // ---- Owner uploader -------------------------------------------------------
-// The owner's own scan page: pick an account, then upload photos or paste a
-// list exactly like /app/scan. Posts to the per-user add routes, so the batch
-// lands in that customer's review queue and the owner is taken there in owner
-// mode. Same element ids as the customer scan page so APP_JS enhances the
-// dropzone (previews, drag & drop, file limits) and the sample loader.
+// The owner's PERSONAL scan page: upload photos or paste a list exactly like
+// /app/scan, into the owner's own account (app/admin.ts ensureOwnerSeller) —
+// never into a customer's. Posts to /admin/upload/photos and /admin/upload;
+// the batch lands in the owner's own review queue and they're taken there to
+// confirm and add to their inventory. Same element ids as the customer scan
+// page so APP_JS enhances the dropzone (previews, drag & drop, file limits)
+// and the sample loader.
 
-export function renderAdminUpload(users: UserRow[], target: UserRow | null, seller: Seller | null, msg?: string): Page {
-  const picker = `<form method="get" action="/admin/upload" class="ws-panel upload-target">
-    <div class="ws-panel-head"><h2>Add cards to</h2><span class="eyebrow">${users.length} account${users.length === 1 ? "" : "s"}</span></div>
-    <div class="fld-row">
-      <label class="fld"><span>Account</span>
-        <select name="user" onchange="this.form.submit()">${opt("", "Choose an account…", String(target?.id ?? ""))}${users
-          .map((u) => opt(String(u.id), `${u.display_name}${u.email ? " · " + u.email : ""} (${u.plan_tier === "pro" ? "Pro" : "Free"})`, String(target?.id ?? "")))
-          .join("")}</select></label>
-      <div class="fld"><span>&nbsp;</span><button class="btn" type="submit">Select</button></div>
+export function renderAdminUpload(
+  owner: UserRow | null,
+  seller: Seller | null,
+  usage: UserUsage | null,
+  batches: Array<{ id: number; label: string | null; source: string; kind: string; status: string; total: number; review: number; created_at: string }>,
+  msg?: string
+): Page {
+  const account = owner && usage
+    ? `<div class="ws-panel act-panel upload-target">
+    <div class="ws-panel-head"><h2>Your account</h2><span class="mono sub">seller #${owner.id}${owner.email ? ` · ${esc(owner.email)}` : ""}</span></div>
+    <p class="hint">Everything you add here goes into <b>your own</b> inventory — the owner's account, separate from every customer. Each upload becomes a batch in your review queue; confirm it there and it's in your inventory.</p>
+    <div class="stat-cards">
+      <div class="stat"><div class="k">Inventory</div><div class="v mono">${owner.inventory}</div><div class="s">${usage.inventory_units} unit${usage.inventory_units === 1 ? "" : "s"} · ${money(usage.inventory_value_cents)}</div></div>
+      <div class="stat"><div class="k">Batches</div><div class="v mono">${owner.batches}</div><div class="s">${usage.last_batch_at ? `last ${ago(usage.last_batch_at)}` : "none yet"}</div></div>
+      <div class="stat${usage.review_items ? " attn" : ""}"><div class="k">Awaiting review</div><div class="v mono">${usage.review_items}</div><div class="s">${usage.review_items ? "cards waiting on you" : "nothing waiting"}</div></div>
+      <div class="stat"><div class="k">Listings</div><div class="v mono">${owner.listings}</div><div class="s">${usage.listed} listed · ${usage.sold} sold</div></div>
     </div>
-    ${
-      target
-        ? `<p class="hint">Cards go into <b>${esc(target.display_name)}</b>'s account (${tierPill(target.plan_tier)} · ${target.inventory} in inventory · ${target.batches} batch${target.batches === 1 ? "" : "es"}). Each upload becomes a batch in their review queue; you'll be taken there in owner mode to confirm and add to inventory. <a href="/admin/users/${target.id}">Their profile →</a></p>`
-        : `<p class="hint">Pick the customer whose account the cards belong to. Your own account is in the list too.</p>`
-    }
-  </form>`;
+    <div class="act-buttons">
+      <a class="btn primary" href="/app">Open my workspace</a>
+      <a class="btn" href="/app/batches">My batches</a>
+      <a class="btn" href="/app/inventory">My inventory</a>
+      <a class="btn" href="/app/listings">My listings</a>
+      <a class="btn" href="/app/settings">My settings</a>
+    </div>
+  </div>`
+    : "";
 
   let forms = "";
-  if (target && seller) {
+  if (owner && seller) {
     const rk = ruleKey(seller.price_mode, seller.price_pct);
     forms = `<div class="scan-grid">
       <div class="scan-main">
-        <form class="ws-panel upload-form" method="post" action="/admin/users/${target.id}/add-photos" enctype="multipart/form-data">
+        <form class="ws-panel upload-form" method="post" action="/admin/upload/photos" enctype="multipart/form-data">
           <div class="ws-panel-head"><h2>Upload photos</h2><span class="eyebrow">phone or scanner</span></div>
-          <label class="dropzone" id="dropzone" data-max-files="${MAX_UPLOAD_FILES}" data-max-bytes="${MAX_UPLOAD_BYTES}">
+          <label class="dropzone" id="dropzone" data-max-files="${MAX_UPLOAD_FILES_PRO}" data-max-bytes="${MAX_UPLOAD_BYTES}" data-chunk="${UPLOAD_CHUNK_FILES}" data-max-edge="${UPLOAD_MAX_EDGE}">
             <input type="file" name="images" id="imgInput" accept="image/*" capture="environment" multiple hidden>
             <div class="dz-inner">
               <div class="dz-ic">📷</div>
               <div class="dz-main"><b>Tap to choose</b> or drag &amp; drop card photos</div>
-              <div class="dz-hint">JPG / PNG / WebP / HEIC · one card per image · front side · up to ${MAX_UPLOAD_FILES} photos or ${Math.round(MAX_UPLOAD_BYTES / 1_000_000)} MB per batch</div>
+              <div class="dz-hint">JPG / PNG / WebP / HEIC · one card per image · front side · up to ${MAX_UPLOAD_FILES_PRO} photos per batch · resized to ${UPLOAD_MAX_EDGE} px on your device and sent in groups of ${UPLOAD_CHUNK_FILES}</div>
             </div>
             <div class="dz-preview" id="dzPreview" hidden></div>
           </label>
           <div class="fld-row">
-            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Consignment box · ${esc(target.display_name)}"></label>
+            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Saturday show pickups"></label>
             <label class="fld"><span>Default condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
             <label class="fld"><span>Default language</span><select name="language">${languageOptions(seller.default_language)}</select></label>
           </div>
           <div class="fld-row">
             <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(rk)}</select></label>
-            <label class="fld"><span>Their SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
+            <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
           </div>
           <div class="scan-submit">
             <button class="btn primary" type="submit" id="uploadBtn">Upload &amp; identify →</button>
@@ -416,47 +409,56 @@ export function renderAdminUpload(users: UserRow[], target: UserRow | null, sell
           </div>
         </form>
 
-        <form class="scan-form ws-panel" method="post" action="/admin/users/${target.id}/add-cards" id="paste">
+        <form class="scan-form ws-panel" method="post" action="/admin/upload" id="paste">
           <div class="ws-panel-head"><h2>Or paste a list</h2><button type="button" class="btn sm" id="loadsample">Load sample</button></div>
           <label class="fld">
             <span>Cards <small>one per line — name, number (4/102 or #119), set, finish, condition, language, qty (e.g. 3x)</small></span>
             <textarea name="lines" id="lines" rows="7" placeholder="Charizard 4/102 Base Set holo NM&#10;3x Pikachu 58/102 Base&#10;The Wandering Emperor Neon Dynasty foil"></textarea>
           </label>
           <div class="fld-row">
-            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Box break · ${esc(target.display_name)}"></label>
+            <label class="fld"><span>Batch label</span><input type="text" name="label" placeholder="e.g. Box break"></label>
             <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
             <label class="fld"><span>Language</span><select name="language">${languageOptions(seller.default_language)}</select></label>
           </div>
           <div class="fld-row">
             <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(rk)}</select></label>
-            <label class="fld"><span>Their SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
+            <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
           </div>
           <div class="scan-submit">
             <button class="btn primary" type="submit">Identify cards →</button>
-            <span class="hint">You'll review every match in their queue before anything reaches their inventory.</span>
+            <span class="hint">You'll review every match in your queue before anything reaches your inventory.</span>
           </div>
         </form>
       </div>
 
       <aside class="ws-panel scan-side">
         <h2>How this works</h2>
-        <p><b>Same pipeline as the customer's scan page.</b> Photos are stored under their account and identified by the configured recognizer; pasted lines are parsed and matched against the catalog with a confidence score. Anything uncertain waits in <b>their</b> review queue.</p>
-        <p><b>Prices</b> follow the rule you pick here, or the price they last listed the same printing at, per their automatic-pricing setting.</p>
-        <p><b>SKUs</b> come from their counter (<span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span> is next), so nothing collides with cards they added themselves.</p>
-        <p>Every batch you add is tagged <span class="pill owner">by owner</span> in the activity log.</p>
+        <p><b>Same pipeline as the customer scan page</b>, running in your own account. Photos are stored under your account and identified by the configured recognizer; pasted lines are parsed and matched against the catalog with a confidence score. Anything uncertain waits in <b>your</b> review queue.</p>
+        <p><b>Prices</b> follow the rule you pick here, or the price you last listed the same printing at, per your automatic-pricing setting.</p>
+        <p><b>SKUs</b> come from your own counter (<span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span> is next).</p>
+        <p>Nothing here touches a customer's account. To work inside a customer's workspace, open it from <a href="/admin/users">Users</a>.</p>
+        ${
+          batches.length
+            ? `<h2 style="margin-top:18px">Your recent batches</h2><div class="batch-list">${batches
+                .map(
+                  (b) => `<a class="batch-row" href="${b.kind === "pricing" ? `/app/pricing/${b.id}` : `/app/review/${b.id}`}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || (b.source === "upload" ? "Photo batch" : b.source === "certs" ? "Graded batch" : b.source === "catalog" ? "Catalog picks" : "Pasted batch"))}</span><span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"} · ${b.review ? `<span class="warn">${b.review} to review</span>` : esc(b.status)} · ${ago(b.created_at)}</span></a>`
+                )
+                .join("")}</div>`
+            : ""
+        }
       </aside>
     </div>
     <script>window.__SAMPLE__=${JSON.stringify("Charizard 4/102 Base Set holo NM\n3x Pikachu 58/102 Base\nThe Wandering Emperor Neon Dynasty foil")};</script>`;
   }
 
   const html = `<div class="wrap ws">
-    ${adminHead("upload", "Upload cards", "Scan or paste cards straight into any customer's account — the owner's own version of the scan page.")}
+    ${adminHead("upload", "My uploader", "Scan or paste cards into <b>your own</b> account — the owner's personal version of the scan page. Customer accounts are never touched here.")}
     ${flash(msg)}
-    ${picker}
+    ${account}
     ${forms}
     ${APP_JS}
   </div>`;
-  return { html, title: "Upload cards — Owner console | CardIndex", description: "Owner uploader." };
+  return { html, title: "My uploader — Owner console | CardIndex", description: "The owner's personal card uploader." };
 }
 
 // ---- Activity feed --------------------------------------------------------

@@ -22,3 +22,7 @@ data/uploads/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# 50 MB of upscaled phone-size test photos (regenerate: see test-cards/chunk-upload-500.mjs)
+test-cards/phone/
+test-cards/distinct500/

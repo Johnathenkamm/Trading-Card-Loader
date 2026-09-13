@@ -24,7 +24,6 @@ import type { SearchParams, SearchResult } from "../search.ts";
 import type { SalesParams, SalesResult } from "../sales.ts";
 import { renderSales } from "./sales.ts";
 import { EXPORT_FORMATS } from "../app/exporters.ts";
-import { MAX_UPLOAD_FILES, MAX_UPLOAD_BYTES } from "../upload.ts";
 
 type Page = { html: string; title: string; description: string };
 

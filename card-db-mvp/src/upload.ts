@@ -16,9 +16,34 @@ export function boundaryOf(contentType: string | undefined): string | null {
   return m ? (m[1] ?? m[2]).trim() : null;
 }
 
-/** Upload limits, shared by the server (enforced) and the scan page (pre-flight check). */
-export const MAX_UPLOAD_FILES = 40;
-export const MAX_UPLOAD_BYTES = 60_000_000;
+/**
+ * Upload limits, shared by the server (enforced) and the scan page (pre-flight
+ * check + chunking).
+ *
+ * A photo batch is not one request. The dropzone script (render/app.ts APP_JS)
+ * opens a batch, sends the photos in chunks of UPLOAD_CHUNK_FILES, then
+ * finishes it — so a 500-photo batch is ~25 small requests, each bounded by
+ * MAX_UPLOAD_BYTES, instead of one multi-gigabyte POST that would exhaust the
+ * container's memory and any proxy timeout. The per-batch photo cap depends on
+ * the plan (CardUploader's own split is 100 Free / 500 paid). Without script
+ * the form still posts once, and the byte limit alone bounds that request.
+ */
+export const MAX_UPLOAD_BYTES = 60_000_000; // per request (one chunk)
+export const UPLOAD_CHUNK_FILES = 20; // photos per chunk request
+export const MAX_UPLOAD_FILES_FREE = 100; // photos per batch, Free
+export const MAX_UPLOAD_FILES_PRO = 500; // photos per batch, Pro (and the owner)
+
+/**
+ * Longest side, in pixels, that the dropzone script resizes each photo to on
+ * the device before sending (a 12 MP, 4 MB phone photo becomes ~1600×1200 and
+ * ~300 KB). The perceptual hasher works on a tiny downsampled frame, so this
+ * costs no accuracy; it cuts upload bytes ~10× and server decode time ~6×.
+ * CardUploader shrinks to the same 1600 px in the browser.
+ */
+export const UPLOAD_MAX_EDGE = 1600;
+
+/** Photos allowed in one batch for a plan. */
+export const maxUploadFiles = (pro: boolean): number => (pro ? MAX_UPLOAD_FILES_PRO : MAX_UPLOAD_FILES_FREE);
 
 /** Thrown by readBodyBuffer when a request body exceeds the byte limit. */
 export class UploadTooLargeError extends Error {

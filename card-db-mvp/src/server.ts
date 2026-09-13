@@ -44,7 +44,7 @@ import {
   renderOrders, renderPicklist, renderAutomaticInventory, renderInbox, renderSalesLookup,
 } from "./render/workspace2.ts";
 import {
-  addItemFromCatalog, shareBatch, unshareBatch, getBatchByToken, getItemsPublic, setBatchKind, getBatch,
+  addItemFromCatalog, shareBatch, unshareBatch, getBatchByToken, getItemsPublic, setBatchKind, getBatch, bumpBatchProgress,
   getListings, listBlankListings, markListingsExported, setListingStatus, marketCentsAt,
 } from "./app/store.ts";
 import { parseCerts, lookupCert, gradeLabel, graderOf, GRADE_VALUES } from "./app/graded.ts";
@@ -63,7 +63,10 @@ import {
 } from "./app/exporters.ts";
 import { formatSku } from "./app/sku.ts";
 import { parseInput, type IdentifyResult } from "./app/identify.ts";
-import { readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, tooLargeMessage, MAX_UPLOAD_FILES, type UploadedFile } from "./upload.ts";
+import {
+  readBodyBuffer, parseMultipart, boundaryOf, isImage, hintFromFilename, tooLargeMessage, maxUploadFiles, MAX_UPLOAD_FILES_PRO, UPLOAD_CHUNK_FILES,
+  type UploadedFile,
+} from "./upload.ts";
 import { storage, keyFor, localUploadsDir, contentTypeForExt } from "./storage.ts";
 import { visionIdentify } from "./app/vision.ts";
 
@@ -85,7 +88,7 @@ import {
   ensureAdminSchema, logActivity, describeActivity, listUsers, getUser, userUsage, overview, listActivity, dailyActive,
   listAllFeedback, userBatches, actAsCookie, clearActAsCookie, ACT_AS_COOKIE,
   ADMIN_COOKIE, adminConfigured, adminAuthenticate, adminLockedFor, adminSessionValid, createAdminSession, destroyAdminSession,
-  adminCookie, clearAdminCookie,
+  adminCookie, clearAdminCookie, ensureOwnerSeller, ownerSellerId,
 } from "./app/admin.ts";
 import { replyFeedback, closeFeedback } from "./app/feedback.ts";
 import {
@@ -146,6 +149,14 @@ try {
   process.exit(1);
 }
 if (!adminConfigured()) console.warn("  Owner console disabled: set ADMIN_EMAIL and ADMIN_PASSWORD to enable /admin.");
+// The owner's own seller row (their personal uploader / workspace). Idempotent.
+try {
+  const oid = await ensureOwnerSeller();
+  if (oid) console.log(`  Owner account: seller #${oid} (${process.env.ADMIN_EMAIL}) — /admin/upload adds cards there.`);
+} catch (err) {
+  console.error("\n  Failed to prepare the owner's own seller account.\n", err);
+  process.exit(1);
+}
 
 const STYLES = readFileSync(join(here, "..", "public", "styles.css"), "utf8");
 
@@ -159,6 +170,16 @@ function send(res: ServerResponse, status: number, body: string, type = "text/ht
 
 function sendPage(res: ServerResponse, rendered: { html: string; title: string; description: string }, canonical: string) {
   send(res, 200, page({ ...rendered, canonical }));
+}
+
+/** JSON reply for the fetch-driven endpoints (chunked uploads); `cookie` sets a Set-Cookie header. */
+function sendJson(res: ServerResponse, status: number, body: unknown, cookie?: string) {
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-cache",
+    ...(cookie ? { "set-cookie": cookie } : {}),
+  });
+  res.end(JSON.stringify(body));
 }
 
 function redirect(res: ServerResponse, location: string) {
@@ -198,9 +219,17 @@ async function resolveAccount(req: IncomingMessage): Promise<HeaderAccount> {
   // ignored outright.
   let acting: NonNullable<HeaderAccount>["acting"] = null;
   const actAs = Number(cookies[ACT_AS_COOKIE]);
+  const ownerId = admin ? await ownerSellerId() : null;
   if (admin && Number.isInteger(actAs) && actAs > 0) {
     const target = await getAccount(actAs);
-    if (target) acting = { id: target.id, display_name: target.display_name, email: target.email, plan_tier: target.plan_tier };
+    if (target) acting = { id: target.id, display_name: target.display_name, email: target.email, plan_tier: target.plan_tier, owner: target.id === ownerId };
+  }
+  // No customer login and no customer workspace opened: an owner session's /app
+  // is the owner's OWN workspace (their personal seller row), so what they scan
+  // or upload lands in their own inventory.
+  if (admin && !acct && !acting && ownerId) {
+    const own = await getAccount(ownerId);
+    if (own) acting = { id: own.id, display_name: own.display_name, email: own.email, plan_tier: own.plan_tier, owner: true };
   }
   return { id: acct?.id ?? null, display_name: acct?.display_name ?? "Owner", plan_tier: acct?.plan_tier ?? null, admin, acting };
 }
@@ -507,26 +536,50 @@ async function handleOrderCreate(f: Record<string, string>): Promise<string> {
  * "needs review" for manual search — the same path a vision model will feed once
  * it reads the pixels (see identify.ts / the seam note on the scan page).
  */
-async function handleScanUpload(fields: Record<string, string>, files: UploadedFile[], kind = "scan"): Promise<string> {
+/**
+ * Batch-level settings read off the upload form: condition, language, pricing
+ * rule and matching options, folded into a Seller view for pricing/titles.
+ * Every chunk of a batch carries the same form fields, so only the first call
+ * (`persist`) is allowed to write the "save as default" choices back.
+ */
+async function uploadSettings(fields: Record<string, string>, persist: boolean): Promise<{ seller: Seller; matching: IdentifyOptions }> {
   const base = await getSeller();
   const rr = parseRuleKey(fields.rule || "market");
   const condition = fields.condition || base.default_condition;
   const language = fields.language || base.default_language;
 
-  if (fields.sku_prefix && fields.sku_prefix.trim() && fields.sku_prefix.trim() !== base.sku_prefix) {
-    await updateSeller({ sku_prefix: fields.sku_prefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD" });
+  if (persist) {
+    if (fields.sku_prefix && fields.sku_prefix.trim() && fields.sku_prefix.trim() !== base.sku_prefix) {
+      await updateSeller({ sku_prefix: fields.sku_prefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD" });
+    }
+    if (fields.save_defaults === "1") {
+      await updateSeller({ default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct });
+    }
   }
-  if (fields.save_defaults === "1") {
-    await updateSeller({ default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct });
-  }
-  const matching = identifyOpts(await matchingFromForm(fields));
+  const f = persist ? fields : { ...fields, save_matching: "" };
+  const matching = identifyOpts(await matchingFromForm(f));
   const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
+  return { seller, matching };
+}
 
-  const imgs = files.filter((f) => f.field === "images" && isImage(f)).slice(0, MAX_UPLOAD_FILES);
-  if (!imgs.length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
+const uploadImages = (files: UploadedFile[]): UploadedFile[] => files.filter((f) => f.field === "images" && isImage(f));
 
+/** Open a photo batch (chunked upload step 1). Persists any "save as default" choices. */
+async function startScanUpload(fields: Record<string, string>, kind: string): Promise<number> {
+  await uploadSettings(fields, true);
+  return createBatch("upload", fields.label?.trim() || null, kind);
+}
+
+/**
+ * Store + identify photos into an open batch (chunked upload step 2, repeated).
+ * `room` is how many more photos the batch may take; extras are dropped.
+ * Returns the number added.
+ */
+async function ingestScanPhotos(batchId: number, fields: Record<string, string>, files: UploadedFile[], room: number): Promise<number> {
+  const imgs = uploadImages(files).slice(0, Math.max(0, room));
+  if (!imgs.length) return 0;
+  const { seller, matching } = await uploadSettings(fields, false);
   const store = storage();
-  const batchId = await createBatch("upload", fields.label?.trim() || null, kind);
   for (const file of imgs) {
     const put = await store.put(keyFor(seller.id, file.filename), file.data, file.contentType);
     // Vision provider reads the card (pixels → labels → catalog match); falls back
@@ -538,10 +591,71 @@ async function handleScanUpload(fields: Record<string, string>, files: UploadedF
     // Show the recognizer's reading (or the filename) as the item's raw label.
     await addItemFromIdentify(batchId, hintText || file.filename, result, seller, { imageUrl: put.url });
   }
+  await bumpBatchProgress(batchId, imgs.length);
+  return imgs.length;
+}
+
+/** Close a photo batch (chunked upload step 3): duplicates, totals, titles. Returns the landing URL. */
+async function finishScanUpload(batchId: number, fields: Record<string, string>, kind: string): Promise<string> {
+  const { seller } = await uploadSettings(fields, false);
   await detectDuplicates(batchId);
   await finalizeBatch(batchId);
   await titleBatch(batchId, seller);
   return batchLanding(kind, batchId);
+}
+
+/**
+ * An open upload batch the current seller may still add to, or null. Chunks
+ * and the finish call both go through this so a stray or replayed request
+ * can't append to someone else's batch or to one that's already closed.
+ */
+async function openUploadBatch(batchId: number) {
+  const b = await getBatch(batchId);
+  return b && b.source === "upload" && b.status === "processing" ? b : null;
+}
+
+/**
+ * Image-upload scan path (spec §2), single-request form: store each uploaded
+ * photo in the object store, identify it, and create a review-queue item
+ * carrying the image. This is the no-script fallback and the admin's one-shot
+ * path; with script the same three steps run as start → chunk… → finish (see
+ * the /app/scan/upload/* routes) so big batches never sit in one request.
+ */
+async function handleScanUpload(fields: Record<string, string>, files: UploadedFile[], kind = "scan", cap = MAX_UPLOAD_FILES_PRO): Promise<string> {
+  if (!uploadImages(files).length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Choose at least one image (JPG/PNG/WebP/HEIC).");
+  const batchId = await startScanUpload(fields, kind);
+  await ingestScanPhotos(batchId, fields, files, cap);
+  return finishScanUpload(batchId, fields, kind);
+}
+
+/**
+ * The chunked photo upload, shared by the seller workspace and the owner's
+ * uploader: `start` opens a batch, `chunk` adds up to a chunk of photos to it,
+ * `finish` closes it. Each step answers JSON for the dropzone script. `cap` is
+ * the plan's per-batch photo limit; `kind` is only consulted by `start` (later
+ * steps read it off the batch).
+ */
+async function handleChunkedUpload(
+  step: { op: "start"; kind: string } | { op: "chunk" | "finish"; batchId: number },
+  fields: Record<string, string>,
+  files: UploadedFile[],
+  cap: number
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  if (step.op === "start") {
+    const batchId = await startScanUpload(fields, step.kind);
+    return { status: 200, body: { batchId, max: cap, chunk: UPLOAD_CHUNK_FILES } };
+  }
+  const b = await openUploadBatch(step.batchId);
+  if (!b) return { status: 404, body: { error: "That upload batch is closed or isn't yours. Start the upload again." } };
+  if (step.op === "chunk") {
+    const room = cap - b.total;
+    if (room <= 0) return { status: 409, body: { error: `This batch is full — max ${cap} photos per batch.`, total: b.total } };
+    const added = await ingestScanPhotos(b.id, fields, files, Math.min(room, UPLOAD_CHUNK_FILES));
+    return { status: 200, body: { added, total: b.total + added, max: cap } };
+  }
+  if (!b.total) return { status: 400, body: { error: "No photos were uploaded to this batch." } };
+  const landing = await finishScanUpload(b.id, fields, b.kind);
+  return { status: 200, body: { landing, total: b.total } };
 }
 
 /** Attach or replace a scan item's front/back image (per-item upload in review). */
@@ -1313,9 +1427,11 @@ async function handleReset(
  * The owner's CRM. Gate: a live OWNER session (its own login at /admin/login,
  * its own cookie). Customer accounts — Free, Pro, any of them — never get in;
  * without an owner session every /admin URL just shows the owner sign-in.
- * Data access here is deliberately cross-tenant (app/admin.ts); anything that
- * ADDS cards for a customer runs inside that customer's seller scope through
- * the very same handlers the customer's own pages use.
+ * Data access here is deliberately cross-tenant (app/admin.ts). The uploader
+ * (/admin/upload) is the owner's PERSONAL one: it runs inside the owner's own
+ * seller scope (app/admin.ts ensureOwnerSeller) through the very same handlers
+ * the customer scan page uses, so cards land in the owner's inventory — never
+ * in a customer's account.
  */
 async function handleAdmin(
   req: IncomingMessage,
@@ -1367,33 +1483,66 @@ async function handleAdmin(
 
   if (method === "POST") {
     if (path === "/admin/stop-acting") {
-      const to = acct.acting ? `/admin/users/${acct.acting.id}` : "/admin";
+      const to = acct.acting && !acct.acting.owner ? `/admin/users/${acct.acting.id}` : "/admin";
       return redirectWithCookie(res, to, clearActAsCookie());
     }
 
     const ctype = String(req.headers["content-type"] ?? "");
-    // Photo upload on behalf of a customer (multipart) — same pipeline as /app/scan/upload.
-    if ((m = path.match(/^\/admin\/users\/(\d+)\/add-photos$/)) && ctype.startsWith("multipart/form-data")) {
-      const id = Number(m[1]);
-      const target = await getUser(id);
-      if (!target) return notFound(res);
+    const uploadBack = (note: string) => "/admin/upload?msg=" + encodeURIComponent(note);
+
+    // ---- the owner's own uploader: photos (multipart) ----
+    // Same pipeline as /app/scan/upload, inside the OWNER's seller scope. The
+    // batch lands in the owner's own review queue; the act-as cookie is pinned
+    // to the owner's row so the review page opens in their own workspace even
+    // if a customer's workspace was open before.
+    const ownerChunked = path.match(/^\/admin\/upload\/photos\/(?:(start)|(\d+)\/(chunk|finish))$/);
+    const queueMsg = (n: number) => `${n} photo${n === 1 ? "" : "s"} uploaded to your own review queue. Confirm to add them to your inventory.`;
+    if ((path === "/admin/upload/photos" || ownerChunked) && ctype.startsWith("multipart/form-data")) {
+      const ownerId = await ownerSellerId();
+      if (!ownerId) {
+        const note = "The owner account isn't set up — check ADMIN_EMAIL and restart.";
+        return ownerChunked ? sendJson(res, 500, { error: note }) : redirect(res, uploadBack(note));
+      }
       const boundary = boundaryOf(ctype);
       let mp = { fields: {} as Record<string, string>, files: [] as UploadedFile[] };
       try {
         const buf = await readBodyBuffer(req);
         if (boundary) mp = parseMultipart(buf, boundary);
       } catch (err) {
-        return redirect(res, back(id, tooLargeMessage(err)));
+        return ownerChunked ? sendJson(res, 413, { error: tooLargeMessage(err) }) : redirect(res, uploadBack(tooLargeMessage(err)));
       }
-      const landing = await runWithSeller(id, () => handleScanUpload(mp.fields, mp.files));
-      if (!landing.startsWith("/app/review/")) return redirect(res, back(id, decodeURIComponent(landing.split("msg=")[1] ?? "Nothing uploaded.")));
-      await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: `Owner uploaded ${mp.files.length} photo${mp.files.length === 1 ? "" : "s"} for review` });
-      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`Owner mode — photos added to ${target.display_name}'s review queue.`), actAsCookie(id));
+      // Chunked (fetch) steps, in the owner's seller scope. The finish reply
+      // pins the act-as cookie so the landing page opens in the owner's workspace.
+      if (ownerChunked) {
+        const step: Parameters<typeof handleChunkedUpload>[0] = ownerChunked[1]
+          ? { op: "start", kind: "scan" }
+          : { op: ownerChunked[3] as "chunk" | "finish", batchId: Number(ownerChunked[2]) };
+        const r = await runWithSeller(ownerId, () => handleChunkedUpload(step, mp.fields, mp.files, MAX_UPLOAD_FILES_PRO));
+        if (step.op === "finish" && r.status === 200) {
+          const landing = String(r.body.landing) + "?msg=" + encodeURIComponent(queueMsg(Number(r.body.total)));
+          return sendJson(res, 200, { ...r.body, landing }, actAsCookie(ownerId));
+        }
+        return sendJson(res, r.status, r.body);
+      }
+      const landing = await runWithSeller(ownerId, () => handleScanUpload(mp.fields, mp.files));
+      if (!landing.startsWith("/app/review/")) return redirect(res, uploadBack(decodeURIComponent(landing.split("msg=")[1] ?? "Nothing uploaded.")));
+      const n = mp.files.length;
+      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(queueMsg(n)), actAsCookie(ownerId));
     }
 
     const f = parseForm(await readBody(req));
 
-    if ((m = path.match(/^\/admin\/users\/(\d+)\/(act-as|plan|add-cards)$/))) {
+    // ---- the owner's own uploader: pasted list ----
+    if (path === "/admin/upload") {
+      const ownerId = await ownerSellerId();
+      if (!ownerId) return redirect(res, uploadBack("The owner account isn't set up — check ADMIN_EMAIL and restart."));
+      const landing = await runWithSeller(ownerId, () => handleScan(f));
+      if (!landing.startsWith("/app/review/")) return redirect(res, uploadBack("Paste at least one card line."));
+      const n = (f.lines ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
+      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`${n} card${n === 1 ? "" : "s"} queued in your own review queue. Confirm to add them to your inventory.`), actAsCookie(ownerId));
+    }
+
+    if ((m = path.match(/^\/admin\/users\/(\d+)\/(act-as|plan)$/))) {
       const id = Number(m[1]);
       const target = await getUser(id);
       if (!target) return notFound(res);
@@ -1403,22 +1552,13 @@ async function handleAdmin(
         return redirectWithCookie(res, safeNext(f.next), actAsCookie(id));
       }
 
-      if (m[2] === "plan") {
-        const tier = f.tier === "pro" ? "pro" : "free";
-        if (tier !== target.plan_tier) {
-          await setPlanTier(id, tier);
-          await logActivity({ sellerId: id, byOwner: true, kind: "plan_change", method, path, detail: `Plan changed ${target.plan_tier === "pro" ? "Pro" : "Free"} → ${tier === "pro" ? "Pro" : "Free"} by owner` });
-        }
-        return redirect(res, back(id, `${target.display_name} is now on the ${tier === "pro" ? "Pro" : "Free"} tier.`));
+      // plan
+      const tier = f.tier === "pro" ? "pro" : "free";
+      if (tier !== target.plan_tier) {
+        await setPlanTier(id, tier);
+        await logActivity({ sellerId: id, byOwner: true, kind: "plan_change", method, path, detail: `Plan changed ${target.plan_tier === "pro" ? "Pro" : "Free"} → ${tier === "pro" ? "Pro" : "Free"} by owner` });
       }
-
-      // add-cards: paste lines → identify → the customer's review queue, then
-      // land the owner on that queue in owner mode to confirm + add to inventory.
-      const landing = await runWithSeller(id, () => handleScan(f));
-      if (!landing.startsWith("/app/review/")) return redirect(res, back(id, "Paste at least one card line."));
-      const n = (f.lines ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
-      await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: `Owner added ${n} card line${n === 1 ? "" : "s"} for review` });
-      return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`Owner mode — ${n} card${n === 1 ? "" : "s"} queued in ${target.display_name}'s review queue. Confirm and add to inventory.`), actAsCookie(id));
+      return redirect(res, back(id, `${target.display_name} is now on the ${tier === "pro" ? "Pro" : "Free"} tier.`));
     }
 
     if ((m = path.match(/^\/admin\/feedback\/(\d+)\/reply$/))) {
@@ -1459,11 +1599,12 @@ async function handleAdmin(
     return sendPage(res, renderAdminUser(u, usage, seller, batches, activity, feedback, msg), path);
   }
   if (path === "/admin/upload") {
-    const users = await listUsers({ sort: "name" });
-    const id = num(url.searchParams.get("user"));
-    const target = id ? users.find((u) => u.id === id) ?? null : null;
-    const seller = target ? await runWithSeller(target.id, () => getSeller()) : null;
-    return sendPage(res, renderAdminUpload(users, target, seller, msg), "/admin/upload");
+    // The owner's personal uploader: everything here is the owner's own account.
+    const ownerId = await ownerSellerId();
+    const owner = ownerId ? await getUser(ownerId) : undefined;
+    if (!ownerId || !owner) return sendPage(res, renderAdminUpload(null, null, null, [], msg ?? "The owner account isn't set up — check ADMIN_EMAIL and restart."), "/admin/upload");
+    const [seller, usage, batches] = await Promise.all([runWithSeller(ownerId, () => getSeller()), userUsage(ownerId), userBatches(ownerId, 8)]);
+    return sendPage(res, renderAdminUpload(owner, seller, usage, batches, msg), "/admin/upload");
   }
   if (path === "/admin/activity") {
     const f = { sellerId: num(url.searchParams.get("user")), kind: url.searchParams.get("kind") ?? undefined };
@@ -1493,19 +1634,21 @@ async function handleApp(
   msg: string | undefined
 ) {
   const acct = currentAccount();
-  // Owner mode: the owner session + act-as cookie run the whole request as the
-  // customer being helped (no customer login needed, and no paywall — the owner
-  // may well be adding cards for a Free-tier account).
+  // Owner session: the request runs as the owner's OWN seller row (their
+  // personal workspace — no customer login needed) or, when the owner has
+  // explicitly opened a customer's workspace (owner mode), as that customer.
+  // Neither hits the paywall. Only owner-mode actions are logged: the customer
+  // activity feed shouldn't fill up with the owner's own uploads.
   if (acct?.acting) {
     const sellerId = acct.acting.id;
-    if (!path.startsWith("/api/")) {
+    if (!acct.acting.owner && !path.startsWith("/api/")) {
       await logActivity({ sellerId, byOwner: true, kind: method === "POST" ? "action" : "page", method, path, detail: describeActivity(method, path) });
     }
     return runWithSeller(sellerId, () => handleAppAuthed(req, res, url, path, method, msg));
   }
   if (!acct || acct.id == null) {
-    // No customer account: an owner-only session goes back to the console.
-    if (acct?.admin) return redirect(res, "/admin/users?msg=" + encodeURIComponent("Pick a user and open their workspace, or sign in to a customer account for your own."));
+    // Owner session without an owner seller row (console not configured): back to the console.
+    if (acct?.admin) return redirect(res, "/admin?msg=" + encodeURIComponent("Your owner account isn't set up — check ADMIN_EMAIL and restart."));
     if (method === "GET") {
       return redirect(res, "/login?next=" + encodeURIComponent(path + (url.search || "")));
     }
@@ -1545,6 +1688,9 @@ const FREE_APP_PATHS = new Set([
 ]);
 function proRequired(path: string): boolean {
   if (FREE_APP_PATHS.has(path)) return false;
+  // Chunked photo upload steps: the price-only outcome is free; the inventory
+  // outcome is gated in the `start` step itself (see handleAppAuthed).
+  if (/^\/app\/scan\/upload\/(start|\d+\/(chunk|finish))$/.test(path)) return false;
   // Priced lists (results + share links) belong to the free pricing tool;
   // converting one into an inventory batch does not.
   if (/^\/app\/pricing\/\d+(\/(share|unshare))?$/.test(path)) return false;
@@ -1602,11 +1748,14 @@ async function handleAppAuthed(
     const ctype = String(req.headers["content-type"] ?? "");
     if (ctype.startsWith("multipart/form-data")) {
       const boundary = boundaryOf(ctype);
+      // Chunked photo upload (fetch from the dropzone script): answers JSON.
+      const chunked = path.match(/^\/app\/scan\/upload\/(?:(start)|(\d+)\/(chunk|finish))$/);
       let mp = { fields: {} as Record<string, string>, files: [] as UploadedFile[] };
       try {
         const buf = await readBodyBuffer(req);
         if (boundary) mp = parseMultipart(buf, boundary);
       } catch (err) {
+        if (chunked) return sendJson(res, 413, { error: tooLargeMessage(err) });
         // Send the user back to the page they uploaded from, not always /app/scan.
         const mi = path.match(/^\/app\/review\/(\d+)\/item\/\d+\/image$/);
         // (The multipart body couldn't be parsed, so the mode field is unknown; the
@@ -1614,10 +1763,25 @@ async function handleAppAuthed(
         const back = mi ? `/app/review/${mi[1]}` : path === "/app/orders/import" ? "/app/orders" : path === "/app/pricing-tool/upload" ? "/app/scan?mode=price" : "/app/scan";
         return redirect(res, back + (back.includes("?") ? "&" : "?") + "msg=" + encodeURIComponent(tooLargeMessage(err)));
       }
+      if (chunked) {
+        const pro = await workspacePro();
+        let step: Parameters<typeof handleChunkedUpload>[0];
+        if (chunked[1]) {
+          const kind = kindForMode(mp.fields.mode);
+          // Same paywall as the one-shot form: inventory batches are Pro.
+          if (kind === "scan" && !pro) return sendJson(res, 402, { error: "Adding cards to inventory is a Pro feature.", redirect: "/pricing?upgrade=1" });
+          step = { op: "start", kind };
+        } else {
+          step = { op: chunked[3] as "chunk" | "finish", batchId: Number(chunked[2]) };
+        }
+        const r = await handleChunkedUpload(step, mp.fields, mp.files, maxUploadFiles(pro));
+        return sendJson(res, r.status, r.body);
+      }
       if (path === "/app/scan/upload" || path === "/app/pricing-tool/upload") {
         const kind = path === "/app/pricing-tool/upload" ? "pricing" : kindForMode(mp.fields.mode);
-        if (kind === "scan" && !(await workspacePro())) return redirect(res, "/pricing?upgrade=1");
-        return redirect(res, await handleScanUpload(mp.fields, mp.files, kind));
+        const pro = await workspacePro();
+        if (kind === "scan" && !pro) return redirect(res, "/pricing?upgrade=1");
+        return redirect(res, await handleScanUpload(mp.fields, mp.files, kind, maxUploadFiles(pro)));
       }
       if (path === "/app/orders/import") {
         const file = mp.files.find((x) => x.field === "csv");

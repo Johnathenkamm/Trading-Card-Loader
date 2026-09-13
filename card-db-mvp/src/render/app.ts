@@ -24,7 +24,7 @@ import {
   DEFAULT_STRUCTURE, TITLE_TOKENS, TITLE_MAX, parseStructure, serializeStructure, renderStructuredTitle,
 } from "../app/title.ts";
 import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL, isPro } from "../app/billing.ts";
-import { MAX_UPLOAD_FILES, MAX_UPLOAD_BYTES } from "../upload.ts";
+import { maxUploadFiles, MAX_UPLOAD_FILES_PRO, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_FILES, UPLOAD_MAX_EDGE } from "../upload.ts";
 import { GRADERS, GRADE_VALUES, certUrl, splitGrade } from "../app/graded.ts";
 import { EXPORT_FORMATS, parseChannelPrefs } from "../app/exporters.ts";
 import { marketCentsAt } from "../app/store.ts";
@@ -86,7 +86,7 @@ function navIcon(key: string): string {
 function currentPlanIsPro(): boolean {
   const a = currentAccount();
   if (!a) return true;
-  if (a.acting) return isPro(a.acting.plan_tier);
+  if (a.acting) return a.acting.owner || isPro(a.acting.plan_tier);
   if (a.id == null) return true;
   return isPro(a.plan_tier);
 }
@@ -569,12 +569,12 @@ export async function renderScan(
   const uploadForm = `<form class="ws-panel upload-form" method="post" action="/app/scan/upload" enctype="multipart/form-data">
           ${modeField}
           <div class="ws-panel-head"><h2>Upload photos</h2><span class="eyebrow">${priceMode ? "single cards · binder pages · loose cards" : "phone or scanner"}</span></div>
-          <label class="dropzone" id="dropzone" data-max-files="${MAX_UPLOAD_FILES}" data-max-bytes="${MAX_UPLOAD_BYTES}">
+          <label class="dropzone" id="dropzone" data-max-files="${maxUploadFiles(pro)}" data-max-bytes="${MAX_UPLOAD_BYTES}" data-chunk="${UPLOAD_CHUNK_FILES}" data-max-edge="${UPLOAD_MAX_EDGE}">
             <input type="file" name="images" id="imgInput" accept="image/*" capture="environment" multiple hidden>
             <div class="dz-inner">
               <div class="dz-ic">📷</div>
               <div class="dz-main"><b>Tap to choose</b> or drag &amp; drop card photos</div>
-              <div class="dz-hint">JPG / PNG / WebP / HEIC · one card per image · front side · up to ${MAX_UPLOAD_FILES} photos or ${Math.round(MAX_UPLOAD_BYTES / 1_000_000)} MB per batch</div>
+              <div class="dz-hint">JPG / PNG / WebP / HEIC · one card per image · front side · up to ${maxUploadFiles(pro)} photos per batch${pro ? "" : ` (${MAX_UPLOAD_FILES_PRO} on Pro)`} · resized to ${UPLOAD_MAX_EDGE} px on your device and sent in groups of ${UPLOAD_CHUNK_FILES}</div>
               <div class="dz-what">${
                 priceMode
                   ? `These photos are used to <b>identify and price</b> the cards. They stay only as thumbnails on the priced list.`
@@ -1410,19 +1410,26 @@ export const APP_JS = `<script>(function(){
   var ls=document.getElementById('loadsample');
   if(ls)ls.addEventListener('click',function(){var t=document.getElementById('lines');if(t&&window.__SAMPLE__){t.value=window.__SAMPLE__;t.focus();}});
 
-  // photo-upload dropzone: preview thumbnails, drag & drop, enable submit
+  // photo-upload dropzone: preview thumbnails, drag & drop, enable submit, and
+  // the chunked upload itself (see upload.ts): start → chunk… → finish, so a
+  // 500-photo batch is many small requests with a progress bar, never one
+  // giant POST. Without fetch/FormData the form posts once, the old way.
   var dz=document.getElementById('dropzone'), inp=document.getElementById('imgInput');
   if(dz&&inp){
     var prev=document.getElementById('dzPreview'), cnt=document.getElementById('dzCount'), btn=document.getElementById('uploadBtn');
-    var maxFiles=parseInt(dz.getAttribute('data-max-files'),10)||40, maxBytes=parseInt(dz.getAttribute('data-max-bytes'),10)||60000000;
+    var maxFiles=parseInt(dz.getAttribute('data-max-files'),10)||100, maxBytes=parseInt(dz.getAttribute('data-max-bytes'),10)||60000000, chunkN=parseInt(dz.getAttribute('data-chunk'),10)||20, maxEdge=parseInt(dz.getAttribute('data-max-edge'),10)||1600;
+    var canChunk=!!(window.fetch&&window.FormData&&window.Promise);
+    var canShrink=canChunk&&!!(window.createImageBitmap&&document.createElement('canvas').toBlob);
     function mb(b){return (b/1000000).toFixed(b<10000000?1:0)+' MB';}
-    // Pre-flight the server's limits (see upload.ts) so a too-big batch is caught
-    // before the bytes leave the phone, with a message that says what to trim.
+    // Pre-flight the server's limits so a too-big batch is caught before the
+    // bytes leave the phone. With script the photos travel in chunks, so the
+    // byte limit is per photo; without it the whole form is one request.
     function check(files){
-      var n=files.length, total=0; for(var i=0;i<n;i++)total+=files[i].size||0;
+      var n=files.length, total=0, biggest=0; for(var i=0;i<n;i++){var s=files[i].size||0;total+=s;if(s>biggest)biggest=s;}
       var over=[];
       if(n>maxFiles)over.push(n+' photos selected — max '+maxFiles+' per batch');
-      if(total>maxBytes)over.push(mb(total)+' selected — max '+mb(maxBytes)+' per batch');
+      if(canChunk){if(biggest>maxBytes)over.push('one photo is '+mb(biggest)+' — max '+mb(maxBytes)+' per photo');}
+      else if(total>maxBytes)over.push(mb(total)+' selected — max '+mb(maxBytes)+' per upload');
       return {n:n,total:total,msg:over.join(' · ')};
     }
     function render(){
@@ -1444,12 +1451,129 @@ export const APP_JS = `<script>(function(){
     inp.addEventListener('change',render);
     ['dragenter','dragover'].forEach(function(ev){dz.addEventListener(ev,function(e){e.preventDefault();dz.classList.add('drag');});});
     ['dragleave','drop'].forEach(function(ev){dz.addEventListener(ev,function(e){e.preventDefault();dz.classList.remove('drag');});});
-    dz.addEventListener('drop',function(e){if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length){inp.files=e.dataTransfer.files;render();}});
-    var upForm=dz.closest('form');
+    dz.addEventListener('drop',function(e){if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length){inp.files=e.dataTransfer.files;job=null;render();}});
+
+    // ---- chunked upload ----
+    // The form's other fields ride along with every request (the server reads
+    // condition/rule/matching off each one); the photos are split into groups
+    // of chunkN that each stay under the byte limit. The job object remembers
+    // how far a batch got so "Retry" resumes after a dropped connection instead of
+    // starting over; a new photo selection starts a new batch.
+    var upForm=dz.closest('form'), job=null;
+    function bar(){
+      var b=document.getElementById('dzBar');
+      if(!b&&cnt){b=document.createElement('div');b.className='dz-progress';b.id='dzBar';b.innerHTML='<i></i>';cnt.parentNode.appendChild(b);}
+      return b;
+    }
+    function progress(done,total,text){
+      var b=bar(); if(b){b.hidden=false;b.firstChild.style.width=Math.round(100*done/Math.max(1,total))+'%';}
+      if(cnt){cnt.textContent=text;cnt.classList.remove('is-over');}
+    }
+    function fail(msg){
+      if(cnt){cnt.textContent=msg;cnt.classList.add('is-over');}
+      if(btn){btn.disabled=false;btn.textContent=job&&job.batchId?'Retry upload →':'Try again →';}
+    }
+    function fieldsOf(){var fd=new FormData(upForm);fd.delete('images');return fd;}
+    function post(url,fd,tries){
+      return fetch(url,{method:'POST',body:fd,credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(r){
+        return r.json().catch(function(){return {};}).then(function(j){
+          if(r.ok)return j;
+          var err=new Error(j.error||('Upload failed (HTTP '+r.status+')'));err.status=r.status;err.redirect=j.redirect;throw err;
+        });
+      }).catch(function(e){
+        // network blips and server hiccups: wait a moment and send the same request again
+        if(tries>0&&(!e.status||e.status>=500))return new Promise(function(ok){setTimeout(ok,1500);}).then(function(){return post(url,fd,tries-1);});
+        throw e;
+      });
+    }
+    function groupsOf(files){
+      // With shrinking, the sent size is small and unknown up front, so group
+      // by count alone; without it the original bytes must fit one request.
+      var out=[],cur=[],bytes=0,cap=maxBytes*0.9;
+      for(var i=0;i<files.length;i++){
+        var f=files[i],s=canShrink?0:(f.size||0);
+        if(cur.length&&(cur.length>=chunkN||bytes+s>cap)){out.push(cur);cur=[];bytes=0;}
+        cur.push(f);bytes+=s;
+      }
+      if(cur.length)out.push(cur);
+      return out;
+    }
+
+    // ---- on-device shrink ----
+    // Phone photos are ~12 MP and 3–5 MB; the recognizer only needs ~1600 px
+    // (see UPLOAD_MAX_EDGE in upload.ts), so each photo is resized here before
+    // it is sent — ~10× fewer bytes, ~6× less server decode time. Photos the
+    // browser can't decode (HEIC outside Safari) go up as-is for the server.
+    // The result is {blob, name}; a photo already small enough is passed through.
+    function shrink(file){
+      var asIs={blob:file,name:file.name||'photo.jpg'};
+      if(!canShrink||String(file.type||'').indexOf('image/')!==0)return Promise.resolve(asIs);
+      return createImageBitmap(file,{imageOrientation:'from-image'}).catch(function(){return createImageBitmap(file);}).then(function(bmp){
+        var w=bmp.width,h=bmp.height,s=Math.min(1,maxEdge/Math.max(w,h,1));
+        if(s===1&&/jpe?g$/i.test(file.type)){if(bmp.close)bmp.close();return asIs;}
+        var tw=Math.max(1,Math.round(w*s)),th=Math.max(1,Math.round(h*s));
+        var c=document.createElement('canvas');c.width=tw;c.height=th;
+        c.getContext('2d').drawImage(bmp,0,0,tw,th); if(bmp.close)bmp.close();
+        return new Promise(function(ok){c.toBlob(function(b){ok(b);},'image/jpeg',0.85);}).then(function(b){
+          c.width=c.height=0;
+          return b?{blob:b,name:(file.name||'photo').replace(/\\.[^.]+$/,'')+'.jpg'}:asIs;
+        });
+      }).catch(function(){return asIs;});
+    }
+    // Shrink a group a few photos at a time (decoding 12 MP images in parallel
+    // is memory-hungry on phones).
+    function prepare(files){
+      var out=new Array(files.length),i=0,active=0;
+      return new Promise(function(done){
+        function next(){
+          if(i>=files.length&&active===0)return done(out);
+          while(active<3&&i<files.length){(function(k){active++;shrink(files[k]).then(function(r){out[k]=r;active--;next();});})(i++);}
+        }
+        next();
+      });
+    }
+    function warn(e){e.preventDefault();e.returnValue='';}
+    function run(){
+      var files=Array.prototype.slice.call(inp.files||[]), base=upForm.getAttribute('action'), groups=groupsOf(files), total=files.length;
+      if(!job)job={batchId:null,next:0,done:0,prepped:[]};
+      if(btn){btn.disabled=true;btn.textContent='Uploading…';}
+      window.addEventListener('beforeunload',warn);
+      // prepared groups are cached on the job so a Retry doesn't re-shrink
+      function prepped(gi){return job.prepped[gi]||(job.prepped[gi]=prepare(groups[gi]));}
+      var start=job.batchId?Promise.resolve(job.batchId):post(base+'/start',fieldsOf(),1).then(function(j){job.batchId=j.batchId;return j.batchId;});
+      start.then(function(id){
+        var p=Promise.resolve();
+        groups.forEach(function(g,gi){p=p.then(function(){
+          if(gi<job.next)return;
+          progress(job.done,total,'Preparing '+(job.done+1)+'–'+(job.done+g.length)+' of '+total+'…');
+          // shrink the next group while this one uploads
+          if(gi+1<groups.length)prepped(gi+1);
+          return prepped(gi).then(function(items){
+            progress(job.done,total,'Uploading '+(job.done+1)+'–'+(job.done+g.length)+' of '+total+'…');
+            var fd=fieldsOf(); items.forEach(function(it){fd.append('images',it.blob,it.name);});
+            return post(base+'/'+id+'/chunk',fd,2);
+          }).then(function(){job.prepped[gi]=null;job.next=gi+1;job.done+=g.length;progress(job.done,total,job.done+' of '+total+' identified');});
+        });});
+        return p;
+      }).then(function(){
+        progress(total,total,'Finishing up…');
+        return post(base+'/'+job.batchId+'/finish',fieldsOf(),2);
+      }).then(function(j){
+        window.removeEventListener('beforeunload',warn);
+        window.location.href=j.landing;
+      }).catch(function(e){
+        window.removeEventListener('beforeunload',warn);
+        if(e&&e.redirect){window.location.href=e.redirect;return;}
+        fail(((e&&e.message)||'Upload failed')+' — nothing is lost; press Retry to continue.');
+      });
+    }
     if(upForm)upForm.addEventListener('submit',function(e){
       if(check(inp.files||[]).msg){e.preventDefault();render();return;}
-      if(btn){btn.disabled=true;btn.textContent='Uploading…';}
+      if(!canChunk){if(btn){btn.disabled=true;btn.textContent='Uploading…';}return;}
+      e.preventDefault();
+      run();
     });
+    inp.addEventListener('change',function(){job=null;var b=document.getElementById('dzBar');if(b)b.hidden=true;});
     render();
   }
 
