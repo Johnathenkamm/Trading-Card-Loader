@@ -68,6 +68,9 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
   const c = await counts();
   const trending = await trendingCards(10);
   const hero = trending[0];
+  // The trust bar names the games actually in the catalog — no marketing counts.
+  const games = await getGames();
+  const gameNames = games.length ? games.map((g) => g.name.replace(/:.*$/, "")).join(" & ") : "Trading cards";
   const yourCents = hero ? Math.floor((hero.price_cents * 1.05) / 100) * 100 + 99 : 0;
 
   const heroVisual = hero
@@ -141,7 +144,7 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 
 <section class="trust-bar">
   <div class="wrap trust-grid">
-    <div class="tb"><div class="tb-ic">${ICONS.scan}</div><div><b>50+ TCGs supported</b><span>Pokémon, One Piece, Yu-Gi-Oh, Magic, Lorcana and more.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.scan}</div><div><b>${esc(gameNames)} today</b><span>${c.cards.toLocaleString()} cards, every printing priced from TCGplayer market data. More games as sets are added.</span></div></div>
     <div class="tb"><div class="tb-ic">${ICONS.price}</div><div><b>Graded &amp; ungraded</b><span>Supports PSA, BGS, CGC, TAG and raw cards.</span></div></div>
     <div class="tb"><div class="tb-ic">${ICONS.box}</div><div><b>Bulk scanning</b><span>Scan and process hundreds of cards at once.</span></div></div>
     <div class="tb"><div class="tb-ic">${ICONS.ai}</div><div><b>Secure &amp; private</b><span>Your data is yours — never sold or shared.</span></div></div>
@@ -474,7 +477,7 @@ export async function renderCard(
 
         <div class="actions">
           <a class="btn primary" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">+ Add to my inventory</a>
-          <a class="btn" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">List on eBay</a>
+          <a class="btn" href="/app/listing-creator?game=${encodeURIComponent(card.game_slug ?? "")}&amp;set=${encodeURIComponent(card.set_slug ?? "")}" title="Build a listing from the catalog stock image — no scan needed">List on eBay</a>
           ${card.tcgplayer_url ? `<a class="btn" href="${esc(card.tcgplayer_url)}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
           <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card in Sales Lookup">Sold prices</a>
           <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>

@@ -150,8 +150,9 @@ CREATE TABLE IF NOT EXISTS inventory_price_history (
 );
 
 -- Generated marketplace listings (spec §9–13, §16). eBay first; the same row
--- shape formats to other channels later (spec §17). "External" publish is a seam
--- (needs eBay OAuth) — the MVP produces the draft + a File Exchange CSV export.
+-- shape formats to other channels (spec §17; app/exporters.ts). External publish
+-- runs through the eBay Sell API (app/ebay-sell.ts); the File Exchange CSV remains
+-- the no-connection fallback.
 CREATE TABLE IF NOT EXISTS listings (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   seller_id      INTEGER NOT NULL REFERENCES sellers(id),

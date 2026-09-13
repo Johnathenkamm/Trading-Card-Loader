@@ -78,6 +78,7 @@ export type ListingFields = {
   conditionLabel: string;
   grade: string; // "PSA 10" or ""
   grader: string; // "PSA" or ""
+  cert: string; // grader's certification number, "" when raw/unknown
   language: string; // code
   languageName: string;
   sku: string;
@@ -89,7 +90,7 @@ const CONDITION_LABEL: Record<string, string> = {
 
 export function listingFields(
   vf: VariantFull,
-  inv: Pick<InventoryRow, "condition" | "language" | "sku">,
+  inv: Pick<InventoryRow, "condition" | "language" | "sku"> & { cert?: string | null },
   grade?: string | null
 ): ListingFields {
   const g = grade ?? "";
@@ -107,6 +108,7 @@ export function listingFields(
     conditionLabel: CONDITION_LABEL[inv.condition] ?? inv.condition,
     grade: g,
     grader: g ? g.split(" ")[0] : "",
+    cert: g ? (inv.cert ?? "").trim() : "",
     language: inv.language,
     languageName: LANG_NAME[inv.language] ?? inv.language,
     sku: inv.sku,
@@ -126,7 +128,7 @@ export function buildTitle(f: ListingFields, template?: string | null): string {
         year: f.year, game: f.game, set: f.set, setcode: f.setcode, name: f.name,
         number: f.number ? "#" + f.number : "", rarity: f.rarity, rarityabbr: f.rarityAbbr,
         finish: f.finish, condition: f.condition, conditionlabel: f.conditionLabel,
-        grade: f.grade, grader: f.grader, language: f.languageName, lang: f.language, sku: f.sku,
+        grade: f.grade, grader: f.grader, cert: f.cert, language: f.languageName, lang: f.language, sku: f.sku,
       };
       return map[k.toLowerCase()] ?? "";
     });
@@ -183,7 +185,7 @@ export function buildSpecifics(f: ListingFields): Record<string, string> {
   if (f.grade) {
     s["Grade"] = f.grade.replace(/^[A-Z]+\s*/, "");
     s["Professional Grader"] = f.grader;
-    s["Certification Number"] = "";
+    s["Certification Number"] = f.cert;
   } else {
     s["Card Condition"] = f.conditionLabel;
   }
@@ -213,6 +215,8 @@ export const DESCRIPTION_VARS: Array<{ k: string; label: string; hint: string }>
   { k: "conditionlabel", label: "Condition (full)", hint: "Full condition text (e.g. Near Mint)" },
   { k: "language", label: "Language", hint: "Card language" },
   { k: "grade", label: "Grade", hint: "Grade when graded (e.g. PSA 10), else empty" },
+  { k: "grader", label: "Grade Company", hint: "PSA, CGC, BGS… when graded, else empty" },
+  { k: "cert", label: "Certification Number", hint: "Grader's cert number when graded, else empty" },
   { k: "sku", label: "SKU", hint: "Stock keeping unit" },
   { k: "price", label: "Price", hint: "Your listing price" },
 ];
@@ -268,7 +272,7 @@ export function fillDescriptionTemplate(tpl: string, f: ListingFields, priceCent
   const map: Record<string, string> = {
     title, name: f.name, number: f.number, set: f.set, setcode: f.setcode, game: f.game, year: f.year,
     rarity: f.rarity, finish: f.finish, condition: f.condition, conditionlabel: f.conditionLabel,
-    language: f.languageName, lang: f.language, grade: f.grade, grader: f.grader, sku: f.sku,
+    language: f.languageName, lang: f.language, grade: f.grade, grader: f.grader, cert: f.cert, sku: f.sku,
     price: priceCents != null ? money(priceCents) : "",
   };
   return tpl
@@ -289,19 +293,22 @@ export function fillDescriptionTemplate(tpl: string, f: ListingFields, priceCent
 export function buildDescription(f: ListingFields, priceCents: number | null, template?: string | null, title = ""): string {
   if (template && template.trim()) return fillDescriptionTemplate(template, f, priceCents, title);
   const cond = f.grade ? `${f.grade} (graded)` : `${f.conditionLabel} (${f.condition})`;
-  const lines = [
+  // Conditional lines are null when their field is empty; the deliberate blank
+  // separators ("") stay.
+  const lines: Array<string | null> = [
     `${f.name}${f.number ? " #" + f.number : ""} — ${f.set}${f.year ? " (" + f.year + ")" : ""}`,
     ``,
     `Game: ${f.game}`,
     `Set: ${f.set}${f.setcode ? " (" + f.setcode + ")" : ""}`,
-    f.rarity ? `Rarity: ${f.rarity}` : "",
-    f.finish ? `Finish: ${f.finish}` : "",
+    f.rarity ? `Rarity: ${f.rarity}` : null,
+    f.finish ? `Finish: ${f.finish}` : null,
     `Language: ${f.languageName}`,
     `Condition: ${cond}`,
+    f.cert ? `Certification Number: ${f.cert}` : null,
     ``,
     `Card shipped in a penny sleeve + top loader, securely packaged. Combined shipping available — check my other listings for more singles.`,
-  ].filter((l) => l !== "" || true);
-  return lines.join("\n");
+  ];
+  return lines.filter((l): l is string => l !== null).join("\n");
 }
 
 // ---- eBay File Exchange CSV ----------------------------------------------

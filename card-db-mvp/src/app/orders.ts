@@ -42,7 +42,7 @@ export const CARRIERS = ["USPS", "UPS", "FedEx", "DHL", "Royal Mail", "Canada Po
 export type Tracking = { carrier: string; number: string };
 
 export const ORDER_PLATFORMS: Array<{ key: string; label: string; live: boolean }> = [
-  { key: "ebay", label: "eBay", live: false },
+  { key: "ebay", label: "eBay", live: true }, // Fulfillment API via app/ebay-sell.ts (needs a connected account)
   { key: "tcgplayer", label: "TCGplayer", live: true },
   { key: "manapool", label: "Mana Pool", live: false },
   { key: "storefront", label: "Storefront", live: false },

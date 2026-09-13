@@ -308,8 +308,12 @@ function scoreRow(parsed: Parsed, row: Row): number {
 }
 
 async function pickVariant(cardId: number, finish: string | null, language: string | null): Promise<Variant | null> {
-  const vs = await getVariants(cardId);
-  if (vs.length === 0) return null;
+  const all = await getVariants(cardId);
+  if (all.length === 0) return null;
+  // A parsed language ("japanese") narrows to that language's printings when the
+  // catalog has them; otherwise fall back to every printing of the card.
+  const inLang = language ? all.filter((v) => v.language && v.language.toUpperCase() === language.toUpperCase()) : [];
+  const vs = inLang.length ? inLang : all;
   if (finish) {
     const exact = vs.find((v) => v.finish === finish);
     if (exact) return exact;

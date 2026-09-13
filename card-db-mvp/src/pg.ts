@@ -3,8 +3,8 @@
 // db.ts talks to node:sqlite synchronously; this talks to Postgres asynchronously
 // via `pg`. The function names and return shapes match db.ts so the incremental
 // port is mechanical: change `from "./db.ts"` to `from "./pg.ts"` and `await` the
-// call. Nothing here is wired into the running server yet — the SQLite MVP keeps
-// working until each route is switched over.
+// call. This IS the running server's data layer — the public catalog, search and
+// the whole seller workspace query through it; db.ts only stages the seed.
 //
 // Requires: npm install  (adds the `pg` dependency)
 // Config:   DATABASE_URL (+ PGSSLMODE=require for Supabase/Neon) — see .env.example

@@ -1,7 +1,7 @@
 // Feedback → Inbox (CardUploader's Feedback form + Inbox page). Sellers file
 // a note (bug / question / idea) and read replies in their inbox. Replying is
-// an operator action (admin console is a later seam) — `replyFeedback` exists
-// so a script or admin page can answer.
+// an operator action from the owner console (/admin/feedback, see app/admin.ts)
+// — `replyFeedback` / `closeFeedback` are deliberately unscoped for that reason.
 
 import { query, one } from "../pg.ts";
 import { currentSellerId } from "./session-context.ts";

@@ -41,7 +41,7 @@ export async function sampleTitleFields(): Promise<ListingFields> {
   return {
     year: "1999", game: "Pokémon", set: "Base Set", setcode: "BS", name: "Charizard",
     number: "4/102", rarity: "Rare Holo", rarityAbbr: "Holo", finish: "Holo",
-    condition: "NM", conditionLabel: "Near Mint", grade: "", grader: "",
+    condition: "NM", conditionLabel: "Near Mint", grade: "", grader: "", cert: "",
     language: "EN", languageName: "English", sku: "HOH-000123",
   };
 }
@@ -52,7 +52,7 @@ export async function scanItemTitle(item: ScanItem, seller?: Seller): Promise<st
   const vf = await getVariantFull(item.matched_variant_id);
   if (!vf) return null;
   const s = seller ?? (await getSeller());
-  const f = listingFields(vf, { condition: item.condition, language: item.language, sku: item.sku ?? "" }, item.grade);
+  const f = listingFields(vf, { condition: item.condition, language: item.language, sku: item.sku ?? "", cert: item.cert }, item.grade);
   return sellerTitle(f, s);
 }
 
@@ -73,7 +73,7 @@ export async function inventoryListingPreview(
   const vf = await getVariantFull(inv.variant_id);
   if (!vf) return null;
   const seller = await getSeller();
-  const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku }, opts.grade ?? inv.grade);
+  const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku, cert: inv.cert }, opts.grade ?? inv.grade);
   const title = opts.titleOverride && opts.titleOverride.trim()
     ? opts.titleOverride.trim().slice(0, 80)
     : opts.template ? buildTitle(f, opts.template) : sellerTitle(f, seller);
@@ -97,7 +97,7 @@ export async function exportRowsFor(
   for (const inv of invs) {
     const vf = await getVariantFull(inv.variant_id);
     if (!vf) continue;
-    const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku }, inv.grade);
+    const f = listingFields(vf, { condition: inv.condition, language: inv.language, sku: inv.sku, cert: inv.cert }, inv.grade);
     const title = sellerTitle(f, seller);
     rows.push({
       vf,
