@@ -59,6 +59,7 @@ import {
 import { scheduleListing } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
+import { startSoldSampleOnBoot } from "./app/soldimport.ts";
 import {
   itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
 } from "./app/exporters.ts";
@@ -1999,4 +2000,8 @@ server.listen(PORT, () => {
   // Photo-ID index (VISION_PROVIDER=hash): hosted deploys can't run
   // `npm run hash:catalog` by hand, so fill any gap in the background here.
   startHashIndexOnBoot();
+  // Sold archive: same problem — `npm run import:sold` can't be run against a
+  // hosted database by hand, so an EMPTY archive gets the bundled sample feed
+  // (demo-flagged) and Sales Lookup is never a blank page. SOLD_SAMPLE_ON_BOOT=0 opts out.
+  startSoldSampleOnBoot();
 });

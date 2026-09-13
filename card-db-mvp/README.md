@@ -43,6 +43,8 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # land sold listings in the canonical sold_sales archive, deduped and
                       # CANONICALIZED to card/variant/grade via the identify() parser.
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
+                      # (the server loads that sample itself at boot whenever the archive is
+                      # EMPTY — hosted deploys can't run scripts — SOLD_SAMPLE_ON_BOOT=0 opts out)
 npm run check:sold-links [-- --force | --limit=N]
                       # probe every archived listing URL and record its HTTP status on the
                       # row; Sales Lookup and card pages hide the link on 404/410 so no one
