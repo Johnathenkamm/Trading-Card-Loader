@@ -2009,9 +2009,8 @@ server.listen(PORT, () => {
   // Photo-ID index (VISION_PROVIDER=hash): hosted deploys can't run
   // `npm run hash:catalog` by hand, so fill any gap in the background here.
   startHashIndexOnBoot();
-  // Sold archive: same problem — `npm run import:sold` can't be run against a
-  // hosted database by hand, so an EMPTY archive gets the bundled sample feed
-  // (demo-flagged) and Sales Lookup is never a blank page. SOLD_SAMPLE_ON_BOOT=0 opts out.
+  // Sold archive housekeeping: remove bundled sample rows so /sales shows real
+  // sales only (SOLD_SAMPLE_ON_BOOT=1 loads the sample on a demo deploy instead).
   startSoldSampleOnBoot();
   // Sold-sales harvest: connected sellers' PAID eBay orders become real,
   // SKU-exact rows in the archive (app/soldharvest.ts), every 6h by default.

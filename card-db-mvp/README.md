@@ -43,8 +43,8 @@ npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # land sold listings in the canonical sold_sales archive, deduped and
                       # CANONICALIZED to card/variant/grade via the identify() parser.
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
-                      # (the server loads that sample itself at boot whenever the archive is
-                      # EMPTY — hosted deploys can't run scripts — SOLD_SAMPLE_ON_BOOT=0 opts out)
+                      # (/sales shows real sales only and the server REMOVES sample rows at
+                      # boot; SOLD_SAMPLE_ON_BOOT=1 on a demo deploy loads the sample instead)
 npm run check:sold-links [-- --force | --limit=N]
                       # probe every archived listing URL and record its HTTP status on the
                       # row; Sales Lookup and card pages hide the link on 404/410 so no one
@@ -93,7 +93,7 @@ Supabase/Neon to run against hosted Postgres with no code changes.
 | TCGplayer product ids + link-outs on card pages | `sync:tcgcsv` | ✅ live (affiliate-ready) |
 | Price **history** | real observations accrue per `sync:tcgcsv` run; demo random-walk fills the chart until depth exists | ⚠️ mixed, flagged |
 | Per-**grade** values (PSA 8/9/10, CGC, BGS) | synthesized (multipliers on raw price) | ⚠️ demo, flagged |
-| **Sold comps** | `sold_sales` archive: connected sellers' **paid eBay orders are harvested every 6h** (`src/app/soldharvest.ts`, SKU-exact card/variant/grade) + any feed via `import:sold`; the bundled sample loads only while the archive is empty | ✅ real, accumulates per connected seller (plus feeds) |
+| **Sold comps** | `sold_sales` archive: connected sellers' **paid eBay orders are harvested every 6h** (`src/app/soldharvest.ts`, SKU-exact card/variant/grade) + any feed via `import:sold`; `/sales` shows real rows only (sample rows are removed at boot unless `SOLD_SAMPLE_ON_BOOT=1`) | ✅ real, accumulates per connected seller (plus feeds) |
 
 Demo data is generated deterministically and marked `is_demo = 1` in the database,
 and every page that shows it carries a note. The data-sourcing research

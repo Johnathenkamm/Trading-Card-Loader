@@ -12,12 +12,12 @@
 //
 // Two callers:
 //   - `npm run import:sold` (src/scripts/import-sold.ts) — land any feed file
-//   - the server at boot (src/server.ts) — when the archive is EMPTY, load the
-//     bundled sample feed (db/sold_sample.csv, flagged is_demo) so Sales Lookup
-//     and card-page comps never render blank. Hosted deploys (Railway) have no
-//     shell access to the database, so without this a fresh prod archive stays
-//     empty until a real feed is wired in. Real imports replace nothing: the
-//     sample rows are demo-flagged and only ever loaded into an empty table.
+//   - the server at boot (src/server.ts) — sample-row housekeeping: by default
+//     any bundled sample rows (db/sold_sample.csv, flagged is_demo) are REMOVED
+//     so the public archive only ever shows real sales; SOLD_SAMPLE_ON_BOOT=1
+//     (demo/dev deploys) instead loads that sample whenever the archive is empty.
+//     Hosted deploys (Railway) have no shell access to the database, which is
+//     why this lives in the server rather than a script.
 //
 // Accepted columns / keys (aliases in parens, case-insensitive):
 //   title*                          raw listing title as sold
@@ -281,25 +281,32 @@ export const SAMPLE_SOURCE = "sample";
 let booting: Promise<void> | null = null;
 
 /**
- * Boot-time fill: when the sold archive holds NO rows at all, load the bundled
- * sample feed (demo-flagged) in the background so /sales and card comps aren't
- * blank on a fresh database (never blocks the listener; failures only log).
- * Never touches a non-empty archive — the moment a real feed lands, this is a
- * no-op forever. Set SOLD_SAMPLE_ON_BOOT=0 to opt out (e.g. a deploy that
- * would rather show an honest empty archive than sample rows).
+ * Boot-time sample handling. By default the archive is HONEST: Sales Lookup
+ * shows only real sales, so any bundled sample rows (source=sample, demo) left
+ * by an earlier load are removed. Set SOLD_SAMPLE_ON_BOOT=1 for a demo/dev
+ * deploy that wants the sample feed loaded whenever the archive is empty.
+ * Runs in the background; never blocks the listener; failures only log.
  */
 export function startSoldSampleOnBoot(): void {
-  if (process.env.SOLD_SAMPLE_ON_BOOT === "0") return;
   if (booting) return;
+  const wantSample = process.env.SOLD_SAMPLE_ON_BOOT === "1";
   booting = (async () => {
     try {
+      if (!wantSample) {
+        const r = await one<{ n: number }>(
+          "WITH d AS (DELETE FROM sold_sales WHERE source=$1 AND is_demo RETURNING 1) SELECT COUNT(*)::int n FROM d",
+          [SAMPLE_SOURCE]
+        );
+        if (r?.n) console.log(`  Sold archive: removed ${r.n} bundled sample row${r.n === 1 ? "" : "s"} (SOLD_SAMPLE_ON_BOOT=1 keeps them).`);
+        return;
+      }
       const n = (await one<{ n: number }>("SELECT COUNT(*)::int n FROM sold_sales"))?.n ?? 0;
       if (n > 0) return;
       console.log("  Sold archive is empty — loading the bundled sample feed (demo-flagged) in the background…");
       const feed = readFeedFile(SAMPLE_FEED);
       await importSoldFeed(feed, { source: SAMPLE_SOURCE, demo: true, log: (l) => console.log("  " + l) });
     } catch (err: any) {
-      console.error("  Sold sample load failed (Sales Lookup stays empty until a feed is imported):", err?.message ?? err);
+      console.error("  Sold sample step failed:", err?.message ?? err);
     } finally {
       booting = null;
     }

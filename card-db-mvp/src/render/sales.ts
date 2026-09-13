@@ -119,7 +119,7 @@ export function renderSales(
         <thead><tr><th>Date</th><th>Market</th><th>Listing</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
     : `<div class="empty"><h2>No archived sales${p.q ? ` for “${esc(p.q)}”` : ""}</h2>
-       <p>The archive grows with every imported feed — try a broader search, or remove filters.</p></div>`;
+       <p>${p.q || r.total ? "Try a broader search, or remove filters. " : ""}The archive grows as connected sellers' eBay sales come in and with every imported feed.</p></div>`;
 
   const sampleNote = r.allDemo
     ? demoNote(

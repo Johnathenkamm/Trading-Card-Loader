@@ -173,7 +173,8 @@ export async function searchSales(p: SalesParams): Promise<SalesResult> {
   if (p.grade && p.grade !== "all") gradeFilter = p.grade;
   else if (p.grade !== "all" && parsed?.grade) gradeFilter = parsed.grade;
 
-  const cond: string[] = [];
+  // Real sales only: demo/sample rows never reach the public lookup.
+  const cond: string[] = ["s.is_demo = false"];
   const params: unknown[] = [];
   if (raw) {
     const terms = (parsed?.nameTerms ?? []).filter(Boolean);
