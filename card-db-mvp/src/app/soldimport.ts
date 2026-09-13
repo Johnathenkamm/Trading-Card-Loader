@@ -28,6 +28,8 @@
 //   list_price (listed)             pre-negotiation list price, dollars
 //   currency                        default USD
 //   bids, url, image_url, external_id (id, item_id), grade, condition
+//   card_id, variant_id                pre-resolved catalog ids (our own sellers'
+//                                     orders know the exact SKU) — skips identify()
 // * required
 //
 // Re-runnable: rows with an external_id upsert; rows without insert only if an
@@ -103,6 +105,8 @@ const ALIASES: Record<string, string[]> = {
   external_id: ["external_id", "id", "item_id", "listing_id"],
   grade: ["grade"],
   condition: ["condition"],
+  card_id: ["card_id"],
+  variant_id: ["variant_id"],
 };
 
 function pick(row: FeedRow, key: string): string | null {
@@ -175,11 +179,25 @@ export async function importSoldFeed(
       continue;
     }
 
-    // canonicalize: title -> card/variant (+ grade/condition when feed lacks them)
-    const id = await identify(cleanTitle(title));
-    const attach = id.best && id.confidence >= 0.5 ? id.best : null;
-    const grade = pick(row, "grade") ?? id.parsed.grade;
-    const condition = pick(row, "condition") ?? (grade ? null : id.parsed.condition);
+    // canonicalize: a pre-resolved card_id (our sellers' own orders) is exact;
+    // otherwise title -> card/variant (+ grade/condition when feed lacks them)
+    const presetCard = Number(pick(row, "card_id"));
+    let attach: { card_id: number; variant_id: number | null } | null = null;
+    let confidence = 1;
+    let parsedGrade: string | null = null;
+    let parsedCondition: string | null = null;
+    if (Number.isInteger(presetCard) && presetCard > 0) {
+      const v = Number(pick(row, "variant_id"));
+      attach = { card_id: presetCard, variant_id: Number.isInteger(v) && v > 0 ? v : null };
+    } else {
+      const id = await identify(cleanTitle(title));
+      attach = id.best && id.confidence >= 0.5 ? { card_id: id.best.card_id, variant_id: id.best.variant_id } : null;
+      confidence = id.confidence;
+      parsedGrade = id.parsed.grade;
+      parsedCondition = id.parsed.condition;
+    }
+    const grade = pick(row, "grade") ?? parsedGrade;
+    const condition = pick(row, "condition") ?? (grade ? null : parsedCondition);
     if (attach) canonized++;
 
     const vals = {
@@ -199,7 +217,7 @@ export async function importSoldFeed(
       variant_id: attach?.variant_id ?? null,
       grade: grade ?? null,
       condition: condition ?? null,
-      canon_confidence: attach ? Number(id.confidence.toFixed(3)) : null,
+      canon_confidence: attach ? Number(confidence.toFixed(3)) : null,
       is_demo: isDemo,
       raw: JSON.stringify(row),
     };

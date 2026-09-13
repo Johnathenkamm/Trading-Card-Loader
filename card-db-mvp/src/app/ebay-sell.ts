@@ -76,6 +76,9 @@ export async function ensureEbaySchema(): Promise<void> {
       seller_id  bigint NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+  // Sold-sales harvest watermark (app/soldharvest.ts): when the seller's completed
+  // orders were last folded into the sold_sales archive.
+  await query(`ALTER TABLE ebay_connections ADD COLUMN IF NOT EXISTS last_sold_harvest timestamptz`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS ebay_offer_id text`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS last_error text`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS published_at timestamptz`);
@@ -179,6 +182,7 @@ export type EbayConnection = {
   connected_at: string;
   last_policy_sync: string | null;
   last_order_sync: string | null;
+  last_sold_harvest: string | null;
 };
 
 export class EbayError extends Error {
@@ -624,6 +628,82 @@ export async function fetchOpenOrders(): Promise<EbayOrder[]> {
       })),
     };
   });
+}
+
+/** One sold line item from a paid, non-cancelled order — the raw material for the sold_sales archive. */
+export type EbaySoldLine = {
+  orderId: string;
+  lineItemId: string;
+  legacyItemId: string | null; // the /itm/<id> listing the buyer bought from
+  sku: string | null;
+  title: string;
+  quantity: number;
+  unit_cents: number | null; // per-unit sale price (line cost / quantity)
+  sold_format: "auction" | "bin" | "unknown";
+  sold_on: string; // yyyy-mm-dd, order creation date
+};
+
+const ORDER_PAGE = 200;
+
+/**
+ * Every PAID line item on orders created since `sinceIso` (pages through the
+ * Fulfillment API, which keeps ~2 years). Cancelled orders and unpaid checkouts
+ * are dropped: only money that changed hands is a comp. Nothing about the
+ * buyer is returned — the archive is public and never carries PII.
+ */
+export async function fetchCompletedOrderLines(sinceIso: string): Promise<EbaySoldLine[]> {
+  if (ENV().mock) {
+    // One paid sale against the seller's first stocked SKU so the harvest is testable.
+    const s = await getSeller();
+    const inv = await one<{ sku: string; title: string; price_cents: number | null }>(
+      `SELECT inv.sku, c.name AS title, inv.price_cents FROM inventory inv JOIN cards c ON c.id=inv.card_id WHERE inv.seller_id=$1 AND inv.status<>'sold' ORDER BY inv.id LIMIT 1`,
+      [s.id]
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    return [
+      {
+        orderId: `MOCK-${s.id}-${today}`,
+        lineItemId: "1",
+        legacyItemId: "123456789012",
+        sku: inv?.sku ?? "CARD-000001",
+        title: inv?.title ?? "Sample card",
+        quantity: 1,
+        unit_cents: inv?.price_cents ?? 1250,
+        sold_format: "bin",
+        sold_on: today,
+      },
+    ];
+  }
+  const out: EbaySoldLine[] = [];
+  const filter = encodeURIComponent(`creationdate:[${sinceIso}..]`);
+  for (let offset = 0; ; offset += ORDER_PAGE) {
+    const j = await api<any>("GET", `/sell/fulfillment/v1/order?filter=${filter}&limit=${ORDER_PAGE}&offset=${offset}`);
+    const orders: any[] = j.orders ?? [];
+    for (const o of orders) {
+      if (String(o.orderPaymentStatus ?? "") !== "PAID") continue;
+      if (String(o.cancelStatus?.cancelState ?? "NONE_REQUESTED") === "CANCELED") continue;
+      const soldOn = String(o.creationDate ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(soldOn)) continue;
+      for (const li of o.lineItems ?? []) {
+        const qty = Math.max(1, Number(li.quantity ?? 1));
+        const cost = li.lineItemCost?.value != null ? Math.round(Number(li.lineItemCost.value) * 100) : null;
+        const fmt = String(li.soldFormat ?? "").toUpperCase();
+        out.push({
+          orderId: String(o.orderId),
+          lineItemId: String(li.lineItemId ?? out.length),
+          legacyItemId: li.legacyItemId ? String(li.legacyItemId) : null,
+          sku: li.sku ?? null,
+          title: String(li.title ?? ""),
+          quantity: qty,
+          unit_cents: cost != null ? Math.round(cost / qty) : null,
+          sold_format: fmt === "AUCTION" ? "auction" : fmt === "FIXED_PRICE" ? "bin" : "unknown",
+          sold_on: soldOn,
+        });
+      }
+    }
+    if (orders.length < ORDER_PAGE || offset + ORDER_PAGE >= Number(j.total ?? 0)) break;
+  }
+  return out;
 }
 
 /** Tell eBay an order shipped (optional tracking). Best-effort: local state is the source of truth. */

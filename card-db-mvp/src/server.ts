@@ -60,6 +60,7 @@ import { scheduleListing } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
 import { startSoldSampleOnBoot } from "./app/soldimport.ts";
+import { startSoldHarvestOnBoot, harvestSoldSalesFor } from "./app/soldharvest.ts";
 import {
   itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
 } from "./app/exporters.ts";
@@ -912,7 +913,15 @@ async function fetchEbayOrders(): Promise<string> {
       added++;
     }
     await touchOrderSync();
-    return "/app/orders?platform=ebay&msg=" + encodeURIComponent(`Fetched ${open.length} open eBay order${open.length === 1 ? "" : "s"} — ${added} new.`);
+    // Same token, same trip: fold this seller's paid orders into the sold archive.
+    let archived = "";
+    try {
+      const h = await harvestSoldSalesFor(currentSellerId());
+      if (h) archived = ` ${h.inserted} sale${h.inserted === 1 ? "" : "s"} added to the sold archive.`;
+    } catch (err) {
+      if (!(err instanceof EbayError)) console.error("sold harvest:", err);
+    }
+    return "/app/orders?platform=ebay&msg=" + encodeURIComponent(`Fetched ${open.length} open eBay order${open.length === 1 ? "" : "s"} — ${added} new.${archived}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (!(err instanceof EbayError)) console.error("ebay orders:", err);
@@ -2004,4 +2013,7 @@ server.listen(PORT, () => {
   // hosted database by hand, so an EMPTY archive gets the bundled sample feed
   // (demo-flagged) and Sales Lookup is never a blank page. SOLD_SAMPLE_ON_BOOT=0 opts out.
   startSoldSampleOnBoot();
+  // Sold-sales harvest: connected sellers' PAID eBay orders become real,
+  // SKU-exact rows in the archive (app/soldharvest.ts), every 6h by default.
+  startSoldHarvestOnBoot((sid, fn) => runWithSeller(sid, fn));
 });

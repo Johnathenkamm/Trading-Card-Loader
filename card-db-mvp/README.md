@@ -93,7 +93,7 @@ Supabase/Neon to run against hosted Postgres with no code changes.
 | TCGplayer product ids + link-outs on card pages | `sync:tcgcsv` | ✅ live (affiliate-ready) |
 | Price **history** | real observations accrue per `sync:tcgcsv` run; demo random-walk fills the chart until depth exists | ⚠️ mixed, flagged |
 | Per-**grade** values (PSA 8/9/10, CGC, BGS) | synthesized (multipliers on raw price) | ⚠️ demo, flagged |
-| **Sold comps** | `sold_sales` archive via `import:sold` (canonicalized to card/variant/grade); synthetic rows shown only where the archive is empty | ⚠️ per-card: real archive when present |
+| **Sold comps** | `sold_sales` archive: connected sellers' **paid eBay orders are harvested every 6h** (`src/app/soldharvest.ts`, SKU-exact card/variant/grade) + any feed via `import:sold`; the bundled sample loads only while the archive is empty | ✅ real, accumulates per connected seller (plus feeds) |
 
 Demo data is generated deterministically and marked `is_demo = 1` in the database,
 and every page that shows it carries a note. The data-sourcing research
