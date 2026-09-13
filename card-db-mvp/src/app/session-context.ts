@@ -23,8 +23,9 @@ const storage = new AsyncLocalStorage<SellerContext>();
  * Who is behind this request. `id` is the logged-in CUSTOMER account (null when
  * only the owner-console session exists). `admin` is true for a live owner
  * session (see app/admin.ts) — a separate login with its own cookie. `acting`
- * is set when the owner has opened a customer's workspace: the /app routes then
- * run inside THAT seller's data scope, and the page shell shows a banner.
+ * is the seller the owner's /app requests run as: the OWNER'S OWN seller row by
+ * default (`owner: true` — their personal workspace and uploader), or a
+ * customer's workspace they explicitly opened (`owner: false`, banner shown).
  */
 export type HeaderAccount = {
   id: number | null;
@@ -32,7 +33,7 @@ export type HeaderAccount = {
   /** 'free' | 'pro' for the customer account; null for an owner-only session. */
   plan_tier: string | null;
   admin: boolean;
-  acting: { id: number; display_name: string; email: string | null; plan_tier: string } | null;
+  acting: { id: number; display_name: string; email: string | null; plan_tier: string; owner: boolean } | null;
 } | null;
 
 const requestStore = new AsyncLocalStorage<{ account: HeaderAccount }>();

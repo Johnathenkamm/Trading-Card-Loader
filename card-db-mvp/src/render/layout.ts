@@ -25,9 +25,12 @@ function accountControls(): string {
   if (acct) {
     const owner = acct.admin ? `<a class="hdr-owner" href="/admin" title="Owner console: users, plans, activity">Owner</a>` : "";
     if (acct.id == null) {
-      // Owner-console session only (no customer account signed in).
+      // Owner-console session only (no customer account signed in). The
+      // owner's own workspace is reachable when their seller row exists.
+      const mine = acct.acting?.owner ? `<a class="acct-name" href="/app" title="Your own seller workspace">My workspace</a>` : "";
       return `<div class="hdr-acct">
       ${owner}
+      ${mine}
       <form method="post" action="/admin/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Sign out</button></form>
     </div>`;
     }
@@ -52,10 +55,24 @@ function accountControls(): string {
  * Owner mode banner: shown on every page while the owner is working inside a
  * customer's workspace, so it's never ambiguous whose data a form will touch.
  */
-function actingBanner(): string {
+function actingBanner(canonical: string): string {
   const acct = currentAccount();
   const a = acct?.acting;
   if (!a) return "";
+  if (a.owner) {
+    // The owner's own workspace: a quieter strip, only on workspace pages, so
+    // it's clear this is THEIR inventory, not a customer's — with the way back
+    // to the console.
+    if (!canonical.startsWith("/app")) return "";
+    return `<div class="owner-banner own" role="status">
+    <div class="wrap owner-banner-in">
+      <span class="ob-ic">🗂</span>
+      <span>Your own workspace — cards you add here go into <b>your</b> inventory, not a customer's.</span>
+      <a class="btn sm" href="/admin/upload">My uploader</a>
+      <a class="btn sm" href="/admin">Owner console</a>
+    </div>
+  </div>`;
+  }
   return `<div class="owner-banner" role="status">
     <div class="wrap owner-banner-in">
       <span class="ob-ic">👁</span>
@@ -70,15 +87,13 @@ function header(searchValue = ""): string {
   // Logged out, the workspace link says where it goes: the sign-in page, with
   // the workspace as the return path (the same rewrite CardUploader's header does).
   const acct = currentAccount();
-  const appHref = acct && acct.id != null ? "/app" : "/login?next=%2Fapp";
+  const appHref = acct && (acct.id != null || acct.acting) ? "/app" : "/login?next=%2Fapp";
   return `
 <header class="site-header">
   <div class="wrap bar">
     <a class="brand" href="/">${BRAND_MARK}${SITE}</a>
     <nav class="nav">
       <a href="/browse">Browse</a>
-      <a href="/g/pokemon">Pokémon</a>
-      <a href="/g/mtg">Magic</a>
       <a href="/search">Search</a>
       <a href="/sales">Sales Lookup</a>
       <a href="/pricing">Pricing</a>
@@ -218,7 +233,7 @@ ${ld}
 </head>
 <body>
 ${header(o.searchValue)}
-${actingBanner()}
+${actingBanner(o.canonical)}
 <main>
 ${o.html ?? o.body ?? ""}
 </main>

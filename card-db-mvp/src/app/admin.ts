@@ -8,6 +8,11 @@
 //                         at /admin/login creates a row in `admin_sessions` and
 //                         sets its own HttpOnly cookie. No customer account, Pro
 //                         or otherwise, can reach /admin.
+//   * Owner's own seller — the owner has a personal seller row (`sellers.is_owner`)
+//                         so the console's uploader (/admin/upload) and the
+//                         owner's /app workspace put cards in the OWNER's own
+//                         inventory, never in a customer's. It is created on boot
+//                         from ADMIN_EMAIL and hidden from the customer lists.
 //   * `sellers.last_seen_at` — bumped on every workspace request.
 //   * `activity_log`    — one row per login/signup/page view/action/plan change;
 //                         `by_owner` marks events the owner caused inside a
@@ -15,6 +20,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { query, one } from "../pg.ts";
+import { normalizeEmail } from "./auth.ts";
 
 export const ADMIN_COOKIE = "cardindex_admin";
 export const ACT_AS_COOKIE = "cardindex_actas";
@@ -24,6 +30,7 @@ const ADMIN_SESSION_HOURS = 24;
 
 export async function ensureAdminSchema(): Promise<void> {
   await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS last_seen_at timestamptz`);
+  await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS is_owner boolean NOT NULL DEFAULT false`);
   await query(`
     CREATE TABLE IF NOT EXISTS activity_log (
       id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -116,6 +123,41 @@ export async function adminSessionValid(token: string | undefined | null): Promi
 export async function destroyAdminSession(token: string | undefined | null): Promise<void> {
   if (!token) return;
   await query(`DELETE FROM admin_sessions WHERE token=$1`, [token]);
+}
+
+// ---- the owner's own seller -----------------------------------------------
+// The owner uploads to THEIR OWN account, not to a customer's. That account is
+// an ordinary seller row flagged `is_owner`, so every store query (scan batches,
+// review queue, inventory, listings, settings) works unchanged inside
+// `runWithSeller(ownerSellerId())`. Resolution, in order: an existing flagged
+// row; else the customer account whose email equals ADMIN_EMAIL (the owner
+// signed up normally before the console existed — same person, same data);
+// else a fresh row. Runs once and is cached for the process lifetime.
+
+let ownerSellerCache: number | null = null;
+
+export async function ensureOwnerSeller(): Promise<number | null> {
+  if (ownerSellerCache) return ownerSellerCache;
+  if (!adminConfigured()) return null;
+  const flagged = await one<{ id: number }>(`SELECT id FROM sellers WHERE is_owner ORDER BY id LIMIT 1`);
+  if (flagged) return (ownerSellerCache = flagged.id);
+  const email = normalizeEmail(adminEmail());
+  const byEmail = await one<{ id: number }>(`SELECT id FROM sellers WHERE lower(email)=$1 ORDER BY id LIMIT 1`, [email]);
+  if (byEmail) {
+    await query(`UPDATE sellers SET is_owner=true, plan_tier='pro' WHERE id=$1`, [byEmail.id]);
+    return (ownerSellerCache = byEmail.id);
+  }
+  const row = await one<{ id: number }>(
+    `INSERT INTO sellers (email, display_name, plan_tier, is_owner, created_at)
+     VALUES ($1, 'Owner', 'pro', true, now()) RETURNING id`,
+    [email]
+  );
+  return (ownerSellerCache = row!.id);
+}
+
+/** Id of the owner's own seller row, or null when the console isn't configured. */
+export function ownerSellerId(): Promise<number | null> {
+  return ensureOwnerSeller();
 }
 
 // ---- activity tracking ----------------------------------------------------
@@ -236,8 +278,9 @@ const USER_SELECT = `
          (SELECT COUNT(*) FROM activity_log a WHERE a.seller_id=s.id AND a.created_at > now() - interval '7 days')::int AS events_7d
   FROM sellers s`;
 
+/** Customers only: the owner's own seller row never shows up as a user. */
 export function listUsers(f: UserFilter = {}, limit = 500): Promise<UserRow[]> {
-  const cond: string[] = [];
+  const cond: string[] = ["NOT s.is_owner"];
   const params: unknown[] = [];
   if (f.q && f.q.trim()) {
     params.push(`%${f.q.trim().toLowerCase()}%`);
@@ -303,17 +346,17 @@ export type Overview = {
 
 export async function overview(): Promise<Overview> {
   return (await one<Overview>(
-    `SELECT (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL)::int AS total,
-            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND plan_tier='pro')::int AS pro,
-            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND plan_tier<>'pro')::int AS free,
-            (SELECT COUNT(*) FROM sellers WHERE last_seen_at > now() - interval '7 days')::int AS active_7d,
-            (SELECT COUNT(*) FROM sellers WHERE last_seen_at > now() - interval '30 days')::int AS active_30d,
-            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND created_at > now() - interval '7 days')::int AS new_7d,
-            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND created_at > now() - interval '30 days')::int AS new_30d,
+    `SELECT (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner)::int AS total,
+            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND plan_tier='pro')::int AS pro,
+            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND plan_tier<>'pro')::int AS free,
+            (SELECT COUNT(*) FROM sellers WHERE NOT is_owner AND last_seen_at > now() - interval '7 days')::int AS active_7d,
+            (SELECT COUNT(*) FROM sellers WHERE NOT is_owner AND last_seen_at > now() - interval '30 days')::int AS active_30d,
+            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND created_at > now() - interval '7 days')::int AS new_7d,
+            (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND created_at > now() - interval '30 days')::int AS new_30d,
             (SELECT COUNT(*) FROM feedback WHERE status='open')::int AS feedback_open,
-            (SELECT COUNT(*) FROM inventory)::int AS inventory_rows,
-            (SELECT COUNT(*) FROM listings)::int AS listings,
-            (SELECT COUNT(*) FROM scan_batches)::int AS batches,
+            (SELECT COUNT(*) FROM inventory i JOIN sellers s ON s.id=i.seller_id WHERE NOT s.is_owner)::int AS inventory_rows,
+            (SELECT COUNT(*) FROM listings l JOIN sellers s ON s.id=l.seller_id WHERE NOT s.is_owner)::int AS listings,
+            (SELECT COUNT(*) FROM scan_batches b JOIN sellers s ON s.id=b.seller_id WHERE NOT s.is_owner)::int AS batches,
             (SELECT COUNT(*) FROM activity_log WHERE created_at > now() - interval '24 hours')::int AS events_24h`
   ))!;
 }

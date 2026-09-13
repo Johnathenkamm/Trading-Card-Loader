@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   display_name      text    NOT NULL DEFAULT 'My card shop',
   plan_tier         text    NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the seller workspace (app/billing.ts); Stripe checkout is the next seam.
   last_seen_at      timestamptz,                       -- bumped on every workspace request (activity tracking, owner console)
+  is_owner          boolean NOT NULL DEFAULT false,    -- the owner's OWN seller row (created on boot for ADMIN_EMAIL): /admin/upload and the owner's /app add cards here, never to a customer; hidden from the user lists
   training_opt_in   boolean NOT NULL DEFAULT false,
 
   -- SKU scheme: PREFIX-000001, auto-incrementing, custom prefix.

@@ -171,9 +171,12 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 
 // ---- Browse / game --------------------------------------------------------
 export async function renderBrowse(game?: Game): Promise<{ html: string; title: string; description: string; jsonLd: unknown[] }> {
-  const sets = game
-    ? (await getSetsForGame(game.id)).map((s) => ({ ...s, game_name: game.name, game_slug: game.slug }))
-    : await getAllSets();
+  const [games, sets] = await Promise.all([
+    getGames(),
+    game
+      ? getSetsForGame(game.id).then((ss) => ss.map((s) => ({ ...s, game_name: game.name, game_slug: game.slug })))
+      : getAllSets(),
+  ]);
   const grouped: Record<string, CardSet[]> = {};
   for (const s of sets) (grouped[s.game_name ?? "Other"] ??= []).push(s);
 
@@ -184,11 +187,24 @@ export async function renderBrowse(game?: Game): Promise<{ html: string; title: 
     )
     .join("");
 
+  // Game switcher: the per-game pages used to be their own header tabs; now
+  // they live here as filters so the header only carries one "Browse" entry.
+  const gameTabs = `<nav class="tabs" aria-label="Filter by game" style="margin:0 0 18px">
+    <a href="/browse"${game ? "" : ' class="active" aria-current="page"'}>All games</a>
+    ${games
+      .map(
+        (g) =>
+          `<a href="/g/${esc(g.slug)}"${game?.id === g.id ? ' class="active" aria-current="page"' : ""}>${esc(g.name)}</a>`
+      )
+      .join("")}
+  </nav>`;
+
   const html = `<div class="wrap">
-    ${breadcrumb(game ? [{ label: game.name }] : [{ label: "Browse" }])}
+    ${breadcrumb(game ? [{ label: "Browse", href: "/browse" }, { label: game.name }] : [{ label: "Browse" }])}
     <div class="sec">
       <h1 style="font-size:1.9rem;margin-bottom:6px">${game ? esc(game.name) + " sets" : "Browse all sets"}</h1>
-      <p style="color:var(--muted);margin:0 0 20px">Pick a set to see its checklist with prices, or search across everything.</p>
+      <p style="color:var(--muted);margin:0 0 14px">Pick a set to see its checklist with prices, or search across everything.</p>
+      ${gameTabs}
       ${sections}
     </div>
   </div>`;
