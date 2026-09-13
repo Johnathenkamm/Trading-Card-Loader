@@ -89,6 +89,11 @@ type HashIndexRow = { card_id: number; name: string; number: string | null; set_
 let hashIndex: { rows: HashIndexRow[]; at: number } | null = null;
 const HASH_INDEX_TTL_MS = 10 * 60 * 1000;
 
+/** Drop the in-memory copy so the next identify reloads it (after a rebuild). */
+export function invalidateHashIndex(): void {
+  hashIndex = null;
+}
+
 async function loadHashIndex(): Promise<HashIndexRow[]> {
   if (hashIndex && Date.now() - hashIndex.at < HASH_INDEX_TTL_MS) return hashIndex.rows;
   const raw = (await query(
@@ -105,7 +110,9 @@ async function loadHashIndex(): Promise<HashIndexRow[]> {
       inset: { dhash: fromHex(r.dhash_inset), ahash: fromHex(r.ahash_inset) },
     },
   }));
-  hashIndex = { rows, at: Date.now() };
+  // Don't memoize an empty index: it usually means the boot-time build is still
+  // running, and the next upload should see its rows as soon as they land.
+  if (rows.length > 0) hashIndex = { rows, at: Date.now() };
   return rows;
 }
 

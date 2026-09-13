@@ -58,6 +58,7 @@ import {
 } from "./app/ebay-sell.ts";
 import { scheduleListing } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
+import { startHashIndexOnBoot } from "./app/hashindex.ts";
 import {
   itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
 } from "./app/exporters.ts";
@@ -1995,4 +1996,7 @@ server.listen(PORT, () => {
   // Scheduled / spaced-out eBay publishing (app/ebay-sell.ts). Set SCHEDULER_DISABLED=1
   // when running several instances so only one publishes.
   if (process.env.SCHEDULER_DISABLED !== "1") startScheduler((sid, fn) => runWithSeller(sid, fn));
+  // Photo-ID index (VISION_PROVIDER=hash): hosted deploys can't run
+  // `npm run hash:catalog` by hand, so fill any gap in the background here.
+  startHashIndexOnBoot();
 });
