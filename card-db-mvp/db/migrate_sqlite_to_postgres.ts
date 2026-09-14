@@ -18,17 +18,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SQLITE_PATH = join(here, "..", "data", "catalog.db");
 
 // Columns that are 0/1 integers in SQLite but boolean in Postgres.
-const BOOL_COLS = new Set([
-  "is_default",
-  "is_demo",
-  "training_opt_in",
-  "ebay_connected",
-  "price_overridden",
-]);
+const BOOL_COLS = new Set(["is_default", "is_demo", "training_opt_in"]);
 // Columns that are JSON stored as TEXT in SQLite but jsonb in Postgres.
-const JSON_COLS = new Set(["alternatives", "item_specifics", "title_structure"]);
+const JSON_COLS = new Set(["alternatives", "matching_prefs"]);
 
-// FK-safe insertion order (parents before children).
+// FK-safe insertion order (parents before children). Only the catalog is
+// staged in SQLite; member tables (sellers, scan_*, collection_items,
+// wishlist_items) live in Postgres only and are never truncated here.
 const TABLES = [
   "games",
   "sets",
@@ -37,12 +33,6 @@ const TABLES = [
   "price_points",
   "catalog_issue_reports",
   "meta",
-  "sellers",
-  "scan_batches",
-  "scan_items",
-  "inventory",
-  "inventory_price_history",
-  "listings",
 ];
 
 const CHUNK = 500;

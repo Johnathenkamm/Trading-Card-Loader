@@ -1,15 +1,17 @@
 // Subscription plans & the Pro paywall.
 //
 // The product has two tiers:
-//   * Free — the public price catalog (browse, search, live prices). No account.
-//   * Pro  — $15/month. The full seller workspace: scan → identify → price →
-//            inventory → eBay listings + CSV export.
+//   * Free — the public price guide (browse, search, live prices, sold comps),
+//            plus with an account: photo/list price checks with share links and
+//            a small wishlist.
+//   * Pro  — $15/month. Your collection (add from photos, lists, certs or a set
+//            checklist; value vs. paid), unlimited wishlist with target-price
+//            alerts, and collection export.
 //
-// `sellers.plan_tier` ('free' | 'pro') is the source of truth (it already existed
-// as a documented seam). Real payment processing — Stripe Checkout + a webhook
-// that flips plan_tier when a subscription goes active/canceled — is the next
-// seam. Until then Pro is granted operationally (see `npm run grant-pro`), so the
-// paywall is enforced while billing is wired up.
+// `sellers.plan_tier` ('free' | 'pro') is the source of truth. Real payment
+// processing — Stripe Checkout + a webhook that flips plan_tier when a
+// subscription goes active/canceled — is the next seam. Until then Pro is
+// granted operationally (see `npm run grant-pro` and the owner console).
 
 import { query, one, getMeta } from "../pg.ts";
 

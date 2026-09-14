@@ -29,6 +29,8 @@
 
 import { query, one, close } from "../pg.ts";
 import { numberSort, sleep } from "../util.ts";
+import { notifyWishlistAlerts } from "../app/collection.ts";
+import { appBaseUrl } from "../app/mailer.ts";
 
 const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 
@@ -350,6 +352,15 @@ async function main(): Promise<void> {
     "SELECT COUNT(*)::int n FROM price_points WHERE source='tcgplayer' AND is_demo=false"
   );
   console.log(`Done. Real TCGplayer price rows in DB: ${stat!.n}`);
+
+  // Fresh prices may have crossed a wishlist target: email Pro members whose
+  // wanted cards are now at or below the price they set (app/collection.ts).
+  try {
+    const sent = await notifyWishlistAlerts(appBaseUrl("https://tradingcardloader.com"));
+    if (sent) console.log(`Wishlist alerts: emailed ${sent} member${sent === 1 ? "" : "s"}.`);
+  } catch (err: any) {
+    console.log(`Wishlist alerts skipped: ${err?.message ?? err}`);
+  }
 }
 
 main()

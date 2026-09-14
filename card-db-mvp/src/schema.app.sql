@@ -1,65 +1,34 @@
--- Phase 2–4 seller-workspace schema (scan → review → price → inventory → list).
--- Layered on top of the Phase 1 catalog (schema.sql). Portable SQL: runs on
--- node:sqlite for the MVP and lifts to Postgres/Supabase (swap AUTOINCREMENT for
--- identity columns; JSON TEXT columns become jsonb; add real FKs).
+-- Member-area schema (uploads → review → collection / wishlist), layered on top
+-- of the catalog (schema.sql). Portable SQL: runs on node:sqlite for the seed
+-- staging file and lifts to Postgres (swap AUTOINCREMENT for identity columns;
+-- JSON TEXT columns become jsonb; add real FKs). The running app uses
+-- db/schema.postgres.sql; this file is the SQLite mirror kept for `npm run seed`.
 --
--- Mirrors the build plan's schema (users / upload_jobs / uploads / user_inventory
--- / listings / marketplace_connections). Each seller row is now a real account
--- (email + password_hash + login sessions); Stripe subscriptions and OAuth remain
--- the documented next seam. This SQLite schema is the seed-staging mirror — the
--- running app authenticates against Postgres (db/schema.postgres.sql).
+-- Naming note: the accounts table is still called `sellers` (and its foreign
+-- keys `seller_id`) from the product's seller-tool days. It holds members.
 
 PRAGMA foreign_keys = ON;
 
--- One seller for the MVP. Holds the reusable defaults the spec asks for so the
--- user "shouldn't have to configure this every time": SKU scheme, pricing rule,
--- default condition/language, and eBay listing preferences.
+-- Member accounts and their few preferences.
 CREATE TABLE IF NOT EXISTS sellers (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   email             TEXT,
-  password_hash     TEXT,                            -- scrypt:salt:hash; NULL = legacy passwordless seller
+  password_hash     TEXT,                            -- scrypt:salt:hash
   last_login_at     TEXT,
-  display_name      TEXT NOT NULL DEFAULT 'My card shop',
-  plan_tier         TEXT NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the seller workspace (app/billing.ts); Stripe checkout is the next seam.
-  last_seen_at      TEXT,                            -- bumped on every workspace request (activity tracking; see activity_log / admin_sessions in db/schema.postgres.sql)
-  training_opt_in   INTEGER NOT NULL DEFAULT 0,      -- opt-in, off by default (customers keep their data)
-
-  -- SKU scheme (spec §14): PREFIX-000001, auto-incrementing, custom prefix.
-  sku_prefix        TEXT NOT NULL DEFAULT 'CARD',
-  sku_pad           INTEGER NOT NULL DEFAULT 6,
-  sku_next          INTEGER NOT NULL DEFAULT 1,
-
-  -- Default pricing rule (spec §6): market, market ± %, or fixed.
-  price_mode        TEXT NOT NULL DEFAULT 'market',  -- market | pct | fixed
-  price_pct         INTEGER NOT NULL DEFAULT 0,      -- signed, used when mode = 'pct' (e.g. 10, -5)
-  price_fixed_cents INTEGER,                          -- used when mode = 'fixed'
-
+  display_name      TEXT NOT NULL DEFAULT 'Collector',
+  plan_tier         TEXT NOT NULL DEFAULT 'free',   -- free | pro ($15/mo). Pro gates the collection (app/billing.ts).
+  last_seen_at      TEXT,
+  is_owner          INTEGER NOT NULL DEFAULT 0,
+  training_opt_in   INTEGER NOT NULL DEFAULT 0,      -- opt-in, off by default
   default_condition TEXT NOT NULL DEFAULT 'NM',      -- NM | LP | MP | HP | DMG
   default_language  TEXT NOT NULL DEFAULT 'EN',
-
-  -- eBay listing preferences (spec §8): saved once, reused on every listing.
-  ebay_connected      INTEGER NOT NULL DEFAULT 0,
-  ebay_store_category TEXT,
-  ebay_shipping_policy TEXT,
-  ebay_return_policy   TEXT,
-  ebay_payment_policy  TEXT,
-  item_location        TEXT,
-  title_template       TEXT,                          -- NULL = built-in template
-  title_structure      TEXT,                          -- NULL = none; JSON for the visual Title Structure Editor (app/title.ts)
-
-  -- Workspace preferences (app/matching.ts, app/pricing.ts, app/listing.ts).
-  matching_prefs        TEXT,                         -- JSON: Advanced Matching Options defaults
-  auto_price_pref       TEXT NOT NULL DEFAULT 'rule', -- rule | previous_first | previous_only
-  price_floor_cents     INTEGER,                      -- never auto-price below this
-  description_templates TEXT,                         -- JSON: {active, items:[{name, body}]} (max 3)
-
+  matching_prefs    TEXT,                            -- JSON: Advanced Matching Options defaults
   created_at        TEXT NOT NULL
 );
 
--- One account per email (case-insensitive) among real accounts.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sellers_email ON sellers (lower(email)) WHERE email IS NOT NULL;
 
--- Login sessions: opaque random token -> seller. The cookie carries the token only.
+-- Login sessions: opaque random token -> member. The cookie carries the token only.
 CREATE TABLE IF NOT EXISTS sessions (
   token       TEXT PRIMARY KEY,
   seller_id   INTEGER NOT NULL REFERENCES sellers(id),
@@ -68,28 +37,29 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_seller ON sessions(seller_id);
 
--- One row per scan/upload batch; drives the review-queue progress UI (spec §4,
--- build plan §4.5). status advances queued → processing → done.
+-- One row per upload (photos / pasted list / certs / set picks). `kind` says
+-- where it goes: scan, graded, creator → the collection after review; pricing →
+-- a shareable priced list.
 CREATE TABLE IF NOT EXISTS scan_batches (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   seller_id    INTEGER NOT NULL REFERENCES sellers(id),
-  source       TEXT NOT NULL DEFAULT 'paste',        -- paste | sample | upload
+  source       TEXT NOT NULL DEFAULT 'paste',        -- paste | upload | certs | catalog
   label        TEXT,
   status       TEXT NOT NULL DEFAULT 'processing',   -- processing | done
   total        INTEGER NOT NULL DEFAULT 0,
   processed    INTEGER NOT NULL DEFAULT 0,
+  kind         TEXT NOT NULL DEFAULT 'scan',         -- scan | graded | creator | pricing
+  share_token  TEXT,
   created_at   TEXT NOT NULL,
   finished_at  TEXT
 );
 
--- One row per scanned card. Decoupled from inventory so a card can sit in
--- "needs review" without polluting confirmed stock (build plan design note).
--- ai_confidence routes the item: >= threshold auto-matches, else needs_review.
+-- One row per identified card in the review queue.
 CREATE TABLE IF NOT EXISTS scan_items (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   batch_id          INTEGER NOT NULL REFERENCES scan_batches(id),
   seller_id         INTEGER NOT NULL REFERENCES sellers(id),
-  raw_input         TEXT NOT NULL DEFAULT '',         -- the pasted line / scan token
+  raw_input         TEXT NOT NULL DEFAULT '',
   image_url         TEXT,
   back_image_url    TEXT,
 
@@ -102,81 +72,48 @@ CREATE TABLE IF NOT EXISTS scan_items (
   condition         TEXT NOT NULL DEFAULT 'NM',
   language          TEXT NOT NULL DEFAULT 'EN',
   quantity          INTEGER NOT NULL DEFAULT 1,
-
-  price_mode        TEXT NOT NULL DEFAULT 'market',
-  price_pct         INTEGER NOT NULL DEFAULT 0,
-  price_cents       INTEGER,                           -- resolved listing price
-  price_overridden  INTEGER NOT NULL DEFAULT 0,        -- 1 = user typed an exact price
-  prev_price_cents  INTEGER,                           -- "you listed this before at ..." (spec §7)
-
-  sku               TEXT,
-  title             TEXT,                              -- generated marketplace title
-  dup_of_item_id    INTEGER,                           -- in-batch duplicate (spec §15)
+  price_cents       INTEGER,                          -- market value when identified
+  paid_cents        INTEGER,                          -- what the member paid (optional)
+  grade             TEXT,
+  grader            TEXT,
+  cert              TEXT,
+  dup_of_item_id    INTEGER,
   created_at        TEXT NOT NULL
 );
 
--- Confirmed stock. Every physical card gets a unique SKU (spec §14). Quantity +
--- duplicate handling per spec §15.
-CREATE TABLE IF NOT EXISTS inventory (
+-- The member's collection.
+CREATE TABLE IF NOT EXISTS collection_items (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   seller_id      INTEGER NOT NULL REFERENCES sellers(id),
   card_id        INTEGER NOT NULL REFERENCES cards(id),
   variant_id     INTEGER NOT NULL REFERENCES card_variants(id),
-  sku            TEXT NOT NULL,
   condition      TEXT NOT NULL DEFAULT 'NM',
   language       TEXT NOT NULL DEFAULT 'EN',
   quantity       INTEGER NOT NULL DEFAULT 1,
-
-  price_mode     TEXT NOT NULL DEFAULT 'market',
-  price_pct      INTEGER NOT NULL DEFAULT 0,
-  price_cents    INTEGER,
-  acquired_cents INTEGER,
-
-  status         TEXT NOT NULL DEFAULT 'in_stock',    -- in_stock | listed | sold
+  grader         TEXT,
+  grade          TEXT,
+  cert           TEXT,
+  paid_cents     INTEGER,
+  notes          TEXT,
   source_item_id INTEGER REFERENCES scan_items(id),
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL
 );
 
--- "Remember previous prices" (spec §7). One row per (variant, condition) sale/
--- list event; the latest is surfaced next time the same card is scanned.
-CREATE TABLE IF NOT EXISTS inventory_price_history (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  seller_id   INTEGER NOT NULL REFERENCES sellers(id),
-  variant_id  INTEGER NOT NULL REFERENCES card_variants(id),
-  condition   TEXT NOT NULL DEFAULT 'NM',
-  price_cents INTEGER NOT NULL,
-  recorded_at TEXT NOT NULL
-);
-
--- Generated marketplace listings (spec §9–13, §16). eBay first; the same row
--- shape formats to other channels (spec §17; app/exporters.ts). External publish
--- runs through the eBay Sell API (app/ebay-sell.ts); the File Exchange CSV remains
--- the no-connection fallback.
-CREATE TABLE IF NOT EXISTS listings (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  seller_id      INTEGER NOT NULL REFERENCES sellers(id),
-  inventory_id   INTEGER NOT NULL REFERENCES inventory(id),
-  marketplace    TEXT NOT NULL DEFAULT 'ebay',        -- ebay | tcgplayer | whatnot | shopify | csv ...
-  format         TEXT NOT NULL DEFAULT 'fixed',       -- fixed | auction
-  title          TEXT NOT NULL,
-  description    TEXT NOT NULL DEFAULT '',
-  category_id    TEXT,
-  price_cents    INTEGER,                              -- Buy It Now / fixed price
-  start_cents    INTEGER,                              -- auction start
-  duration_days  INTEGER,                              -- auction duration
-  quantity       INTEGER NOT NULL DEFAULT 1,
-  sku            TEXT,
-  item_specifics TEXT NOT NULL DEFAULT '{}',          -- JSON name→value
-  scheduled_at   TEXT,                                 -- ISO; NULL = list immediately
-  status         TEXT NOT NULL DEFAULT 'draft',        -- draft | scheduled | exported | published
-  external_ref   TEXT,
-  created_at     TEXT NOT NULL
+-- The wishlist, with an optional target price per printing.
+CREATE TABLE IF NOT EXISTS wishlist_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  seller_id    INTEGER NOT NULL REFERENCES sellers(id),
+  card_id      INTEGER NOT NULL REFERENCES cards(id),
+  variant_id   INTEGER NOT NULL REFERENCES card_variants(id),
+  target_cents INTEGER,
+  note         TEXT,
+  created_at   TEXT NOT NULL,
+  notified_at  TEXT,
+  UNIQUE (seller_id, variant_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_scanitems_batch  ON scan_items(batch_id);
 CREATE INDEX IF NOT EXISTS idx_scanitems_status ON scan_items(batch_id, status);
-CREATE INDEX IF NOT EXISTS idx_inv_seller       ON inventory(seller_id, status);
-CREATE INDEX IF NOT EXISTS idx_inv_variant      ON inventory(seller_id, variant_id, condition, language);
-CREATE INDEX IF NOT EXISTS idx_iph_lookup       ON inventory_price_history(seller_id, variant_id, condition, recorded_at);
-CREATE INDEX IF NOT EXISTS idx_listings_inv     ON listings(inventory_id);
+CREATE INDEX IF NOT EXISTS idx_coll_member      ON collection_items(seller_id);
+CREATE INDEX IF NOT EXISTS idx_wish_member      ON wishlist_items(seller_id);

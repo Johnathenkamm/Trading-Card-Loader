@@ -119,7 +119,7 @@ export async function createAccount(
   displayNameRaw: string
 ): Promise<number> {
   const email = normalizeEmail(emailRaw);
-  const display_name = displayNameRaw.trim().slice(0, 80) || "My card shop";
+  const display_name = displayNameRaw.trim().slice(0, 80) || "Collector";
 
   if (!isValidEmail(email)) throw new AuthError("Enter a valid email address.");
   if (password.length < PASSWORD_MIN) throw new AuthError(`Password must be at least ${PASSWORD_MIN} characters.`);
