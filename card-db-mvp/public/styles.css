@@ -554,21 +554,24 @@ h1, h2, h3 { font-family: "Bricolage Grotesque", "IBM Plex Sans", sans-serif; fo
 .price-hint .prev { color: var(--accent-2); }
 .ri-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* listing builder */
-.list-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 20px; align-items: start; }
-.list-card { display: flex; gap: 16px; }
-.lc-img { flex: none; width: 150px; }
-.lc-img img { width: 100%; border-radius: 8px; box-shadow: var(--shadow-md); }
-.lc-info h2 { font-size: 1.2rem; }
-.lc-chips { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
-.lc-price { font-size: 0.86rem; color: var(--muted); margin-bottom: 12px; }
-.spec-table h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
-.spec-table table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
-.spec-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); }
-.spec-table td:first-child { color: var(--muted); width: 42%; }
-.list-form textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-family: inherit; padding: 9px; font-size: 0.86rem; }
-.list-actions { display: flex; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
-.policy-note { font-size: 0.8rem; color: var(--muted); background: var(--surface-2); border-radius: var(--radius-sm); padding: 8px 11px; margin: 6px 0; }
+/* ---- card page: member state + wishlist ---- */
+.own-strip { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 0.88rem; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 12px; margin: 12px 0 4px; }
+.own-strip b { color: var(--ink); }
+.own-strip .ok { color: var(--up); }
+.own-strip a { margin-left: auto; }
+.wish-form { display: inline-flex; gap: 6px; align-items: center; }
+.wish-target { max-width: 120px; }
+.wish-target input { width: 70px; }
+.btn.wish.on { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, var(--line)); }
+.wish-table tr.wish-hit td { background: var(--up-soft); }
+.target-form { display: inline-flex; gap: 6px; align-items: center; }
+.target-form .price-in input { width: 72px; }
+.row-edit-form { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-top: 8px; }
+.row-edit-form label { display: flex; flex-direction: column; gap: 3px; font-size: 0.72rem; color: var(--muted); }
+.row-edit-form input, .row-edit-form select { height: 30px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; font-size: 0.82rem; padding: 0 6px; width: 84px; }
+.creator-table tr.owned td.card b { color: var(--up); }
+.stat .v.ok, .mkt.ok { color: var(--up); }
+.stat .v.bad, .mkt.bad { color: var(--down); }
 
 /* settings */
 .settings-form { max-width: 860px; }
@@ -679,50 +682,11 @@ h1, h2, h3 { font-family: "Bricolage Grotesque", "IBM Plex Sans", sans-serif; fo
   .device-card { width: 168px; }
 }
 
-/* ---- Title Structure Editor (settings) ---------------------------------- */
-.title-editor .te-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.title-editor .te-top h2 { margin: 0; }
-.te-opt { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--muted); cursor: pointer; }
-.te-opt small { color: var(--faint); }
+/* ---- small labels + remove buttons (share box, picked lists, inbox replies) ---- */
 .te-lbl { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); font-weight: 700; margin-bottom: 8px; }
 .te-hint2 { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--faint); margin-left: 8px; }
-.te-avail-wrap, .te-struct-wrap { margin-top: 14px; }
-.te-avail { display: flex; flex-wrap: wrap; gap: 7px; }
-.te-chip.add {
-  border: 1px dashed var(--line-strong); background: var(--surface); color: var(--muted);
-  border-radius: 999px; padding: 5px 12px; font-size: 0.82rem; font-weight: 600; cursor: pointer;
-  transition: border-color 0.12s, color 0.12s, background 0.12s;
-}
-.te-chip.add:hover { border-style: solid; border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.te-custom { display: flex; gap: 8px; margin-top: 10px; max-width: 420px; }
-.te-custom input { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font: inherit; font-size: 0.85rem; }
-.te-struct {
-  display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; min-height: 56px;
-  border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg);
-}
-.te-empty { color: var(--faint); font-size: 0.85rem; font-style: italic; align-self: center; }
-.te-block {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 8px;
-  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface);
-  box-shadow: var(--shadow-sm); cursor: grab; user-select: none; font-size: 0.83rem; font-weight: 600; color: var(--ink);
-}
-.te-block.text { border-style: dashed; color: var(--muted); }
-.te-block.caps .te-blabel { text-transform: uppercase; letter-spacing: 0.02em; }
-.te-block.dragging { opacity: 0.45; cursor: grabbing; }
-.te-grip { color: var(--faint); font-size: 0.8rem; line-height: 1; cursor: grab; }
-.te-caps {
-  border: 1px solid var(--line-strong); background: transparent; color: var(--faint);
-  border-radius: 4px; padding: 1px 5px; font-size: 0.62rem; font-weight: 800; letter-spacing: 0.04em; cursor: pointer;
-}
-.te-caps[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .te-rm { border: 0; background: transparent; color: var(--faint); font-size: 1.05rem; line-height: 1; padding: 0 3px; cursor: pointer; }
 .te-rm:hover { color: var(--down); }
-.te-preview { margin-top: 16px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-.te-preview-top { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
-.te-count { font-family: var(--mono, ui-monospace, monospace); font-size: 0.78rem; color: var(--muted); }
-.te-count.over { color: var(--down); font-weight: 700; }
-.te-preview-text { padding: 12px; font-size: 0.95rem; color: var(--ink); line-height: 1.4; word-break: break-word; }
-.te-warn { padding: 8px 12px; background: var(--down-soft); color: var(--down); font-size: 0.82rem; border-top: 1px solid var(--line); }
 
 /* ========================================================================
    Image upload — scan dropzone + per-item photo controls (spec §2)
@@ -820,52 +784,11 @@ form.inline { display: inline; margin: 0; }
 .cs-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .cs-pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 14px; }
 
-/* ---- orders ---- */
-.order-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 14px; }
-.tool-dd summary { list-style: none; cursor: pointer; display: inline-block; }
-.tool-dd summary::-webkit-details-marker { display: none; }
-.tool-dd[open] { flex-basis: 100%; }
-.tool-form { margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; max-width: 720px; }
-.tool-form .hint { margin: 0 0 8px; }
-.order { padding: 12px 14px; }
-.order-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
-.order-meta { color: var(--muted); font-size: 0.86rem; }
-.order-items { min-width: 0; }
-.order-items tr.picked td { color: var(--muted); }
-.order-items tr.picked .card b { text-decoration: line-through; }
-.order-items .sub .warn { color: var(--gold); font-weight: 600; }
-.order-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
-.order.status-shipped { opacity: 0.7; }
-.pickbtn { width: 24px; height: 24px; border-radius: 6px; border: 2px solid var(--line-strong); background: var(--surface); color: var(--accent-ink); cursor: pointer; font-weight: 700; }
-.pickbtn.on { background: var(--up); border-color: var(--up); }
-.pill.ebay, .pill.tcgplayer, .pill.manapool, .pill.storefront, .pill.manual { text-transform: none; }
+/* ---- status pills shared by inbox + owner console ---- */
 .pill.pending { color: var(--gold); background: color-mix(in srgb, var(--gold) 16%, transparent); border-color: color-mix(in srgb, var(--gold) 40%, transparent); }
-.pill.picked { color: var(--accent-2); background: var(--accent-soft); }
-.pill.shipped, .pill.answered { color: var(--up); background: var(--up-soft); }
-.pick-table { border-collapse: collapse; width: 100%; background: var(--surface); border: 1px solid var(--line); }
-.pick-table th, .pick-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; font-size: 0.95rem; vertical-align: middle; }
-.pick-table img { width: 28px; height: 39px; object-fit: contain; vertical-align: middle; margin-right: 6px; }
-.pick-table .big { font-size: 1.3rem; font-weight: 700; }
-.pick-table .box { font-size: 1.3rem; }
-@media print { .noprint, .site-header, .site-footer, header, footer, nav { display: none !important; } .picklist { padding: 0; } .pick-table { border: 1px solid #000; } .pick-table th, .pick-table td { border-bottom: 1px solid #000; } }
-
-/* ---- eBay connection card (settings) ---- */
-.ebay-card { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); margin-bottom: 12px; }
-.ebay-card.on { border-color: color-mix(in srgb, var(--up) 45%, var(--line)); background: var(--up-soft); }
-.ebay-card.off { border-style: dashed; }
-.ebay-card .hint { margin-top: 3px; }
-.ebay-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill.answered { color: var(--up); background: var(--up-soft); }
 .hint.warn { color: var(--gold); font-weight: 600; }
-.inv-table tr.has-error td { background: color-mix(in srgb, var(--down) 6%, transparent); }
-.inv-table .sub.err { color: var(--down); font-size: 0.78rem; white-space: normal; max-width: 420px; }
-
-/* ---- listings bulk / scheduler, order shipping ---- */
-.bulkbar input[type="datetime-local"], .bulkbar input[type="number"] { height: 30px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-family: inherit; font-size: 0.82rem; padding: 0 6px; }
-.sched-note { margin-top: 12px; font-size: 0.88rem; color: var(--muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.sched-note .warn { color: var(--gold); }
-.ship-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.ship-form select, .ship-form input { height: 30px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-family: inherit; font-size: 0.82rem; padding: 0 6px; }
-.ship-form input { width: 190px; }
+@media print { .noprint, .site-header, .site-footer, header, footer, nav { display: none !important; } }
 
 /* ---- inbox ---- */
 .fb { padding: 12px 14px; }
@@ -938,15 +861,6 @@ form.inline { display: inline; margin: 0; }
 .radio-row input { margin-top: 3px; }
 .radio-row span { display: flex; flex-direction: column; gap: 2px; font-size: 0.9rem; }
 .radio-row small { color: var(--muted); font-size: 0.8rem; }
-.desc-tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--line); }
-.desc-tab { border: 0; background: transparent; padding: 8px 12px; font: inherit; font-weight: 600; font-size: 0.9rem; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
-.desc-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
-.desc-head { align-items: end; }
-.fld.ckbox.radio { margin-bottom: 12px; }
-.desc-body { width: 100%; min-height: 180px; padding: 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-family: "IBM Plex Mono", monospace; font-size: 0.84rem; line-height: 1.5; resize: vertical; }
-.desc-vars { margin-top: 12px; }
-.desc-preview { margin: 0; padding: 12px; font-family: inherit; font-size: 0.9rem; line-height: 1.5; white-space: pre-wrap; color: var(--ink); }
-
 /* review item: uploaded scan + catalog compare + per-item photo control */
 .ri-thumb { position: relative; }
 .ri-thumb.is-scan img { object-fit: cover; }
