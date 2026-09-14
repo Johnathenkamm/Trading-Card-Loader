@@ -17,7 +17,7 @@ type Rendered = { html: string; title: string; description: string };
 function safeNext(next: string | undefined): string {
   // Only allow internal app paths — never an absolute/protocol-relative URL.
   if (next && next.startsWith("/") && !next.startsWith("//")) return next;
-  return "/app";
+  return "/collection";
 }
 
 /** Append ?next= to an auth link when a deep link is being carried. */
@@ -86,9 +86,9 @@ export function renderLogin(
       </form>
       <div class="auth-alt">New here? <a href="${esc(withNext("/signup", next))}">Create an account</a></div>`;
   return {
-    html: card(inner, "Welcome back", "Your scans, inventory, pricing rules and listings."),
+    html: card(inner, "Welcome back", "Your collection, wishlist and price checks."),
     title: "Sign in — CardIndex",
-    description: "Sign in to your CardIndex seller workspace.",
+    description: "Sign in to your CardIndex collection.",
   };
 }
 
@@ -102,8 +102,8 @@ export function renderSignup(
   const inner = `${error ? `<div class="auth-error" role="alert">${esc(error)}</div>` : ""}
       <form method="post" action="/signup" class="auth-form" autocomplete="on">
         ${nextField}
-        <label class="fld" for="display_name"><span>Shop name <small>— shown on your listings and share links</small></span>
-          <input type="text" id="display_name" name="display_name" value="${esc(displayName)}" required maxlength="80" autocomplete="organization" autofocus placeholder="e.g. Kamm Cards"></label>
+        <label class="fld" for="display_name"><span>Your name <small>— shown on price lists you share</small></span>
+          <input type="text" id="display_name" name="display_name" value="${esc(displayName)}" required maxlength="80" autocomplete="nickname" autofocus placeholder="e.g. Jordan"></label>
         <label class="fld" for="email"><span>Email</span>
           <input type="email" id="email" name="email" value="${esc(email)}" required autocomplete="email" inputmode="email" placeholder="you@example.com"></label>
         ${passwordField({
@@ -115,13 +115,13 @@ export function renderSignup(
           hint: `At least ${PASSWORD_MIN} characters.`,
         })}
         <button class="btn primary lg auth-submit" type="submit">Create account</button>
-        <p class="auth-fine">Free to start: the pricing tool, card search and sales lookup are included. Scanning, inventory and listings are part of Pro.</p>
+        <p class="auth-fine">Free to start: price checks, sold-price lookup and a wishlist are included. Tracking your collection is part of Pro.</p>
       </form>
       <div class="auth-alt">Already have an account? <a href="${esc(withNext("/login", next))}">Sign in</a></div>`;
   return {
-    html: card(inner, "Create your account", "Your cards, scans, pricing rules and listing preferences — saved and private to you."),
+    html: card(inner, "Create your account", "Your collection, wishlist and price checks — saved and private to you."),
     title: "Create your account — CardIndex",
-    description: "Create a CardIndex account to price, scan, and list your trading cards.",
+    description: "Create a CardIndex account to price-check cards, keep a wishlist and track your collection.",
   };
 }
 

@@ -13,6 +13,7 @@ export type PageOpts = {
 };
 
 const SITE = "CardIndex";
+export const TAGLINE = "The trading-card price guide for buyers and collectors.";
 
 // Brand mark: two offset cards on a cobalt-blue tile. Inline SVG so it inherits
 // crisp rendering at any size and needs no asset request. Exported for reuse on
@@ -23,26 +24,25 @@ export const BRAND_MARK = `<svg class="mark" viewBox="0 0 32 32" width="27" heig
 function accountControls(): string {
   const acct = currentAccount();
   if (acct) {
-    const owner = acct.admin ? `<a class="hdr-owner" href="/admin" title="Owner console: users, plans, activity">Owner</a>` : "";
+    const owner = acct.admin ? `<a class="hdr-owner" href="/admin" title="Owner console: members, plans, activity">Owner</a>` : "";
     if (acct.id == null) {
-      // Owner-console session only (no customer account signed in). The
-      // owner's own workspace is reachable when their seller row exists.
-      const mine = acct.acting?.owner ? `<a class="acct-name" href="/app" title="Your own seller workspace">My workspace</a>` : "";
+      // Owner-console session only (no member account signed in). The owner's
+      // own collection is reachable when their member row exists.
+      const mine = acct.acting?.owner ? `<a class="acct-name" href="/collection" title="Your own collection">My collection</a>` : "";
       return `<div class="hdr-acct">
       ${owner}
       ${mine}
       <form method="post" action="/admin/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Sign out</button></form>
     </div>`;
     }
-    // Plan state on every page (CardUploader keeps this in the account menu):
-    // a Free / Pro pill plus the one plan action that applies.
+    // Plan state on every page: a Free / Pro pill plus the one plan action that applies.
     const pro = acct.plan_tier === "pro";
     const plan = pro
-      ? `<a class="hdr-plan pro" href="/app/settings#s-plan" title="Your plan and billing">Pro</a>`
-      : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free — upgrade to Pro to scan, build inventory and list">Upgrade</a>`;
+      ? `<a class="hdr-plan pro" href="/collection/settings#s-plan" title="Your plan">Pro</a>`
+      : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free — upgrade to Pro to track your collection and get price alerts">Upgrade</a>`;
     return `<div class="hdr-acct">
       ${owner}
-      <a class="acct-name" href="/app" title="Your seller workspace">${esc(acct.display_name)}</a>
+      <a class="acct-name" href="/collection" title="Your collection">${esc(acct.display_name)}</a>
       ${plan}
       <form method="post" action="/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Log out</button></form>
     </div>`;
@@ -53,21 +53,19 @@ function accountControls(): string {
 
 /**
  * Owner mode banner: shown on every page while the owner is working inside a
- * customer's workspace, so it's never ambiguous whose data a form will touch.
+ * member's collection, so it's never ambiguous whose data a form will touch.
  */
 function actingBanner(canonical: string): string {
   const acct = currentAccount();
   const a = acct?.acting;
   if (!a) return "";
   if (a.owner) {
-    // The owner's own workspace: a quieter strip, only on workspace pages, so
-    // it's clear this is THEIR inventory, not a customer's — with the way back
-    // to the console.
-    if (!canonical.startsWith("/app")) return "";
+    // The owner's own collection: a quieter strip, only on member pages.
+    if (!canonical.startsWith("/collection")) return "";
     return `<div class="owner-banner own" role="status">
     <div class="wrap owner-banner-in">
       <span class="ob-ic">🗂</span>
-      <span>Your own workspace — cards you add here go into <b>your</b> inventory, not a customer's.</span>
+      <span>Your own collection — cards you add here go into <b>your</b> collection, not a member's.</span>
       <a class="btn sm" href="/admin/upload">My uploader</a>
       <a class="btn sm" href="/admin">Owner console</a>
     </div>
@@ -76,7 +74,7 @@ function actingBanner(canonical: string): string {
   return `<div class="owner-banner" role="status">
     <div class="wrap owner-banner-in">
       <span class="ob-ic">👁</span>
-      <span>Owner mode — you're in <b>${esc(a.display_name)}</b>'s workspace${a.email ? ` <span class="mono">(${esc(a.email)})</span>` : ""} · <span class="pill ${a.plan_tier === "pro" ? "sold" : ""}">${a.plan_tier === "pro" ? "Pro" : "Free"}</span>. Everything you add or change lands in their account.</span>
+      <span>Owner mode — you're in <b>${esc(a.display_name)}</b>'s collection${a.email ? ` <span class="mono">(${esc(a.email)})</span>` : ""} · <span class="pill ${a.plan_tier === "pro" ? "sold" : ""}">${a.plan_tier === "pro" ? "Pro" : "Free"}</span>. Everything you add or change lands in their account.</span>
       <a class="btn sm" href="/admin/users/${a.id}">Their profile</a>
       <form method="post" action="/admin/stop-acting" class="inline-form"><button class="btn sm" type="submit">Exit owner mode</button></form>
     </div>
@@ -84,10 +82,10 @@ function actingBanner(canonical: string): string {
 }
 
 function header(searchValue = ""): string {
-  // Logged out, the workspace link says where it goes: the sign-in page, with
-  // the workspace as the return path (the same rewrite CardUploader's header does).
+  // Logged out, the collection link says where it goes: the sign-in page, with
+  // the collection as the return path.
   const acct = currentAccount();
-  const appHref = acct && (acct.id != null || acct.acting) ? "/app" : "/login?next=%2Fapp";
+  const appHref = acct && (acct.id != null || acct.acting) ? "/collection" : "/login?next=%2Fcollection";
   return `
 <header class="site-header">
   <div class="wrap bar">
@@ -95,9 +93,9 @@ function header(searchValue = ""): string {
     <nav class="nav">
       <a href="/browse">Browse</a>
       <a href="/search">Search</a>
-      <a href="/sales">Sales Lookup</a>
+      <a href="/sales">Sold prices</a>
       <a href="/pricing">Pricing</a>
-      <a href="${appHref}" class="nav-app">Seller tools</a>
+      <a href="${appHref}" class="nav-app">My collection</a>
     </nav>
     <div class="header-search">
       <div class="searchbox">
@@ -122,29 +120,30 @@ function footer(): string {
   <div class="wrap cols">
     <div class="about">
       <div class="brand" style="margin-bottom:10px">${BRAND_MARK}${SITE}</div>
-      Live prices on every card, plus the workspace to scan, price and list your
-      own — variant-aware values, per-grade comps, and one-click marketplace
-      listings.
+      ${TAGLINE} Live market prices and real sold prices for every printing,
+      a photo identifier for the cards in your hand, and a private place for your
+      collection and wishlist.
     </div>
     <div>
-      <h4>Browse</h4>
+      <h4>Price guide</h4>
       <a href="/g/pokemon">Pokémon</a>
       <a href="/g/mtg">Magic: The Gathering</a>
       <a href="/browse">All sets</a>
       <a href="/search">Search</a>
+      <a href="/sales">Sold prices</a>
     </div>
     <div>
-      <h4>Seller tools</h4>
-      <a href="/app">Dashboard</a>
-      <a href="/app/scan">Scan &amp; identify</a>
-      <a href="/app/inventory">Inventory &amp; pricing</a>
-      <a href="/app/listings">eBay listings</a>
-      <a href="/pricing">Pricing &amp; plans</a>
+      <h4>Your collection</h4>
+      <a href="/collection">My collection</a>
+      <a href="/collection/add?mode=price">Price check</a>
+      <a href="/collection/add?mode=collection">Identify &amp; add cards</a>
+      <a href="/collection/wishlist">Wishlist</a>
+      <a href="/pricing">Plans &amp; pricing</a>
     </div>
   </div>
   <div class="wrap legal">
-    <span>Catalog &amp; market prices from the Pokémon TCG API &amp; Scryfall. Grade values, price history &amp; sold comps are demo data.</span>
-    <span>Phase 1 MVP — not affiliated with any marketplace.</span>
+    <span>Catalog &amp; market prices from the Pokémon TCG API, Scryfall and TCGplayer. Grade values, price history &amp; sold comps are demo data where marked.</span>
+    <span>Not affiliated with any marketplace. Prices are references, not offers.</span>
   </div>
 </footer>`;
 }
@@ -206,9 +205,7 @@ const FAVICON =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232f6bff'/%3E%3Cstop offset='1' stop-color='%235b8cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Crect x='8' y='8' width='11' height='15' rx='2' fill='white' fill-opacity='0.5'/%3E%3Crect x='13' y='9' width='11' height='15' rx='2' fill='white'/%3E%3C/svg%3E";
 
 export function page(o: PageOpts): string {
-  const ld = (o.jsonLd ?? [])
-    .map((x) => `<script type="application/ld+json">${jsonLd(x)}</script>`)
-    .join("");
+  const ld = (o.jsonLd ?? []).map((x) => `<script type="application/ld+json">${jsonLd(x)}</script>`).join("");
   return `<!doctype html>
 <html lang="en">
 <head>

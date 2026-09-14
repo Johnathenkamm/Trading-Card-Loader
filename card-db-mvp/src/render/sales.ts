@@ -32,7 +32,7 @@ function saleCell(s: SoldSale): string {
 /**
  * `base` is the page the filter pills and search form post back to: the public
  * `/sales`, or `/app/sales-lookup` when the same lookup is rendered inside the
- * seller workspace (`embedded` then drops the public page chrome — wrap,
+ * member area (`embedded` then drops the public page chrome — wrap,
  * breadcrumb, h1 — because the workspace header already carries those).
  */
 export function renderSales(
@@ -119,7 +119,7 @@ export function renderSales(
         <thead><tr><th>Date</th><th>Market</th><th>Listing</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
     : `<div class="empty"><h2>No archived sales${p.q ? ` for “${esc(p.q)}”` : ""}</h2>
-       <p>${p.q || r.total ? "Try a broader search, or remove filters. " : ""}The archive grows as connected sellers' eBay sales come in and with every imported feed.</p></div>`;
+       <p>${p.q || r.total ? "Try a broader search, or remove filters. " : ""}The archive grows with every imported sales feed.</p></div>`;
 
   const sampleNote = r.allDemo
     ? demoNote(

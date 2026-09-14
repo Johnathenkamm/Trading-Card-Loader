@@ -71,7 +71,9 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
   // The trust bar names the games actually in the catalog — no marketing counts.
   const games = await getGames();
   const gameNames = games.length ? games.map((g) => g.name.replace(/:.*$/, "")).join(" & ") : "Trading cards";
-  const yourCents = hero ? Math.floor((hero.price_cents * 1.05) / 100) * 100 + 99 : 0;
+  // The device panel shows what a buyer wants to know about the hero card: the
+  // market price, a per-grade value when the catalog has one, and a wishlist CTA.
+  const heroGraded = hero ? (await gradedValues((await getVariants(hero.id)).find((v) => v.is_default)?.id ?? 0)).find((g) => /PSA 10/i.test(g.grade ?? "")) : undefined;
 
   const heroVisual = hero
     ? `<div class="hero-visual">
@@ -82,10 +84,10 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
             <div class="dp-name">${esc(hero.name)}</div>
             <div class="dp-sub">${esc(hero.set_name)}${hero.number ? " · #" + esc(hero.number) : ""}</div>
             <span class="dp-chip">Near Mint ▾</span>
-            <div class="dp-row"><span>Market Price</span><b class="mono">${money(hero.price_cents, hero.currency)}</b></div>
-            <div class="dp-row"><span>Your Price</span><b class="mono accent">${money(yourCents, hero.currency)}</b></div>
-            <a class="dp-btn" href="/app/scan">Add to Inventory</a>
-            <div class="dp-tabs"><span class="on">Details</span><span>Pricing</span><span>History</span></div>
+            <div class="dp-row"><span>Market price</span><b class="mono">${money(hero.price_cents, hero.currency)}</b></div>
+            ${heroGraded ? `<div class="dp-row"><span>PSA 10</span><b class="mono accent">${money(heroGraded.price_cents, heroGraded.currency)}</b></div>` : `<div class="dp-row"><span>Sold prices</span><b class="mono accent">→</b></div>`}
+            <a class="dp-btn" href="${cardUrl(hero)}">♡ Add to wishlist</a>
+            <div class="dp-tabs"><span class="on">Price</span><span>History</span><span>Sold</span></div>
           </div>
         </div>
       </div>`
@@ -95,16 +97,16 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 <section class="home-hero">
   <div class="wrap home-hero-grid">
     <div class="home-hero-copy">
-      <div class="tag">All-in-one TCG seller platform</div>
-      <h1>Scan once.<br>List <span class="hl">everywhere.</span></h1>
-      <p class="lead">Scan, identify, price and list your trading cards on eBay, TCGplayer, Whatnot and more — from one place. Backed by a live price catalog of ${c.cards.toLocaleString()} cards.</p>
+      <div class="tag">Price guide · sold history · collection tracker</div>
+      <h1>Know what it's worth<br><span class="hl">before you buy.</span></h1>
+      <p class="lead">Live market prices and real sold prices for every printing of ${c.cards.toLocaleString()} cards, a photo identifier for the cards in your hand, and a private place to keep your collection and wishlist.</p>
       <div class="cta-row">
-        <a class="btn primary lg" href="/app/scan">Start Scanning →</a>
-        <a class="btn lg ghost" href="#how">See how it works</a>
+        <a class="btn primary lg" href="/search">Search a card →</a>
+        <a class="btn lg ghost" href="/collection/add?mode=price">Price my cards — free</a>
       </div>
       <div class="mk-strip">
-        <span class="mk-lbl">List to multiple marketplaces</span>
-        <div class="mk-logos"><span class="mk">eBay</span><span class="mk">TCGplayer</span><span class="mk">Whatnot</span><span class="mk">Shopify</span><span class="mk more">+ More</span></div>
+        <span class="mk-lbl">Prices from</span>
+        <div class="mk-logos"><span class="mk">TCGplayer</span><span class="mk-lbl">· sold history from</span><span class="mk">eBay</span><span class="mk">Goldin</span><span class="mk">Fanatics</span></div>
       </div>
     </div>
     ${heroVisual}
@@ -113,31 +115,30 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 
 <section class="feature-row">
   <div class="wrap feats">
-    ${feature("scan", "Scan Any Card", "Use your scanner or phone to add single cards or entire collections.")}
-    ${feature("ai", "AI Identification", "Instantly identifies cards, sets, variants and conditions.")}
-    ${feature("price", "Get Market Prices", "Real-time pricing from TCGplayer and eBay to price with confidence.")}
-    ${feature("box", "Manage Inventory", "Organize, track and price your collection with SKUs and bulk tools.")}
-    ${feature("rocket", "List & Sell", "List to eBay, TCGplayer, Whatnot and more with a few clicks.")}
+    ${feature("ai", "Search any printing", "Every card, every set, every finish — holo, reverse, 1st edition — with its own price.")}
+    ${feature("price", "Live market prices", "TCGplayer market values refreshed daily, with 30 and 90-day history and per-grade values.")}
+    ${feature("send", "Real sold prices", "What cards actually sold for on eBay, Goldin and Fanatics, tied to the exact card, not a title keyword.")}
+    ${feature("scan", "Identify from a photo", "Snap the cards you're holding or being offered and get every one identified and priced.")}
+    ${feature("box", "Track what you own and want", "A private collection with its value, and a wishlist that flags cards when they hit your price.")}
   </div>
 </section>
 
 <section class="how" id="how">
   <div class="wrap">
-    <div class="how-head"><h2>How it works</h2><p>From scan to sale in just a few steps.</p></div>
+    <div class="how-head"><h2>How it works</h2><p>From a card in your hand to a fair price in a few steps.</p></div>
     <div class="steps">
-      ${step(1, "scan", "Scan", "Scan your cards using a scanner or phone.")}
-      ${step(2, "ai", "Identify", "AI identifies the card details instantly.")}
-      ${step(3, "price", "Price", "Review market prices and set your price.")}
-      ${step(4, "box", "Organize", "Add to inventory, set conditions, SKUs and quantities.")}
-      ${step(5, "send", "List", "Export and list to your favorite marketplaces.", true)}
+      ${step(1, "ai", "Search", "Type a name or number, or browse a set checklist.")}
+      ${step(2, "price", "Check the price", "See today's market, the trend, and what copies actually sold for.")}
+      ${step(3, "scan", "Snap a photo", "Photograph a stack or a binder page — every card identified and priced, free.")}
+      ${step(4, "box", "Keep track", "Add cards to your collection or wishlist and watch their value.", true)}
     </div>
-    <div class="how-cta"><a class="btn primary" href="/app/scan">Start your free scan</a></div>
+    <div class="how-cta"><a class="btn primary" href="/collection/add?mode=price">Price my cards free</a></div>
   </div>
 </section>
 
 <section class="sec">
   <div class="wrap">
-    <div class="sec-head"><h2>Trending by value</h2><a href="/search?sort=price_desc">Browse the price catalog →</a></div>
+    <div class="sec-head"><h2>Trending by value</h2><a href="/search?sort=price_desc">Browse the price guide →</a></div>
     <div class="grid cards">${trending.map((t) => cardTile({ ...t, set_name: t.set_name })).join("")}</div>
   </div>
 </section>
@@ -145,9 +146,9 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 <section class="trust-bar">
   <div class="wrap trust-grid">
     <div class="tb"><div class="tb-ic">${ICONS.scan}</div><div><b>${esc(gameNames)} today</b><span>${c.cards.toLocaleString()} cards, every printing priced from TCGplayer market data. More games as sets are added.</span></div></div>
-    <div class="tb"><div class="tb-ic">${ICONS.price}</div><div><b>Graded &amp; ungraded</b><span>Supports PSA, BGS, CGC, TAG and raw cards.</span></div></div>
-    <div class="tb"><div class="tb-ic">${ICONS.box}</div><div><b>Bulk scanning</b><span>Scan and process hundreds of cards at once.</span></div></div>
-    <div class="tb"><div class="tb-ic">${ICONS.ai}</div><div><b>Secure &amp; private</b><span>Your data is yours — never sold or shared.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.price}</div><div><b>Graded &amp; raw</b><span>Values for PSA, BGS and CGC slabs alongside raw cards.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.ai}</div><div><b>Photo identification</b><span>Hundreds of cards at once, matched to the exact printing.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.box}</div><div><b>Private by default</b><span>Your collection is yours — never sold, shared or shown to anyone.</span></div></div>
   </div>
 </section>`;
 
@@ -166,8 +167,8 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
   ];
   return {
     html,
-    title: "CardIndex — scan, price & list your trading cards",
-    description: `Scan, identify, price and list TCG cards on eBay, TCGplayer, Whatnot and more. Backed by a live catalog of ${c.cards.toLocaleString()} cards with variant-aware prices.`,
+    title: "CardIndex — trading-card prices, sold history & your collection",
+    description: `Look up live market prices and real sold prices for ${c.cards.toLocaleString()} trading cards by printing and grade, identify cards from a photo, and track your collection and wishlist.`,
     jsonLd,
   };
 }
@@ -274,9 +275,11 @@ export async function renderSet(set: CardSet): Promise<{ html: string; title: st
 }
 
 // ---- Card detail ----------------------------------------------------------
+export type CardViewerState = { owned: number; wishlist: { id: number; variant_id: number; target_cents: number | null } | null } | null;
+
 export async function renderCard(
   card: Card,
-  opts: { variantFinish?: string; range?: number; gradeTab?: string }
+  opts: { variantFinish?: string; range?: number; gradeTab?: string; member?: CardViewerState; msg?: string }
 ): Promise<{ html: string; title: string; description: string; jsonLd: unknown[]; ogImage: string | null } | null> {
   const variants = await getVariants(card.id);
   if (variants.length === 0) return null;
@@ -417,12 +420,29 @@ export async function renderCard(
       .trim()
   );
 
+  // Member actions. Wishlist is a POST (it changes state); anonymous visitors are
+  // sent through sign-in and land back here. The card's own URL is the return path.
+  const here = `/c/${card.slug}-${card.id}?v=${encodeURIComponent(selected.finish)}`;
+  const mem = opts.member ?? null;
+  const onList = mem?.wishlist ?? null;
+  const wishForm = mem
+    ? `<form method="post" action="/collection/wishlist" class="inline wish-form">
+        <input type="hidden" name="variant_id" value="${selected.id}"><input type="hidden" name="next" value="${esc(here)}">
+        ${onList ? `<a class="btn wish on" href="/collection/wishlist" title="On your wishlist${onList.target_cents != null ? ` · target ${money(onList.target_cents)}` : ""}">♥ On your wishlist</a>` : `<span class="price-in wish-target"><span>$</span><input type="text" name="target" class="mono" inputmode="decimal" placeholder="target" aria-label="Target price (optional)"></span><button class="btn wish" type="submit" title="Add to your wishlist — set a target price to be alerted">♡ Wishlist</button>`}
+      </form>`
+    : `<a class="btn wish" href="/login?next=${encodeURIComponent(here)}" title="Sign in to keep a wishlist">♡ Wishlist</a>`;
+  const ownStrip = mem && (mem.owned || onList)
+    ? `<div class="own-strip">${mem.owned ? `<span>✓ You own <b>${mem.owned}</b> cop${mem.owned === 1 ? "y" : "ies"}</span>` : ""}${onList ? `<span>♥ On your wishlist${onList.target_cents != null ? ` · target <b class="mono">${money(onList.target_cents)}</b>${market && market.price_cents <= onList.target_cents ? ` · <b class="ok">at your price now</b>` : ""}` : ""}</span>` : ""}<a href="/collection/cards">My collection →</a></div>`
+    : "";
+  const addPrefill = `${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`;
+
   const html = `<div class="wrap">
     ${breadcrumb([
       { label: card.game_name ?? "", href: `/g/${card.game_slug}` },
       { label: card.set_name ?? "", href: `/s/${card.set_slug}` },
       { label: card.name },
     ])}
+    ${opts.msg ? `<div class="flash">${esc(opts.msg)}</div>` : ""}
     <div class="card-detail">
       <div class="card-img-col">
         <div class="frame">${card.image_large || card.image_small ? `<img src="${esc(card.image_large || card.image_small!)}" alt="${esc(card.name)}" width="400" height="558">` : `<div style="aspect-ratio:63/88;display:grid;place-items:center;color:var(--muted)">No image</div>`}</div>
@@ -475,27 +495,28 @@ export async function renderCard(
         </div>`
         }
 
+        ${ownStrip}
         <div class="actions">
-          <a class="btn primary" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">+ Add to my inventory</a>
-          <a class="btn" href="/app/listing-creator?game=${encodeURIComponent(card.game_slug ?? "")}&amp;set=${encodeURIComponent(card.set_slug ?? "")}" title="Build a listing from the catalog stock image — no scan needed">List on eBay</a>
-          ${card.tcgplayer_url ? `<a class="btn" href="${esc(card.tcgplayer_url)}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
-          <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card in Sales Lookup">Sold prices</a>
-          <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
+          ${wishForm}
+          <a class="btn primary" href="/collection/add?mode=collection&amp;add=${encodeURIComponent(addPrefill)}" title="Add this card to your collection">+ Add to collection</a>
+          ${card.tcgplayer_url ? `<a class="btn" href="${esc(card.tcgplayer_url)}" target="_blank" rel="noopener nofollow">Buy on TCGplayer ↗</a>` : ""}
+          <a class="btn" href="https://www.ebay.com/sch/i.html?_nkw=${ebayQuery}" target="_blank" rel="noopener nofollow" title="Current eBay listings for this card">Find on eBay ↗</a>
+          <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card">Sold prices</a>
         </div>
 
         ${
           useArchive
             ? demoNote(
-                `<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Sold comps below come from the sold-sales archive</b>${archive.every((s) => s.is_demo) ? " (sample feed import — plug a licensed feed into <code>npm run import:sold</code> to go live)" : ""}, canonicalized to this exact card. Per-grade values and the history chart are demo data until real depth accrues.`
+                `<b>Market prices</b> are synced daily from TCGplayer. <b>Sold comps below come from the sold-sales archive</b>${archive.every((s) => s.is_demo) ? " (sample data)" : ""}, tied to this exact card. Per-grade values and the history chart are demo data until real depth accrues.`
               )
             : demoNote(
-                "<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Per-grade values, the price-history chart and sold comps below are demo data</b> — real sold-comp data is a licensed-feed line item (see the data-sourcing research report §8.1), and the archive schema + importer are ready for it."
+                "<b>Market prices</b> are synced daily from TCGplayer. <b>Per-grade values, the price-history chart and sold comps below are demo data</b> until the sold-sales archive holds real sales for this card."
               )
         }
 
         <div class="panel" id="comps">
           <h2>Sold comps</h2>
-          <div class="sub">${useArchive ? "Real sales attached to this exact card — accepted Best Offer prices included." : "Recent sales for this printing, by grade and source."}</div>
+          <div class="sub">${useArchive ? "What copies of this exact card actually sold for — accepted Best Offer prices included." : "Recent sales for this printing, by grade and source."}</div>
           <div class="comps-tabs">${compTabs}</div>
           <div class="comps-wrap">${compsTable}</div>
         </div>

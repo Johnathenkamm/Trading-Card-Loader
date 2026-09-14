@@ -1,22 +1,22 @@
-// Owner console (/admin): the operator's OWN login, user-activity tracking, and
-// the cross-tenant queries the console needs (every other store query is scoped
-// to ONE seller; these deliberately are not, and are only reachable behind the
-// owner-session gate in server.ts).
+// Owner console (/admin): the operator's OWN login, member-activity tracking,
+// and the cross-tenant queries the console needs (every other data query is
+// scoped to ONE member; these deliberately are not, and are only reachable
+// behind the owner-session gate in server.ts).
 //
-//   * Owner login       — separate from customer accounts. Credentials come from
+//   * Owner login       — separate from member accounts. Credentials come from
 //                         ADMIN_EMAIL + ADMIN_PASSWORD (env); a successful sign-in
 //                         at /admin/login creates a row in `admin_sessions` and
-//                         sets its own HttpOnly cookie. No customer account, Pro
+//                         sets its own HttpOnly cookie. No member account, Pro
 //                         or otherwise, can reach /admin.
-//   * Owner's own seller — the owner has a personal seller row (`sellers.is_owner`)
+//   * Owner's own row   — the owner has a personal member row (`sellers.is_owner`)
 //                         so the console's uploader (/admin/upload) and the
-//                         owner's /app workspace put cards in the OWNER's own
-//                         inventory, never in a customer's. It is created on boot
-//                         from ADMIN_EMAIL and hidden from the customer lists.
-//   * `sellers.last_seen_at` — bumped on every workspace request.
+//                         owner's /collection put cards in the OWNER's own
+//                         collection, never in a member's. It is created on boot
+//                         from ADMIN_EMAIL and hidden from the member lists.
+//   * `sellers.last_seen_at` — bumped on every member-area request.
 //   * `activity_log`    — one row per login/signup/page view/action/plan change;
 //                         `by_owner` marks events the owner caused inside a
-//                         customer's workspace (owner mode).
+//                         member's collection (owner mode).
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { query, one } from "../pg.ts";
@@ -125,14 +125,14 @@ export async function destroyAdminSession(token: string | undefined | null): Pro
   await query(`DELETE FROM admin_sessions WHERE token=$1`, [token]);
 }
 
-// ---- the owner's own seller -----------------------------------------------
-// The owner uploads to THEIR OWN account, not to a customer's. That account is
-// an ordinary seller row flagged `is_owner`, so every store query (scan batches,
-// review queue, inventory, listings, settings) works unchanged inside
+// ---- the owner's own member row ---------------------------------------------
+// The owner uploads to THEIR OWN account, not to a member's. That account is an
+// ordinary row flagged `is_owner`, so every data query (uploads, review queue,
+// collection, wishlist, settings) works unchanged inside
 // `runWithSeller(ownerSellerId())`. Resolution, in order: an existing flagged
-// row; else the customer account whose email equals ADMIN_EMAIL (the owner
-// signed up normally before the console existed — same person, same data);
-// else a fresh row. Runs once and is cached for the process lifetime.
+// row; else the member account whose email equals ADMIN_EMAIL (the owner signed
+// up normally before the console existed — same person, same data); else a
+// fresh row. Runs once and is cached for the process lifetime.
 
 let ownerSellerCache: number | null = null;
 
@@ -192,57 +192,38 @@ export async function logActivity(a: ActivityInput): Promise<void> {
 }
 
 const PAGE_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
-  [/^\/app$/, () => "Dashboard"],
-  [/^\/app\/inventory\/automatic$/, () => "Automatic inventory"],
-  [/^\/app\/inventory$/, () => "Inventory"],
-  [/^\/app\/batches$/, () => "Batches"],
-  [/^\/app\/scan$/, () => "Scan / add cards"],
-  [/^\/app\/graded$/, () => "Graded cards"],
-  [/^\/app\/listing-creator$/, () => "Listing creator"],
-  [/^\/app\/blank-listing$/, () => "Blank listing"],
-  [/^\/app\/listings$/, () => "Listings"],
-  [/^\/app\/pricing-tool$/, () => "Pricing tool"],
-  [/^\/app\/pricing\/(\d+)$/, (m) => `Pricing results #${m[1]}`],
-  [/^\/app\/card-search$/, () => "Card search"],
-  [/^\/app\/orders\/picklist$/, () => "Picklist"],
-  [/^\/app\/orders$/, () => "Orders"],
-  [/^\/app\/inbox$/, () => "Inbox"],
-  [/^\/app\/settings$/, () => "Settings"],
-  [/^\/app\/review\/(\d+)$/, (m) => `Review queue · batch #${m[1]}`],
-  [/^\/app\/list\/(\d+)$/, (m) => `Listing builder · inventory #${m[1]}`],
-  [/^\/app\/export\/(\w+)\.csv$/, (m) => `Exported ${m[1]} CSV`],
-  [/^\/app\/ebay\/connect$/, () => "Started eBay connect"],
-  [/^\/app\/ebay\/callback$/, () => "Returned from eBay OAuth"],
+  [/^\/collection$/, () => "Collection home"],
+  [/^\/collection\/cards$/, () => "Collection"],
+  [/^\/collection\/wishlist$/, () => "Wishlist"],
+  [/^\/collection\/uploads$/, () => "Uploads"],
+  [/^\/collection\/add$/, () => "Add cards"],
+  [/^\/collection\/graded$/, () => "Graded slabs"],
+  [/^\/collection\/from-set$/, () => "Add from a set"],
+  [/^\/collection\/priced\/(\d+)$/, (m) => `Price check #${m[1]}`],
+  [/^\/collection\/inbox$/, () => "Inbox"],
+  [/^\/collection\/settings$/, () => "Settings"],
+  [/^\/collection\/review\/(\d+)$/, (m) => `Review · upload #${m[1]}`],
+  [/^\/collection\/export\.csv$/, () => "Exported the collection CSV"],
 ];
 
 const ACTION_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
-  [/^\/app\/scan\/upload$/, () => "Uploaded card photos"],
-  [/^\/app\/scan$/, () => "Pasted a card list"],
-  [/^\/app\/pricing-tool\/upload$/, () => "Uploaded photos to the pricing tool"],
-  [/^\/app\/pricing-tool$/, () => "Priced a pasted list"],
-  [/^\/app\/pricing\/(\d+)\/(share|unshare|convert)$/, (m) => `${m[2] === "share" ? "Shared" : m[2] === "unshare" ? "Unshared" : "Converted"} pricing batch #${m[1]}`],
-  [/^\/app\/graded$/, () => "Added graded cards"],
-  [/^\/app\/listing-creator$/, () => "Added cards from the catalog"],
-  [/^\/app\/blank-listing$/, () => "Created a blank listing"],
-  [/^\/app\/review\/(\d+)\/commit$/, (m) => `Added batch #${m[1]} to inventory`],
-  [/^\/app\/review\/(\d+)\/item\/(\d+)\/image$/, (m) => `Attached an image · batch #${m[1]}`],
-  [/^\/app\/review\/(\d+)\/item\/(\d+)$/, (m) => `Edited a review item · batch #${m[1]}`],
-  [/^\/app\/list\/(\d+)$/, (m) => `Created a listing · inventory #${m[1]}`],
-  [/^\/app\/listings\/bulk$/, () => "Listings bulk action"],
-  [/^\/app\/listings\/(\d+)\/(publish|end)$/, (m) => `${m[2] === "publish" ? "Published" : "Ended"} listing #${m[1]}`],
-  [/^\/app\/inventory\/bulk$/, () => "Inventory bulk update"],
-  [/^\/app\/inventory\/automatic\/(\d+)$/, (m) => `Updated live listing #${m[1]}`],
-  [/^\/app\/orders\/import$/, () => "Imported a pull sheet"],
-  [/^\/app\/orders\/fetch-ebay$/, () => "Fetched eBay orders"],
-  [/^\/app\/orders\/(\d+)\/(pick|ship|delete)$/, (m) => `${m[2] === "pick" ? "Picked" : m[2] === "ship" ? "Shipped" : "Deleted"} order #${m[1]}`],
-  [/^\/app\/orders$/, () => "Created an order"],
-  [/^\/app\/inbox$/, () => "Sent feedback"],
-  [/^\/app\/settings$/, () => "Saved settings"],
-  [/^\/app\/ebay\/disconnect$/, () => "Disconnected eBay"],
-  [/^\/app\/ebay\/sync-policies$/, () => "Synced eBay policies"],
+  [/^\/collection\/add\/upload/, () => "Uploaded card photos"],
+  [/^\/collection\/add$/, () => "Pasted a card list"],
+  [/^\/collection\/priced\/(\d+)\/(share|unshare|convert)$/, (m) => `${m[2] === "share" ? "Shared" : m[2] === "unshare" ? "Unshared" : "Converted"} price check #${m[1]}`],
+  [/^\/collection\/graded$/, () => "Added graded slabs"],
+  [/^\/collection\/from-set$/, () => "Picked cards from a set"],
+  [/^\/collection\/review\/(\d+)\/commit$/, (m) => `Added upload #${m[1]} to the collection`],
+  [/^\/collection\/review\/(\d+)\/item\/(\d+)\/image$/, (m) => `Attached an image · upload #${m[1]}`],
+  [/^\/collection\/review\/(\d+)\/item\/(\d+)$/, (m) => `Edited a review item · upload #${m[1]}`],
+  [/^\/collection\/cards\/bulk$/, () => "Collection bulk update"],
+  [/^\/collection\/cards\/(\d+)$/, (m) => `Edited collection row #${m[1]}`],
+  [/^\/collection\/wishlist$/, () => "Added to the wishlist"],
+  [/^\/collection\/wishlist\/(\d+)\/(remove|target)$/, (m) => `${m[2] === "remove" ? "Removed" : "Retargeted"} wishlist card #${m[1]}`],
+  [/^\/collection\/inbox$/, () => "Sent feedback"],
+  [/^\/collection\/settings$/, () => "Saved settings"],
 ];
 
-/** Human label for a workspace request, for the activity feed. */
+/** Human label for a member-area request, for the activity feed. */
 export function describeActivity(method: string, path: string): string {
   const table = method === "POST" ? ACTION_LABELS : PAGE_LABELS;
   for (const [re, fn] of table) {
@@ -263,8 +244,8 @@ export type UserRow = {
   last_login_at: string | null;
   last_seen_at: string | null;
   batches: number;
-  inventory: number;
-  listings: number;
+  collection: number; // printings in the collection
+  wishlist: number;
   events_7d: number;
 };
 
@@ -273,12 +254,12 @@ export type UserFilter = { q?: string; tier?: string; sort?: string };
 const USER_SELECT = `
   SELECT s.id, s.email, s.display_name, s.plan_tier, s.created_at, s.last_login_at, s.last_seen_at,
          (SELECT COUNT(*) FROM scan_batches b WHERE b.seller_id=s.id)::int AS batches,
-         (SELECT COUNT(*) FROM inventory i WHERE i.seller_id=s.id)::int AS inventory,
-         (SELECT COUNT(*) FROM listings l WHERE l.seller_id=s.id)::int AS listings,
+         (SELECT COUNT(*) FROM collection_items c WHERE c.seller_id=s.id)::int AS collection,
+         (SELECT COUNT(*) FROM wishlist_items w WHERE w.seller_id=s.id)::int AS wishlist,
          (SELECT COUNT(*) FROM activity_log a WHERE a.seller_id=s.id AND a.created_at > now() - interval '7 days')::int AS events_7d
   FROM sellers s`;
 
-/** Customers only: the owner's own seller row never shows up as a user. */
+/** Members only: the owner's own row never shows up as a user. */
 export function listUsers(f: UserFilter = {}, limit = 500): Promise<UserRow[]> {
   const cond: string[] = ["NOT s.is_owner"];
   const params: unknown[] = [];
@@ -294,7 +275,7 @@ export function listUsers(f: UserFilter = {}, limit = 500): Promise<UserRow[]> {
     f.sort === "newest" ? "s.created_at DESC" :
     f.sort === "name" ? "lower(s.display_name), s.id" :
     f.sort === "tier" ? "(s.plan_tier='pro') DESC, s.last_seen_at DESC NULLS LAST" :
-    f.sort === "inventory" ? "inventory DESC, s.id" :
+    f.sort === "collection" ? "collection DESC, s.id" :
     "s.last_seen_at DESC NULLS LAST, s.last_login_at DESC NULLS LAST, s.id DESC";
   params.push(limit);
   return query<UserRow>(`${USER_SELECT}${cond.length ? " WHERE " + cond.join(" AND ") : ""} ORDER BY ${order} LIMIT $${params.length}`, params);
@@ -306,11 +287,12 @@ export function getUser(id: number): Promise<UserRow | undefined> {
 
 export type UserUsage = {
   review_items: number;
-  inventory_units: number;
-  inventory_value_cents: number;
-  listed: number;
-  sold: number;
-  orders: number;
+  collection_units: number;
+  collection_value_cents: number;
+  graded: number;
+  wishlist: number;
+  wishlist_hits: number;
+  price_checks: number;
   feedback_open: number;
   last_batch_at: string | null;
 };
@@ -318,11 +300,17 @@ export type UserUsage = {
 export async function userUsage(id: number): Promise<UserUsage> {
   return (await one<UserUsage>(
     `SELECT (SELECT COUNT(*) FROM scan_items WHERE seller_id=$1 AND status='needs_review')::int AS review_items,
-            (SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE seller_id=$1 AND status<>'sold')::int AS inventory_units,
-            (SELECT COALESCE(SUM(quantity*COALESCE(price_cents,0)),0) FROM inventory WHERE seller_id=$1 AND status<>'sold')::bigint AS inventory_value_cents,
-            (SELECT COUNT(*) FROM inventory WHERE seller_id=$1 AND status='listed')::int AS listed,
-            (SELECT COUNT(*) FROM inventory WHERE seller_id=$1 AND status='sold')::int AS sold,
-            (SELECT COUNT(*) FROM orders WHERE seller_id=$1)::int AS orders,
+            (SELECT COALESCE(SUM(quantity),0) FROM collection_items WHERE seller_id=$1)::int AS collection_units,
+            (SELECT COALESCE(SUM(ci.quantity * COALESCE(gm.price_cents, m.price_cents, 0)),0) FROM collection_items ci
+               LEFT JOIN LATERAL (SELECT price_cents FROM price_points WHERE variant_id=ci.variant_id AND kind='market' AND grade IS NULL ORDER BY observed_on DESC LIMIT 1) m ON true
+               LEFT JOIN LATERAL (SELECT price_cents FROM price_points WHERE ci.grade IS NOT NULL AND variant_id=ci.variant_id AND kind='market' AND upper(grade)=upper(ci.grade) ORDER BY observed_on DESC LIMIT 1) gm ON true
+               WHERE ci.seller_id=$1)::bigint AS collection_value_cents,
+            (SELECT COALESCE(SUM(quantity),0) FROM collection_items WHERE seller_id=$1 AND grade IS NOT NULL)::int AS graded,
+            (SELECT COUNT(*) FROM wishlist_items WHERE seller_id=$1)::int AS wishlist,
+            (SELECT COUNT(*) FROM wishlist_items w
+               LEFT JOIN LATERAL (SELECT price_cents FROM price_points WHERE variant_id=w.variant_id AND kind='market' AND grade IS NULL ORDER BY observed_on DESC LIMIT 1) m ON true
+               WHERE w.seller_id=$1 AND w.target_cents IS NOT NULL AND m.price_cents <= w.target_cents)::int AS wishlist_hits,
+            (SELECT COUNT(*) FROM scan_batches WHERE seller_id=$1 AND kind='pricing')::int AS price_checks,
             (SELECT COUNT(*) FROM feedback WHERE seller_id=$1 AND status='open')::int AS feedback_open,
             (SELECT MAX(created_at) FROM scan_batches WHERE seller_id=$1) AS last_batch_at`,
     [id]
@@ -338,8 +326,8 @@ export type Overview = {
   new_7d: number;
   new_30d: number;
   feedback_open: number;
-  inventory_rows: number;
-  listings: number;
+  collection_rows: number;
+  wishlist_rows: number;
   batches: number;
   events_24h: number;
 };
@@ -354,8 +342,8 @@ export async function overview(): Promise<Overview> {
             (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND created_at > now() - interval '7 days')::int AS new_7d,
             (SELECT COUNT(*) FROM sellers WHERE email IS NOT NULL AND NOT is_owner AND created_at > now() - interval '30 days')::int AS new_30d,
             (SELECT COUNT(*) FROM feedback WHERE status='open')::int AS feedback_open,
-            (SELECT COUNT(*) FROM inventory i JOIN sellers s ON s.id=i.seller_id WHERE NOT s.is_owner)::int AS inventory_rows,
-            (SELECT COUNT(*) FROM listings l JOIN sellers s ON s.id=l.seller_id WHERE NOT s.is_owner)::int AS listings,
+            (SELECT COUNT(*) FROM collection_items c JOIN sellers s ON s.id=c.seller_id WHERE NOT s.is_owner)::int AS collection_rows,
+            (SELECT COUNT(*) FROM wishlist_items w JOIN sellers s ON s.id=w.seller_id WHERE NOT s.is_owner)::int AS wishlist_rows,
             (SELECT COUNT(*) FROM scan_batches b JOIN sellers s ON s.id=b.seller_id WHERE NOT s.is_owner)::int AS batches,
             (SELECT COUNT(*) FROM activity_log WHERE created_at > now() - interval '24 hours')::int AS events_24h`
   ))!;
@@ -424,7 +412,7 @@ export type FeedbackRow = {
   email: string | null;
 };
 
-/** Every customer's feedback (newest first), open notes first. */
+/** Every member's feedback (newest first), open notes first. */
 export function listAllFeedback(opts: { sellerId?: number; status?: string } = {}, limit = 200): Promise<FeedbackRow[]> {
   const cond: string[] = [];
   const params: unknown[] = [];
@@ -445,7 +433,7 @@ export function listAllFeedback(opts: { sellerId?: number; status?: string } = {
   );
 }
 
-/** Recent batches for one customer (owner profile page). */
+/** Recent uploads for one member (owner profile page). */
 export function userBatches(sellerId: number, limit = 8): Promise<Array<{ id: number; label: string | null; source: string; kind: string; status: string; total: number; review: number; created_at: string }>> {
   return query(
     `SELECT b.id, b.label, b.source, b.kind, b.status, b.total, b.created_at,
