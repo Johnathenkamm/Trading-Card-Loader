@@ -11,6 +11,7 @@ import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL } from "../app/billing.ts";
 import { MAX_UPLOAD_FILES_PRO, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_FILES, UPLOAD_MAX_EDGE } from "../upload.ts";
 import type { Member } from "../app/collection.ts";
 import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow } from "../app/admin.ts";
+import type { SoldArchiveSummary } from "../app/soldimport.ts";
 
 type Page = { html: string; title: string; description: string };
 type BatchRow = { id: number; label: string | null; source: string; kind: string; status: string; total: number; review: number; created_at: string };
@@ -68,6 +69,7 @@ function subnav(active: string): string {
     ["/admin", "Overview", "home"],
     ["/admin/users", "Members", "users"],
     ["/admin/upload", "My uploader", "upload"],
+    ["/admin/sold", "Sold prices", "sold"],
     ["/admin/activity", "Activity", "activity"],
     ["/admin/feedback", "Feedback", "feedback"],
   ];
@@ -429,6 +431,90 @@ export function renderAdminUpload(owner: UserRow | null, member: Member | null, 
     ${APP_JS}
   </div>`;
   return { html, title: "My uploader — Owner console | CardIndex", description: "The owner's personal card uploader." };
+}
+
+// ---- Sold prices (the sold_sales archive) ----------------------------------
+// The public /sales page and the sold comps on card pages read from this
+// archive. It only fills through imports: a feed file uploaded here, the CLI
+// (`npm run import:sold`), or the bundled sample for demos.
+
+const FEED_COLUMNS: Array<[string, string, string]> = [
+  ["title", "required", "the listing title as sold — matched to a catalog card, printing and grade automatically"],
+  ["price", "required", "sale price in dollars (aliases: sold_price, sale_price, amount)"],
+  ["date", "required", "date sold, yyyy-mm-dd or any parseable date (aliases: sold_on, sold_date)"],
+  ["marketplace", "optional", "ebay · goldin · fanatics … (default ebay)"],
+  ["sale_type", "optional", "auction · bin · best_offer"],
+  ["list_price", "optional", "the pre-offer list price — shown struck through on Best Offer sales"],
+  ["external_id", "optional", "listing / item id; re-uploads with the same id update instead of duplicating"],
+  ["url, image_url, bids, grade, condition, currency", "optional", "carried through; grade like “PSA 10”, condition like NM"],
+];
+
+export function renderAdminSold(s: SoldArchiveSummary, msg?: string, sampleOnBoot = false): Page {
+  const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
+  const stats = `<div class="stat-cards home-stats">
+    <div class="stat"><div class="k">Sales in the archive</div><div class="v mono">${s.total.toLocaleString()}</div><div class="s">${s.real.toLocaleString()} real · ${s.demo.toLocaleString()} demo</div></div>
+    <div class="stat"><div class="k">Tied to a catalog card</div><div class="v mono">${pct(s.canonized, s.total)}%</div><div class="s">${s.canonized.toLocaleString()} sales across ${s.cards.toLocaleString()} card${s.cards === 1 ? "" : "s"}</div></div>
+    <div class="stat"><div class="k">Marketplaces</div><div class="v mono">${s.marketplaces.length}</div><div class="s">${s.marketplaces.slice(0, 4).map((m) => `${esc(m.marketplace)} ${m.n.toLocaleString()}`).join(" · ") || "none yet"}</div></div>
+    <div class="stat"><div class="k">Feed sources</div><div class="v mono">${s.sources.length}</div><div class="s">${s.sources[0] ? `latest import ${ago(s.sources[0].imported_at)}` : "nothing imported yet"}</div></div>
+  </div>`;
+
+  const upload = `<form class="ws-panel" method="post" action="/admin/sold/import" enctype="multipart/form-data">
+    <div class="ws-panel-head"><h2>Upload a sales file</h2><span class="eyebrow">.csv or .json · up to 60 MB</span></div>
+    <label class="fld"><span>File</span><input type="file" name="feed" accept=".csv,.json,text/csv,application/json" required></label>
+    <div class="fld-row">
+      <label class="fld"><span>Source name <small>groups the rows so a bad upload can be removed; the same id dedupes re-uploads</small></span><input name="source" value="upload-${new Date().toISOString().slice(0, 10)}" maxlength="60" class="mono" required></label>
+      <label class="fld ckbox"><input type="checkbox" name="demo" value="1"> <span>Mark as demo data <small>(shown with a “sample” chip; excluded from “real” counts)</small></span></label>
+    </div>
+    <div class="scan-submit"><button class="btn primary" type="submit">Import sales →</button><span class="hint">Each row is matched to the catalog by title; rows without a title, price or date are skipped.</span></div>
+  </form>`;
+
+  const sample = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Demo sample</h2><span class="pill listed">demo</span></div>
+    <p class="hint">Loads the bundled 10-row sample feed (Charizard and friends, demo-flagged) so the sold-price pages have something to show. ${
+      sampleOnBoot ? "This server keeps sample rows across restarts (<span class=\"mono\">SOLD_SAMPLE_ON_BOOT=1</span>)." : "This server <b>removes sample rows on every restart</b> so the public archive only shows real sales — set <span class=\"mono\">SOLD_SAMPLE_ON_BOOT=1</span> to keep them."
+    }</p>
+    <form method="post" action="/admin/sold/sample" class="inline"><button class="btn" type="submit">Load the sample feed</button></form>
+  </div>`;
+
+  const columns = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>File format</h2><span class="eyebrow">header names are case-insensitive</span></div>
+    <div class="tablewrap"><table class="inv-table"><thead><tr><th>Column</th><th></th><th>Meaning</th></tr></thead><tbody>${FEED_COLUMNS.map(
+      ([c, req, why]) => `<tr><td class="mono">${esc(c)}</td><td><span class="pill ${req === "required" ? "pending" : ""}">${req}</span></td><td class="sub" style="white-space:normal">${esc(why)}</td></tr>`
+    ).join("")}</tbody></table></div>
+    <p class="hint" style="margin-top:8px">Example line: <span class="mono">1999 Pokemon Base Set Charizard 4/102 Holo PSA 10,26500,,auction,ebay,2026-08-24,47,item-1001,https://…</span> under the header <span class="mono">title,price,list_price,sale_type,marketplace,date,bids,external_id,url</span>.</p>
+  </div>`;
+
+  const sources = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Imports by source</h2><a href="/sales">Open Sold prices →</a></div>
+    ${
+      s.sources.length
+        ? `<div class="tablewrap"><table class="inv-table"><thead><tr><th>Source</th><th>Sales</th><th>Tied to a card</th><th>Sold between</th><th>Imported</th><th></th></tr></thead><tbody>${s.sources
+            .map(
+              (r) => `<tr>
+              <td class="mono">${esc(r.source)}${r.is_demo ? ` <span class="pill listed">demo</span>` : ""}</td>
+              <td class="mono">${r.n.toLocaleString()}</td>
+              <td class="mono">${r.canonized.toLocaleString()} <span class="sub">(${pct(r.canonized, r.n)}%)</span></td>
+              <td class="sub">${esc(r.first_sale ?? "")} → ${esc(r.last_sale ?? "")}</td>
+              <td class="sub" title="${esc(stamp(r.imported_at))}">${ago(r.imported_at)}</td>
+              <td class="act"><form method="post" action="/admin/sold/source/remove" class="inline" onsubmit="return confirm('Remove all ${r.n} sales imported as ${esc(r.source)}?')"><input type="hidden" name="source" value="${esc(r.source)}"><button class="btn sm ghost" type="submit">Remove</button></form></td>
+            </tr>`
+            )
+            .join("")}</tbody></table></div>`
+        : `<p class="hint">Nothing imported yet. Upload a file above or load the demo sample.</p>`
+    }
+  </div>`;
+
+  const html = `<div class="wrap ws">
+    ${adminHead("sold", "Sold prices", "The sold-sales archive behind the public Sold prices page and every card's sold comps. It fills only through imports — upload a feed file here, or run <span class=\"mono\">npm run import:sold</span>.")}
+    ${flash(msg)}
+    ${stats}
+    <div class="home-grid">
+      <div>${upload}${columns}</div>
+      <div>${sample}${sources}</div>
+    </div>
+    ${APP_JS}
+  </div>`;
+  return { html, title: "Sold prices — Owner console | CardIndex", description: "Import sold-sales feeds." };
 }
 
 // ---- Activity feed --------------------------------------------------------

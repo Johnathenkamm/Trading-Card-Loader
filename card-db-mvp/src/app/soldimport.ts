@@ -85,10 +85,61 @@ export function parseCsv(text: string): FeedRow[] {
   });
 }
 
+/** Parse feed text (the contents of a .csv or .json file) into rows. */
+export function parseFeedText(text: string, filename: string): FeedRow[] {
+  const body = text.replace(/^﻿/, ""); // strip a UTF-8 BOM (Excel exports)
+  if (filename.toLowerCase().endsWith(".json") || /^\s*[\[{]/.test(body)) {
+    const parsed = JSON.parse(body);
+    const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.rows) ? parsed.rows : Array.isArray(parsed?.sales) ? parsed.sales : null;
+    if (!rows) throw new Error("JSON must be an array of sales (or an object with a `rows` / `sales` array).");
+    return rows as FeedRow[];
+  }
+  return parseCsv(body);
+}
+
 /** Read a .csv or .json feed file into rows. */
 export function readFeedFile(file: string): FeedRow[] {
-  const text = readFileSync(file, "utf8");
-  return file.toLowerCase().endsWith(".json") ? (JSON.parse(text) as FeedRow[]) : parseCsv(text);
+  return parseFeedText(readFileSync(file, "utf8"), file);
+}
+
+// ---- archive summary (owner console) ----------------------------------------
+
+export type SoldSourceRow = { source: string; n: number; canonized: number; is_demo: boolean; first_sale: string | null; last_sale: string | null; imported_at: string | null };
+export type SoldArchiveSummary = {
+  total: number;
+  real: number;
+  demo: number;
+  canonized: number;
+  cards: number; // distinct catalog cards with at least one sale
+  sources: SoldSourceRow[];
+  marketplaces: Array<{ marketplace: string; n: number }>;
+};
+
+/** What the sold-sales archive holds, by feed source and marketplace. */
+export async function soldArchiveSummary(): Promise<SoldArchiveSummary> {
+  const [tot, sources, marketplaces] = await Promise.all([
+    one<{ total: number; real: number; demo: number; canonized: number; cards: number }>(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE NOT is_demo)::int AS real,
+              COUNT(*) FILTER (WHERE is_demo)::int AS demo,
+              COUNT(*) FILTER (WHERE card_id IS NOT NULL)::int AS canonized,
+              COUNT(DISTINCT card_id)::int AS cards
+       FROM sold_sales`
+    ),
+    query<SoldSourceRow>(
+      `SELECT source, COUNT(*)::int AS n, COUNT(*) FILTER (WHERE card_id IS NOT NULL)::int AS canonized,
+              bool_or(is_demo) AS is_demo, MIN(sold_on)::text AS first_sale, MAX(sold_on)::text AS last_sale, MAX(created_at)::text AS imported_at
+       FROM sold_sales GROUP BY source ORDER BY MAX(created_at) DESC`
+    ),
+    query<{ marketplace: string; n: number }>(`SELECT marketplace, COUNT(*)::int AS n FROM sold_sales GROUP BY marketplace ORDER BY n DESC`),
+  ]);
+  return { total: tot?.total ?? 0, real: tot?.real ?? 0, demo: tot?.demo ?? 0, canonized: tot?.canonized ?? 0, cards: tot?.cards ?? 0, sources, marketplaces };
+}
+
+/** Remove every sale imported under one feed source (undo a bad upload). Returns rows removed. */
+export async function deleteSoldSource(source: string): Promise<number> {
+  const r = await one<{ n: number }>("WITH d AS (DELETE FROM sold_sales WHERE source=$1 RETURNING 1) SELECT COUNT(*)::int n FROM d", [source]);
+  return r?.n ?? 0;
 }
 
 const ALIASES: Record<string, string[]> = {

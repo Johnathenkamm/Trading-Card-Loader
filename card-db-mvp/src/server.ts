@@ -28,7 +28,7 @@ import { renderAdd, renderReview, renderGraded, renderFromSet, renderPriced } fr
 import { parseCerts, lookupCert, gradeLabel, graderOf, GRADE_VALUES } from "./app/graded.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback, replyFeedback, closeFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
-import { startSoldSampleOnBoot } from "./app/soldimport.ts";
+import { startSoldSampleOnBoot, importSoldFeed, parseFeedText, readFeedFile, soldArchiveSummary, deleteSoldSource, SAMPLE_FEED, SAMPLE_SOURCE } from "./app/soldimport.ts";
 import {
   readBodyBuffer, parseMultipart, boundaryOf, isImage, tooLargeMessage, maxUploadFiles, MAX_UPLOAD_FILES_PRO, UPLOAD_CHUNK_FILES,
   type UploadedFile,
@@ -57,7 +57,7 @@ import {
   adminCookie, clearAdminCookie, ensureOwnerSeller, ownerSellerId,
 } from "./app/admin.ts";
 import {
-  renderAdminHome, renderAdminUsers, renderAdminUser, renderAdminActivity, renderAdminFeedback, renderAdminUpload, renderAdminLogin,
+  renderAdminHome, renderAdminUsers, renderAdminUser, renderAdminActivity, renderAdminFeedback, renderAdminUpload, renderAdminLogin, renderAdminSold,
 } from "./render/admin.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -1039,6 +1039,36 @@ async function handleAdmin(req: IncomingMessage, res: ServerResponse, url: URL, 
 
     const ctype = String(req.headers["content-type"] ?? "");
     const uploadBack = (note: string) => "/admin/upload?msg=" + encodeURIComponent(note);
+    const soldBack = (note: string) => "/admin/sold?msg=" + encodeURIComponent(note);
+
+    // ---- sold-sales feed upload (multipart .csv / .json) ----
+    if (path === "/admin/sold/import" && ctype.startsWith("multipart/form-data")) {
+      let mp = { fields: {} as Record<string, string>, files: [] as UploadedFile[] };
+      try {
+        const buf = await readBodyBuffer(req);
+        const boundary = boundaryOf(ctype);
+        if (boundary) mp = parseMultipart(buf, boundary);
+      } catch (err) {
+        return redirect(res, soldBack(tooLargeMessage(err)));
+      }
+      const file = mp.files.find((x) => x.field === "feed" && x.data.length);
+      if (!file) return redirect(res, soldBack("Choose a .csv or .json file."));
+      const source = (mp.fields.source ?? "").trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 60) || `upload-${new Date().toISOString().slice(0, 10)}`;
+      let rows;
+      try {
+        rows = parseFeedText(file.data.toString("utf8"), file.filename);
+      } catch (err) {
+        return redirect(res, soldBack(`Couldn't read ${file.filename}: ${err instanceof Error ? err.message : String(err)}`));
+      }
+      if (!rows.length) return redirect(res, soldBack(`${file.filename} has no data rows (a header line plus at least one sale is needed).`));
+      const r = await importSoldFeed(rows, { source, demo: mp.fields.demo === "1", log: (l) => console.log("  " + l) });
+      return redirect(
+        res,
+        soldBack(
+          `${file.filename}: ${r.inserted} sale${r.inserted === 1 ? "" : "s"} added, ${r.updated} updated, ${r.skipped} skipped · ${r.canonized} of ${r.inserted + r.updated} matched to a catalog card. The archive now holds ${r.total}.`
+        )
+      );
+    }
 
     // ---- the owner's own uploader: photos (multipart) ----
     const ownerChunked = path.match(/^\/admin\/upload\/photos\/(?:(start)|(\d+)\/(chunk|finish))$/);
@@ -1084,6 +1114,18 @@ async function handleAdmin(req: IncomingMessage, res: ServerResponse, url: URL, 
       if (!landing.startsWith("/collection/review/")) return redirect(res, uploadBack("Paste at least one card line."));
       const n = (f.lines ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
       return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`${n} card${n === 1 ? "" : "s"} queued in your own review queue. Confirm to add them to your collection.`), actAsCookie(ownerId));
+    }
+
+    // ---- sold-sales archive: demo sample + remove a source ----
+    if (path === "/admin/sold/sample") {
+      const r = await importSoldFeed(readFeedFile(SAMPLE_FEED), { source: SAMPLE_SOURCE, demo: true, log: (l) => console.log("  " + l) });
+      return redirect(res, soldBack(`Sample feed loaded: ${r.inserted} added, ${r.updated} updated, ${r.skipped} already present. The archive now holds ${r.total} sales.`));
+    }
+    if (path === "/admin/sold/source/remove") {
+      const source = (f.source ?? "").trim();
+      if (!source) return redirect(res, soldBack("No source given."));
+      const n = await deleteSoldSource(source);
+      return redirect(res, soldBack(`Removed ${n} sale${n === 1 ? "" : "s"} imported as ${source}.`));
     }
 
     if ((m = path.match(/^\/admin\/users\/(\d+)\/(act-as|plan)$/))) {
@@ -1143,6 +1185,9 @@ async function handleAdmin(req: IncomingMessage, res: ServerResponse, url: URL, 
     if (!ownerId || !owner) return sendPage(res, renderAdminUpload(null, null, null, [], msg ?? "The owner account isn't set up — check ADMIN_EMAIL and restart."), "/admin/upload");
     const [member, usage, batches] = await Promise.all([runWithSeller(ownerId, () => getMember()), userUsage(ownerId), userBatches(ownerId, 8)]);
     return sendPage(res, renderAdminUpload(owner, member, usage, batches, msg), "/admin/upload");
+  }
+  if (path === "/admin/sold") {
+    return sendPage(res, renderAdminSold(await soldArchiveSummary(), msg, process.env.SOLD_SAMPLE_ON_BOOT === "1"), "/admin/sold");
   }
   if (path === "/admin/activity") {
     const f = { sellerId: num(url.searchParams.get("user")), kind: url.searchParams.get("kind") ?? undefined };

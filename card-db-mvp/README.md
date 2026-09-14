@@ -47,6 +47,8 @@ npm run sync:tcgcsv   # real TCGplayer market prices per PRINTING via the free T
 npm run import:sold -- <file.csv|json> [--source=<feed-id>] [--demo]
                       # land sold listings in the canonical sold_sales archive, deduped and
                       # CANONICALIZED to card/variant/grade via the identify() parser.
+                      # The same import is available in the owner console at /admin/sold
+                      # (upload a .csv/.json, load the demo sample, remove a bad source).
                       # Sample: npm run import:sold -- db/sold_sample.csv --source=sample --demo
                       # (/sales shows real sales only and the server REMOVES sample rows at
                       # boot; SOLD_SAMPLE_ON_BOOT=1 on a demo deploy loads the sample instead)
