@@ -1,5 +1,7 @@
 # CardIndex (tradingcardloader.com) — verified feature inventory
 
+> **Superseded (Sept 14 2026).** This inventory describes the SELLER version of the product. The buyer/collector overhaul that followed removed sections 3–9 as features (inventory/SKUs, listings, eBay Sell, orders, marketplace CSV exports, pricing rules, title/description templates, channel settings) and replaced the `/app` workspace with `/collection` (price check, collection, wishlist with target-price alerts, graded slabs, add-from-a-set). Sections 1, 2, 10, 11 and 12 still apply in spirit with buyer wording. See `card-db-mvp/README.md` for the current feature list.
+
 **Date:** September 13, 2026 · **Code state:** commit `3aa1f50` (Chunked photo uploads) · **Companion docs:** `carduploader-competitive-research-report.md`, `carduploader-logged-in-teardown.md`, `carduploader-upload-limits-research.md`
 
 **How this was verified.** Three passes on the same day: (1) a full read of every source file under `card-db-mvp/src` (14,662 lines: router, 19 app modules, 9 renderers, 5 CLI scripts); (2) a live smoke test against the running app that exercised **180 requests** as an anonymous visitor, a Free account, a Pro account and the owner console — every page, every form action, chunked photo upload, CSV exports, orders, share links, owner mode — **178 passed; the 2 misses were test-script assumptions, not app faults**; (3) a check of which environment variables are actually set on the Railway production service.

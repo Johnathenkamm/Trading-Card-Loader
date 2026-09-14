@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Phase 1 MVP: public, SEO-first trading-card price database with variant-aware catalog, price history, sold comps, and faceted search. Seeded from the Pokemon TCG API and Scryfall. SQLite for the demo; Postgres + object-storage bucket for production.",
+  "description": "CardIndex: the trading-card price guide for buyers and collectors — variant-aware catalog with live market prices, price history and sold comps, photo identification, and a private collection + wishlist. Seeded from the Pokemon TCG API and Scryfall; Postgres + object-storage bucket in production.",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -14,6 +14,7 @@
     "import:sold": "node --env-file-if-exists=.env src/scripts/import-sold.ts",
     "check:sold-links": "node --env-file-if-exists=.env src/scripts/check-sold-links.ts",
     "grant-pro": "node --env-file-if-exists=.env src/scripts/grant-pro.ts",
+    "db:drop-seller": "node --env-file-if-exists=.env src/scripts/drop-seller-tables.ts",
     "start": "node --env-file-if-exists=.env src/server.ts",
     "dev": "node --watch --env-file-if-exists=.env src/server.ts",
     "db:up": "docker compose up -d",

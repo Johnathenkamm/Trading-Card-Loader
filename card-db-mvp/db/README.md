@@ -114,7 +114,12 @@ Idiomatic translation of `src/schema.sql` + `src/schema.app.sql`:
 
 - `INTEGER PRIMARY KEY AUTOINCREMENT` → `bigint GENERATED ALWAYS AS IDENTITY`
 - 0/1 flags → `boolean`; ISO text dates → `date` / `timestamptz`; JSON text → `jsonb`
-- real foreign keys with `ON DELETE` on every reference; `UNIQUE (seller_id, sku)`
+- real foreign keys with `ON DELETE` on every reference; `UNIQUE (seller_id, variant_id)` on the wishlist
+- the accounts table is still named `sellers` (with `seller_id` foreign keys) from
+  the product's seller-tool days; it holds member accounts. Member data lives in
+  `scan_batches` / `scan_items` (uploads + review queue), `collection_items` and
+  `wishlist_items`. The old seller tables (`inventory`, `listings`, orders, eBay
+  connections) are no longer read; `npm run db:drop-seller -- --yes` removes them.
 - `pg_trgm` trigram indexes on `cards.name` / `search_text` — typo-tolerant search
   natively (replaces the MVP's app-side Levenshtein). Example:
   `SELECT name FROM cards WHERE name % 'Charzard' ORDER BY similarity(name,'Charzard') DESC;`

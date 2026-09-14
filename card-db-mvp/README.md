@@ -1,16 +1,21 @@
-# CardIndex — MVP
+# CardIndex — the trading-card price guide for buyers and collectors
 
-Two halves of the product from the build plan, sharing one database:
+Two halves of the product, sharing one database:
 
-1. **Public, SEO-first card price database** (`/`) — a searchable, variant-aware
-   catalog with per-grade values, price history, and sold comps on every card
-   page. The "wedge" CardUploader doesn't offer (its catalog lives behind a login
-   with no public pages).
-2. **Seller workspace** (`/app`) — the scan → identify → review → price →
-   list-to-eBay pipeline from `tcg-card-scanner-platform.md`: paste/scan a list of
-   cards, match them against the catalog with a confidence score, correct and
-   price them in a review queue, commit to SKU'd inventory, and generate eBay
-   listings + a File Exchange CSV.
+1. **Public, SEO-first price guide** (`/`) — a searchable, variant-aware catalog
+   with live market prices, per-grade values, price history and real sold comps
+   on every card page, plus a sold-price lookup across eBay, Goldin and Fanatics.
+2. **Member area** (`/collection`) — a free **price check** (photograph or paste
+   the cards you're holding or being offered; every one is identified against
+   the catalog and priced, shareable by link), a **wishlist** with target-price
+   alerts, and on Pro a private **collection**: add cards from photos, pasted
+   lists, cert numbers or a set checklist, confirm them in a review queue, and
+   see what you own against today's market and what you paid.
+
+Until September 2026 this codebase was a seller tool (inventory, SKUs, eBay
+listings, orders, marketplace CSV exports). All of that was removed in the
+buyer/collector overhaul; `npm run db:drop-seller -- --yes` removes the leftover
+tables once a deploy is verified (see `src/scripts/drop-seller-tables.ts`).
 
 Built to run with **zero external dependencies and zero build step**: TypeScript
 executed directly by Node 24, `node:sqlite` for storage, and Node's built-in HTTP
@@ -93,7 +98,7 @@ Supabase/Neon to run against hosted Postgres with no code changes.
 | TCGplayer product ids + link-outs on card pages | `sync:tcgcsv` | ✅ live (affiliate-ready) |
 | Price **history** | real observations accrue per `sync:tcgcsv` run; demo random-walk fills the chart until depth exists | ⚠️ mixed, flagged |
 | Per-**grade** values (PSA 8/9/10, CGC, BGS) | synthesized (multipliers on raw price) | ⚠️ demo, flagged |
-| **Sold comps** | `sold_sales` archive: connected sellers' **paid eBay orders are harvested every 6h** (`src/app/soldharvest.ts`, SKU-exact card/variant/grade) + any feed via `import:sold`; `/sales` shows real rows only (sample rows are removed at boot unless `SOLD_SAMPLE_ON_BOOT=1`) | ✅ real, accumulates per connected seller (plus feeds) |
+| **Sold comps** | `sold_sales` archive, filled by feeds via `import:sold`; `/sales` shows real rows only (sample rows are removed at boot unless `SOLD_SAMPLE_ON_BOOT=1`) | ✅ real where a feed has been imported; empty until then |
 
 Demo data is generated deterministically and marked `is_demo = 1` in the database,
 and every page that shows it carries a note. The data-sourcing research
@@ -130,178 +135,97 @@ top of `src/seed.ts` to change them.
 - **Light + dark themes** via CSS tokens (respects `prefers-color-scheme`, with a
   toggle that persists to `localStorage`).
 
-### Seller workspace (`/app`)
+### Member area (`/collection`)
 
-- **Dashboard** (`/app`) — plan card, stat tiles (inventory value vs. **market
-  value**, cards in stock, cards awaiting review), quick actions, a
-  getting-started checklist that ticks itself off, recent batches, and a
-  how-it-works accordion.
-- **Batches** (`/app/batches`) — every scan/paste with matched · review · failed
-  counts, the value that reached inventory, and a one-click way back into review.
-- **Graded cards** (`/app/graded`, `src/app/graded.ts`) — paste cert numbers or
-  ranges per grader (PSA/CGC/BGS/SGC/TAG/ACE); each cert becomes an item carrying
-  the cert, priced at the grade's catalog value when one exists, with a link-out
-  to the grader's cert page. Cert lookup is provider-based (`CERT_PROVIDER=none|mock`;
-  a PSA-API provider drops in). Grade/grader are editable in review and travel
-  to inventory, titles, item specifics and every export.
-- **Listing creator** (`/app/listing-creator`) — build listings from catalog
-  stock images: browse a game → set and tick cards with quantities, or search
-  and add; picks become confirmed review items. **Card search**
-  (`/app/card-search`) is the same catalog with filters and prices plus a
-  one-click "+ Add".
-- **Blank listing creator** (`/app/blank-listing`) — catalog-less listings
-  (sealed, lots, supplies) with item specifics; `listings.inventory_id` is
-  nullable for these.
-- **Pricing tool** (`/app/pricing-tool`) — free: upload or paste, get a priced
-  list (no inventory), create a public **share link** (`/p/<token>`), or turn
-  the batch into an inventory batch.
-- **Orders** (`/app/orders`, `src/app/orders.ts`) — pending/picked/shipped per
-  channel, manual orders, **TCGplayer pull-sheet CSV import** (matches by SKU,
-  then name + number), per-item pick toggles, a printable **picklist** grouped
-  by SKU, and "mark shipped" that decrements inventory (sold at zero). eBay /
-  Mana Pool order fetching are labeled seams.
-- **Automatic inventory** (`/app/inventory/automatic`) — exported / live
-  listings per channel with mark-live / end controls (the engine-sync seam).
-- **Inbox** (`/app/inbox`, `src/app/feedback.ts`) — feedback, bug and
-  missing-card notes with replies.
-- **eBay Sell APIs** (`src/app/ebay-sell.ts`) — Settings → eBay → **Connect eBay
-  account** (OAuth authorization-code; tokens stored per seller and refreshed),
-  **Sync policies** (Account API; shipping / payment / return chosen by ID with
-  names mirrored into the CSV fields), a ship-from **location** (Inventory API,
-  created on save), **Publish / Revise / End** on the listings page and "Save &
-  publish" in the listing builder (Inventory item → offer → publish, with a
-  pre-flight that reports every blocker at once), **Fetch eBay orders**
-  (Fulfillment API, deduped), mark-shipped pushed back to eBay, and quantity
-  sync to live listings when a non-eBay order ships. **Scheduled & spaced-out
-  publishing**: select listings → "Schedule & space out" (start time + every N
-  minutes, CardUploader's "Space Out"); an in-process runner publishes each one
-  when due (every `SCHEDULER_INTERVAL_MS`, default 60 s; `SCHEDULER_DISABLED=1`
-  on extra instances), parks a listing back as a draft after three failed
-  attempts with the error on its row. Shipping takes a carrier + tracking
-  number, which is passed to eBay. `EBAY_MOCK=1` runs the whole flow on canned
-  responses; real use needs a keyset + RuName (see `.env.example`).
-- **Multi-channel exports** (`src/app/exporters.ts`) — eBay File Exchange,
-  TCGplayer inventory (ungraded only, optional My Store columns), Whatnot bulk
-  listing and Shopify product CSVs from inventory rows and blank listings, with
-  per-channel preferences from Settings → Shopify / Whatnot / TCGplayer / Mana Pool.
-- **Scan / add** (`/app/scan`) — two entry paths, both feeding the review queue:
-  - **Advanced matching options** on both forms: prioritize or exclude sets and
-    keywords for the batch (`src/app/matching.ts`). Exclusions filter candidates
-    before scoring; priorities add a bounded score boost so a card from a set
-    you said you're scanning wins over the same name elsewhere. Savable as your
-    defaults.
-  - **Upload photos** (multipart → object storage): drag/drop or camera-capture
-    card images, one item per photo, stored via the storage layer and shown in
-    the queue. Batches are **chunked**: the dropzone script shrinks each photo
-    on the device to 1600 px JPEG (`UPLOAD_MAX_EDGE`; a 12 MP phone photo goes
-    from ~4 MB to ~300 KB, no accuracy cost for the hasher; undecodable formats
-    such as HEIC are sent as-is), opens a batch
-    (`/app/scan/upload/start`), sends the photos in groups of 20
-    (`/app/scan/upload/:batch/chunk`, each under the 60 MB request limit) with
-    a progress bar and resume-on-retry, then closes it (`…/finish`). Caps are
-    **100 photos per batch on Free, 500 on Pro** (`src/upload.ts`; the owner's
-    `/admin/upload` gets the Pro cap). Without script the form posts once.
-    Identification runs through a **pluggable vision provider**
-    (`VISION_PROVIDER`, `src/app/vision.ts`) — a recognizer's labels resolve
-    against the catalog exactly like typed input; with none configured it falls
-    back to a filename hint (`charizard-4-102.jpg`), then manual search. Front
-    **and** back per item (`/app/review/:b/item/:i/image`).
-  - **Paste a list** (one per line): each line is parsed for name, number
-    (`4/102` or `#119`), set, finish, condition, language, and quantity (`3x`),
-    then matched against the catalog. Matches ≥ 90% auto-confirm; lower ones route
-    to review with alternatives.
-- **Review queue** (`/app/review/:id`) — batch progress bar with matched / needs-
-  review / failed counts and filter tabs; per-card editing of printing, condition,
-  language, quantity, pricing rule, price, SKU, and generated title; alternative
-  picks and a manual catalog search (`/api/identify`); in-batch **duplicate
-  detection**; keyboard shortcuts (`j/k` move, `y` approve, `s` skip). "Add N to
-  inventory" commits matched cards, optionally merging duplicate quantities.
-- **Pricing** — rules per item or as a default: Market, Market ± %, or Fixed;
-  manual override always wins; previous list price for the same printing is
-  recalled ("you listed at …"). **Automatic pricing preference** (Settings →
-  Pricing): previous price first / rule only / previous only, plus a
-  "never price below $X" floor applied to automatic prices (`src/app/pricing.ts`).
-- **Inventory** (`/app/inventory`) — confirmed stock with auto-assigned SKUs
-  (`PREFIX-000001`), value and market-value stats, status/search/sort filters,
-  and a bulk toolbar (set condition/pricing, create listings, export CSV).
-- **eBay listings** — a listing builder (`/app/list/:id`) that generates an
-  ≤ 80-char optimized title, item specifics, and description, plus fixed-price /
-  auction / scheduling fields; a listings view (`/app/listings`); and an **eBay
-  File Exchange CSV** export (`/app/export/ebay.csv`).
-- **Settings** (`/app/settings`) — sectioned like CardUploader's Configuration:
-  shop & SKU scheme, default pricing + automatic-pricing preference + floor,
-  default matching options, the visual title structure editor, **description
-  templates** (up to three, one active, `{variables}` inserted at the cursor,
-  live preview; the active template feeds the listing builder, bulk listing
-  creation and the CSV export), and saved eBay listing preferences.
+Everything under `/collection` needs a member account; old `/app/*` links
+redirect (301) to their `/collection` equivalents.
+
+- **Collection home** (`/collection`) — plan card, stat tiles (collection value
+  at market, cards owned, what you paid vs. market, wishlist count with
+  targets hit), quick actions, a getting-started checklist that ticks itself
+  off, recent uploads, and a how-it-works accordion.
+- **Add cards** (`/collection/add?mode=price|collection`) — one page, two
+  outcomes. *Just price them* (Free) identifies and values every card and
+  shows a table you can share by link (`/p/<token>`); *Add to my collection*
+  (Pro) sends the same cards through review into your collection, keeping the
+  photo and what you paid. Both take **photos** (drag/drop or camera; chunked
+  upload — shrunk on the device to 1600 px, sent in groups of 20 with a
+  progress bar and resume-on-retry; caps **100 photos per upload on Free, 500
+  on Pro**) or a **pasted list** (one per line: name, number `4/102`/`#119`,
+  set, finish, condition, language, `3x` quantity). Identification runs
+  through the pluggable vision provider (`VISION_PROVIDER`, `src/app/vision.ts`;
+  `hash` is a real local perceptual-hash matcher) and the catalog matcher
+  (`src/app/identify.ts`); ≥ 90% confidence auto-matches, the rest waits in
+  review. **Advanced matching options** prioritize or exclude sets and
+  keywords (`src/app/matching.ts`), savable as defaults.
+- **Review queue** (`/collection/review/:id`) — progress bar with matched /
+  needs-review / no-match counts and filter tabs; per-card editing of
+  printing, condition, language, quantity, grader + grade and **what you
+  paid**; alternative picks and a manual catalog search (`/api/identify`);
+  in-batch duplicate detection; front and back photo per card; keyboard
+  shortcuts (`j/k` move, `y` confirm, `s` skip). "Add N to my collection" (Pro)
+  commits matched cards, optionally merging duplicate quantities.
+- **Graded slabs** (`/collection/graded`, `src/app/graded.ts`) — paste cert
+  numbers or ranges per grader (PSA/CGC/BGS/SGC/TAG/ACE); each cert becomes a
+  review item valued at the grade's catalog value when one exists, with a
+  link-out to the grader's cert page. Cert lookup is provider-based
+  (`CERT_PROVIDER=none|mock`; a PSA-API provider drops in).
+- **Add from a set** (`/collection/from-set`) — a set checklist: pick a game →
+  set, see which cards you already own and the set completion, tick the rest
+  with quantities, or search and add; picks land in review as confirmed matches.
+- **Collection** (`/collection/cards`, Pro) — every confirmed card with its
+  printing, condition/grade, quantity, paid price and today's market value
+  (gain/loss per row and in the stat tiles); filter by game, search, sort by
+  value/name/set/paid; inline edit per row (qty, paid, condition); bulk set
+  condition or remove; **CSV export** (`/collection/export.csv`).
+- **Wishlist** (`/collection/wishlist`) — press **♡ Wishlist** on any card
+  page (optionally with a target price). The list shows market vs. target and
+  flags cards at or below target; the card page shows "on your wishlist" and
+  "you own N". Free accounts keep up to 25 cards; Pro is unlimited and gets
+  **email alerts** after each price sync (`notifyWishlistAlerts` in
+  `src/app/collection.ts`, called at the end of `npm run sync:tcgcsv`).
+- **Uploads** (`/collection/uploads`) — every upload with matched · review ·
+  no-match counts, its value, and a one-click way back into review.
+- **Inbox** (`/collection/inbox`, `src/app/feedback.ts`) — questions, bug
+  reports and missing-card notes with replies from the owner.
+- **Settings** (`/collection/settings`) — display name, default condition /
+  language for uploads, default matching options, training opt-in (off by
+  default), plan.
 - **Accounts & login** (`/signup`, `/login`, `/logout`, `/reset-password`) —
   email + password sign-in (scrypt-hashed, HttpOnly `SameSite=Lax` session
-  cookies stored in Postgres). Sign-up asks for a shop name, email and password
-  (show-password toggle, rule shown inline); sign-in has a "Forgot?" link on the
-  password row and offers the reset path in the error after a wrong password.
-  **Password reset** is email → single-use link (sha256 of the token stored,
-  60-minute expiry) → new password, which signs the user in and signs out every
-  other session. Email goes through `src/app/mailer.ts`: `MAIL_PROVIDER=log`
-  (default) prints the link to the server log so the flow works locally;
-  `MAIL_PROVIDER=resend` + `RESEND_API_KEY` sends for real (set `APP_BASE_URL`
-  behind a proxy). Deep links survive login via `?next=`, and a new signup lands
-  on the dashboard with a welcome, never on a login screen. Every customer's
-  inventory, scans, listings, and settings are private to their account — each
-  store query is scoped to the logged-in seller. The first signup claims the
-  legacy single-tenant data; every account after is isolated.
-- **Free vs. Pro inside the workspace** — a Free account gets the dashboard,
-  the ungraded pricing tool, card search, sales lookup, inbox and settings
-  (CardUploader's free surface); anything that adds cards, manages stock or
-  publishes is Pro and redirects to `/pricing?upgrade=1` (`proRequired()` in
-  `server.ts`). The sidebar and dashboard tiles mark Pro pages with a "Pro"
-  chip for Free accounts, and the header shows a plan pill on every page.
-- **Add cards is one page with two outcomes** (`/app/scan?mode=price|inventory`).
-  The old Scan page and Pricing tool shared the same forms and server code, so
-  they are merged: the seller picks the outcome first, and each choice shows a
-  small pipeline of what happens to the photos — *Price only* (Free: identified,
-  priced at market, shareable list, photos kept only as thumbnails) or *Add to
-  inventory* (Pro: review, SKUs, photos stored as listing images). Pro-only
-  fields (pricing rule, SKU prefix) appear only for the inventory outcome; a
-  Free account choosing it sees what Pro unlocks instead of a form that would
-  bounce. `/app/pricing-tool` redirects to the price outcome.
-- **Workspace navigation** — a sticky left sidebar grouped by what you do
-  there: *Add cards* (Ungraded, Graded, Listing creator, Blank listing, Pricing
-  tool), *Manage* (Batches, Inventory, Automatic inventory, Listings, Orders),
-  *Look up* (Card search, Sales lookup — the public `/sales` rendered inside the
-  workspace), *Account*. Pages that don't take cards in carry a persistent
-  "+ Add cards" action; the rail collapses to icons (preference persisted per
-  browser; forced collapsed on review pages, open on Settings).
-- **Owner console / CRM** (`/admin`) — the operator's back-office, behind its
-  **own login**: set `ADMIN_EMAIL` + `ADMIN_PASSWORD`, sign in at
-  `/admin/login`, and the owner session (its own HttpOnly cookie, 24 h, 5
-  failed attempts locks the IP for 15 min) unlocks the console. Customer
-  accounts, Free or Pro, never get in — every `/admin` URL just shows the owner
-  sign-in. The console shows every account with its **Free or Pro tier**, last
-  login / last seen, 7-day activity and inventory counts; a per-user profile
-  with an upgrade/downgrade button, usage stats, their batches, feedback and a
-  full **activity timeline** (every login, page view and action is logged to
-  `activity_log`); a site-wide activity feed; a feedback queue with replies that
-  land in the user's inbox; and the owner's **personal uploader**
-  (`/admin/upload`: upload photos or paste a list — same identify → review
-  pipeline as the customer's scan page — into the **owner's own account**, a
-  seller row flagged `sellers.is_owner` that is created on boot from
-  `ADMIN_EMAIL`, hidden from the user lists, and never a customer's). With an
-  owner session, `/app` is that own workspace (inventory, batches, listings,
-  settings), so nothing the owner adds ever lands in someone else's account.
-  "Open workspace" on a user's profile enters **owner mode**: the whole `/app`
-  runs inside that customer's data scope with no paywall, a banner shows whose
-  account it is, and every change is tagged "by owner" in the log.
-  See `src/app/admin.ts` / `src/render/admin.ts`.
+  cookies stored in Postgres). Sign-up asks for a display name, email and
+  password; sign-in has a "Forgot?" link and offers the reset path after a
+  wrong password. **Password reset** is email → single-use link (60-minute
+  expiry) → new password, which signs the user in and signs out every other
+  session. Email goes through `src/app/mailer.ts` (`MAIL_PROVIDER=log|resend`).
+  Every member's collection, wishlist, uploads and settings are private to
+  their account — each query is scoped to the signed-in member
+  (`src/app/session-context.ts`).
+- **Free vs. Pro** — Free: the whole public price guide, price checks with
+  share links, uploads history, a 25-card wishlist, inbox, settings. Pro
+  ($15/mo): the collection (adding to it, browsing it, exporting it), the
+  collection outcome of add/upload, graded slabs, add-from-a-set, unlimited
+  wishlist with alerts. Enforced by `proRequired()` in `server.ts` plus
+  outcome-level checks; Pro pages carry a "Pro" chip for Free accounts and the
+  header shows a plan pill. Checkout is not wired; Pro is granted with
+  `npm run grant-pro -- <email>` or the owner console.
+- **Owner console** (`/admin`) — the operator's back office behind its **own
+  login** (`ADMIN_EMAIL` + `ADMIN_PASSWORD`, `/admin/login`, own cookie, IP
+  lockout after 5 failures). Members never get in. It shows every member with
+  plan tier, last seen, 7-day activity, uploads, collection and wishlist
+  counts; a per-member profile with upgrade/downgrade, usage, uploads,
+  feedback and the full **activity timeline**; a site-wide feed; a feedback
+  queue whose replies land in the member's inbox; and the owner's **personal
+  uploader** (`/admin/upload`) into the owner's own account (`sellers.is_owner`,
+  created on boot from `ADMIN_EMAIL`, hidden from the member list). "Open
+  collection" on a profile enters **owner mode**: `/collection` runs inside
+  that member's data scope with no paywall, a banner says whose account it is,
+  and every change is tagged "by owner". See `src/app/admin.ts` /
+  `src/render/admin.ts`.
 
-Photo **upload, storage, review, and a pluggable vision hook** work end-to-end.
-Vision recognition is provider-based (`VISION_PROVIDER=none|mock|http`, see
-`src/app/vision.ts`): point `http` at a real recognizer (Ximilar, a self-hosted
-model, eBay `searchByImage`) and its labels resolve to a priced catalog variant
-through the same `identify()` contract; the offline default is filename-hint +
-manual search, and `mock` proves the pipeline with no external service. Remaining
-**seams** (labeled in the UI): the recognizer endpoint itself (needs an API
-key/model), graded-slab OCR/QR + cert lookup, live eBay Sell-API publish (OAuth),
-and Stripe billing.
+Remaining **seams** (labeled in the UI): a hosted recognizer endpoint behind
+`VISION_PROVIDER=http`, graded-slab OCR/QR + a real cert-lookup provider,
+binder-page multi-card detection, Stripe billing.
 
 ## Layout
 
@@ -309,30 +233,40 @@ and Stripe billing.
 card-db-mvp/
   src/
     schema.sql            catalog + pricing DDL (Postgres-portable)
-    schema.app.sql        seller workspace DDL (sellers, batches, items, inventory, listings)
-    db.ts                 connection + typed catalog query functions
+    schema.app.sql        member-area DDL (sellers = accounts, batches, items, collection, wishlist) — SQLite mirror
+    db.ts                 SQLite seed-staging layer + shared types
+    pg.ts                 Postgres data layer (catalog queries; pool helpers)
     seed.ts               fetches Pokemon TCG API + Scryfall; synthesizes demo pricing
     search.ts             query parsing, faceted SQL, facet counts, fuzzy fallback, type-ahead
-    server.ts             node:http router (public site + auth + /app workspace + POST handling)
+    sales.ts              sold-sales archive search (public /sales)
+    server.ts             node:http router (public site + auth + /collection + /admin + POST handling)
+    upload.ts / storage.ts   multipart parsing, upload caps; local or S3-compatible image storage
     util.ts               esc/slug/money/rng/levenshtein helpers
-    app/                  seller workspace logic
+    app/                  member-area logic
       auth.ts             password hashing (scrypt), sessions, account creation, password-reset tokens, cookies
-      mailer.ts           outbound email (log | resend) for reset links
-      admin.ts            owner login (ADMIN_EMAIL/ADMIN_PASSWORD, admin_sessions), activity log, cross-tenant CRM queries, owner-mode cookie
-      session-context.ts  request-scoped seller + account (AsyncLocalStorage) for tenant isolation
+      billing.ts          Free vs Pro plan tier
+      mailer.ts           outbound email (log | resend): reset links, wishlist alerts
+      admin.ts            owner login, activity log, cross-tenant console queries, owner-mode cookie
+      session-context.ts  request-scoped member + account (AsyncLocalStorage) for tenant isolation
       identify.ts         parse a card line → catalog match + alternatives + confidence
-      pricing.ts          pricing rules (market / ±% / fixed), conditions, languages
-      sku.ts              SKU formatting (PREFIX-000001)
-      listing.ts          eBay title / item specifics / description / File Exchange CSV
-      store.ts            workspace data layer (per-seller: batches, inventory, listings)
-      compose.ts          cross-cutting: titles, listing previews, CSV rows
+      vision.ts / hashindex.ts   photo → card (perceptual-hash matcher and the boot-time index builder)
+      matching.ts         Advanced matching options (prioritize / exclude sets and keywords)
+      graded.ts           graders, cert parsing/lookup, grade values
+      conditions.ts       condition + language vocabularies
+      collection.ts       data layer: member prefs, uploads + review items, collection, wishlist, alerts
+      feedback.ts         inbox notes + owner replies
+      soldimport.ts       sold-sales feed importer (+ sample housekeeping at boot)
     render/
       layout.ts           HTML shell, <head>/SEO, brand mark, theme + type-ahead JS
-      components.ts        card tile, SVG price chart, chips, pager, breadcrumb
+      components.ts       card tile, SVG price chart, chips, pager, breadcrumb
       pages.ts            home, browse, set, card, search renderers + sitemap
-      app.ts              inventory, scan, review, listing builder, listings, settings
-      admin.ts            owner console: overview, users, user profile, activity, feedback
-      auth.ts             login + signup pages
+      sales.ts            sold-price lookup page
+      pricing.ts          Free vs Pro plans page
+      collection.ts       member chrome (sidebar, head, APP_JS) + home, collection, wishlist, uploads, inbox, settings
+      collection-add.ts   add cards, review queue, graded slabs, add from a set, priced list / share page
+      admin.ts            owner console: overview, members, profile, uploader, activity, feedback
+      auth.ts             login, signup, password reset pages
+    scripts/              sync:tcgcsv, hash:catalog, import:sold, check:sold-links, grant-pro, db:drop-seller
   public/styles.css       design system (dark-navy default, cobalt-blue accent, Bricolage/IBM Plex)
   data/catalog.db         generated by `npm run seed`
 ```
@@ -344,7 +278,7 @@ card-db-mvp/
   and an S3-compatible image bucket in Docker; `db/schema.postgres.sql` is the
   idiomatic translation of the two SQLite schemas; `npm run pg:migrate` loads the
   seeded catalog. `src/pg.ts` is the async Postgres data layer (public catalog,
-  search, and the seller workspace all run through it); `src/storage.ts` handles
+  search, and the member area all run through it); `src/storage.ts` handles
   image files (local dir or any S3-compatible bucket — MinIO/S3/R2/Supabase).
   Host-agnostic: point `DATABASE_URL` at Supabase/Neon to go to production.
   `src/db.ts` remains only as the SQLite seed-staging layer for `seed.ts`.
@@ -358,16 +292,13 @@ card-db-mvp/
   vision/retrieval model behind the same `IdentifyResult` contract; the review
   queue and everything downstream stay unchanged. Log confirmed matches as
   training data (gated by `sellers.training_opt_in`, off by default).
-- **eBay** → replace the File Exchange CSV export with the eBay Sell API
-  (Inventory → Offer → publishOffer) once OAuth + a production keyset are in
-  place; the listing drafts, scheduling times, and item specifics already exist.
 - **Accounts** → **done — real email + password accounts with sessions.** Each
-  `sellers` row is a customer (workspace tables already carried `seller_id`);
-  `src/app/auth.ts` handles scrypt hashing, sessions, and cookies, and
-  `src/app/session-context.ts` scopes every query to the logged-in seller.
-  Password reset is done (email link via `src/app/mailer.ts`). Still a seam:
-  Stripe billing checkout, email verification, Google sign-in, and per-request
-  CSRF tokens (session cookies are `SameSite=Lax`).
-- **Still to build**: graded-card slab scanner (OCR/QR + cert lookup), eBay
-  variation listings, and the non-eBay marketplace exporters (TCGplayer, Whatnot,
-  Shopify, …) — the inventory/listing records are already marketplace-agnostic.
+  `sellers` row is a member (the table keeps its old name; every member table
+  carries `seller_id`); `src/app/auth.ts` handles scrypt hashing, sessions, and
+  cookies, and `src/app/session-context.ts` scopes every query to the signed-in
+  member. Password reset is done (email link via `src/app/mailer.ts`). Still a
+  seam: Stripe billing checkout, email verification, Google sign-in, and
+  per-request CSRF tokens (session cookies are `SameSite=Lax`).
+- **Still to build**: graded-slab scanner (OCR/QR + a real cert-lookup
+  provider), binder-page multi-card detection, and a licensed sold-sales feed
+  to fill the archive at scale.
