@@ -1,0 +1,232 @@
+[00:00-00:04] Alright so this is card uploader and I'm kind of going to run you through the process and what it looks like
+[00:04-00:07] I do want it to be kind of similar to this and again
+[00:07-00:08] We'll tweak it as we go
+[00:08-00:14] But of course it's very simple you have the home page which we already have that actually was going through ours right here
+[00:14-00:16] There's some stuff that we I will clean up
+[00:16-00:21] But mainly I'm trying to get the functionality to work first and then cosmetic stuff we can work on later
+[00:21-00:23] But everything looks great so far
+[00:23-00:26] So one of the big things is you know you're gonna go in here
+[00:26-00:31] These are like cards already uploaded and so pretty much actually they just updated this is all different one
+[00:31-00:36] I usually see I've already used a lot and I got people referring and I got credit
+[00:36-00:40] So I know people will will use the site if I start mentioning it
+[00:40-00:43] I haven't mentioned in a while because I'm trying not to get people on here
+[00:44-00:49] But anyway, so over here is the dash so orders are pretty much
+[00:50-00:52] Things coming in if we had
+[00:52-00:57] Connected everything to like eBay and everything it would pretty much have like orders that you can go through here now
+[00:57-00:59] I don't want that yet because I think it's very confusing for us
+[01:00-01:03] Again the scanning is like key right now. That's really what I want
+[01:04-01:08] Previous batches I want people people to go back to their previous batches so they can see like oh look
+[01:08-01:12] I did this one by didn't finish or let me just go check this out
+[01:12-01:17] This is everything that we did and they can reupload the same thing and whatever they want to do again
+[01:17-01:19] It doesn't have to save all of them
+[01:19-01:22] I don't know how they do it and keeping up with saving all them
+[01:22-01:27] But I've done like you saw like 20,000 and so I started doing this back in April
+[01:28-01:30] Inventory again, this is probably linked to
+[01:32-01:37] My eBay account as you can see right here like I would eventually like to have something like this
+[01:38-01:40] showing our products showing
+[01:41-01:47] You know our inventory as you see it shows my how many products I have how many cars total total market that I
+[01:47-01:53] Will total cost like I'm selling on my my end and then how much the market is again with both cards
+[01:53-01:55] You have to know kind of how to do it
+[01:56-01:58] And I'm guessing this is kind of new too
+[01:58-02:01] So I'm guessing you can kind of mess with it here a little bit
+[02:01-02:06] There is another website that I would like to start taking some stuff from there because it automatically does like
+[02:07-02:12] Market pricing updates and we can talk about that later and then this is really where we come down to
+[02:12-02:14] It's gonna be this section right here. So
+[02:15-02:16] Ungraded graded
+[02:16-02:20] We I do agree to grade it as well and I'll talk about that too, but let's just do the ungraded
+[02:20-02:23] So you go to ungraded you're going to your default settings
+[02:23-02:26] So when I talk about default settings when I go to configuration
+[02:26-02:31] This is what I was kind of talking about the main thing that I wanted to look at is like right here eBay
+[02:32-02:35] So I link to my eBay account. So it's linked here
+[02:35-02:38] It knows like it's on eBay already have this stuff set up
+[02:38-02:42] So it links to my eBay and then I kind of just pick so I want my payments on my policy
+[02:42-02:45] My shipping on my policy my returns on my policy
+[02:46-02:52] Everything's payments that I want it. This is all eBay stuff, but it links to here that I can just select it
+[02:52-02:55] So when I'm uploading to eBay it already knows
+[02:55-02:59] So I don't have to mess with anything changes everything here stuff like that
+[02:59-03:03] So all this in here I would have you go in here kind of look to see what that's about
+[03:04-03:05] but
+[03:05-03:07] When we go to this
+[03:08-03:12] I'm picking default because I'm doing the eBay default and then this is the
+[03:13-03:16] Database of all the card games that are out there right now
+[03:16-03:20] I want to focus on Pokemon and one piece if we could so like for example
+[03:20-03:26] I'm gonna do one piece if we start adding one piece because that's like the main thing that I use for myself for this now
+[03:26-03:34] Pokemon is number one because Pokemon is the majority of what people sell and I want to really push that on here
+[03:35-03:41] It has like where you're gonna what platform you're gonna use so for sure TCG player is like key that I want to use
+[03:41-03:43] eBay fixed
+[03:44-03:49] Auctions and they can have those but mainly I want to do fixed and I want to do TCG
+[03:49-03:52] So fix is just like hey, we're listening for one price. That's the price when it gets listed
+[03:53-03:55] TCG player is another platform
+[03:55-04:01] There is another platform that I saw that there are doing some chaos sorting which means instead of like individually
+[04:01-04:05] Me having to organize in real life like where it's at
+[04:05-04:11] I just scan them all and I give it a skew number and I can pick the skew when it gets ordered TCG player
+[04:11-04:16] I'm not able to do that myself, but I know this other website is doing that so I'm gonna research on them on how they're doing that
+[04:17-04:22] Auto crop I wouldn't do auto crap. This is for like phones really so if they people start taking pictures on their phone
+[04:22-04:25] They auto crops for them. These are some extra
+[04:26-04:30] things you can do is like what set like if I'm doing like one Pacific set to make the
+[04:30-04:32] the
+[04:33-04:38] Scanning is a lot more accurate of like what that card is so if I was doing like only this 500 set of
+[04:39-04:42] That's the set I'm going through then I would select this and
+[04:42-04:48] So for example, I would select it and it knows hey prioritize when you're matching stuff that this is a set that you're going through
+[04:48-04:55] And then this is like exclude you can exclude things like I don't want it to do like master balls or whatever because there's different
+[04:55-04:57] types of cards
+[04:57-05:01] So let me go back here. It's got a one piece English
+[05:02-05:04] We're not gonna do this
+[05:05-05:11] So conditions important how the condition I always do never make because my cards are never met and then I always do whatever price
+[05:11-05:13] I want to start off with now. This is all changeable
+[05:14-05:15] Depending on the pricing
+[05:15-05:17] So if I didn't want to put this be zero
+[05:17-05:23] But I always put this and then I kind of do my own price in the back end and then this is just a skew numbers or whatever
+[05:23-05:29] I want to do so somebody could put h-1 and then whenever scans them all it does one two three
+[05:29-05:32] It does it in order so it does it again in increments
+[05:34-05:36] Some people don't like that some people would just do
+[05:37-05:38] box
+[05:38-05:44] Five box B and then everything that scan is in box B. They don't have like a number attached to the back end
+[05:44-05:45] But I do
+[05:45-05:50] What category this is again an eBay thing these are all my eBay category, so I'm picking one piece
+[05:50-05:55] I'm I don't have a secondary category most people don't and then the date you would like to upload
+[05:55-05:57] I don't really mess with that so I press this here
+[05:57-05:59] I'm gonna select this now
+[05:59-06:06] This is a big thing one image to image custom one image to two images really what I want the reason being is whenever you upload
+[06:06-06:08] So some people were like right now. I'm gonna show you I'm gonna upload
+[06:10-06:15] Let's see pictures scans as you can see I only have the front of the cards, which is fine
+[06:16-06:18] Uploaded see how fast I did it all
+[06:19-06:22] Front of the cards, but if I was to press second and I uploaded it
+[06:22-06:24] It wouldn't really like if I do this one
+[06:24-06:29] It's telling when I upload in order is telling that this is the front. This is the back
+[06:29-06:35] I do and other people do will scan cards in pairs of front and back front and back front and back
+[06:35-06:38] So show the condition of the back of the card, so we need to be able to do that as well
+[06:39-06:42] But for right now, let's just do the front so I can show you the process on the back end
+[06:43-06:46] So and then I'll press process like I said this part
+[06:46-06:51] I will be able to upload 500 cards and then job done and then instead of process the images
+[06:51-06:56] I did a very small batch so it doesn't take forever because it can take a little bit of time trying to do everything and
+[06:56-06:59] Then this is really what I love about card uploader
+[07:00-07:06] Is being able to see like iterating named everything it matched the cards. It has all this really simple
+[07:06-07:09] There's other ones that are very high-tech and it's overwhelming for me
+[07:10-07:13] But here's all the pricing how many how many that I have of that card now
+[07:13-07:15] Here's the thing about this one this one
+[07:15-07:19] I don't think I have any doubles but the thing is I can check for doubles based on the names
+[07:19-07:22] So what I do here is I can go to tools
+[07:24-07:29] Managed duplicates and it says hey you do have a double so they're all scan singles
+[07:29-07:30] But I have a double and it's gonna combine them
+[07:30-07:36] I really like that. I love that and then so that way got rid of an extra listing it combined them
+[07:36-07:37] So wherever it's actually right here
+[07:37-07:42] They combined that one to set of one and then everything else is pretty cool
+[07:42-07:46] So there's other things here like you can check for duplicates eventually we will get into that
+[07:46-07:50] That's a pretty much it's a check my eBay account to see if I have any listings already of it
+[07:50-07:53] And then it would just merge it into that with as an extra number
+[07:53-07:57] But I find that very confusing to the because I have to go put it where it's at around
+[07:57-07:59] I'm not 100% sure yet though, but
+[08:01-08:04] Let's see here. This is also something so bulk editing
+[08:04-08:07] So like it would select all of them and I want to do certain filters
+[08:09-08:12] Replacing fine the other one is best offer
+[08:12-08:15] So I usually turn this off because I don't know offers on my car
+[08:15-08:17] I just want to sell them as they are
+[08:17-08:20] Edit skew so I usually do this after I do the duplicates
+[08:20-08:25] That where it does one then I do this so I can start back at whatever number I had started it
+[08:25-08:28] And then I apply and then it goes from there
+[08:28-08:33] three four five five and six seven eight
+[08:34-08:40] Nine so it doesn't in order on that side too and then what else what else the variants?
+[08:40-08:43] This is like if it's hollow normal stuff like that
+[08:43-08:48] It'll have hot collos and normal so here if there was any hollows like if it was a variant of a hollow
+[08:48-08:51] It would allow me to know like hey, I'm a click normal. I'm a click hollows
+[08:51-08:54] I'm a click reverse is whatever the variant is
+[08:54-08:59] Based on this card and all the Pokemon cards of this card. There's different variants that it could be
+[09:00-09:03] So the first thing I do here is I make sure this is the right card
+[09:03-09:07] So I'm able to see the picture of the card. So this is the database
+[09:07-09:13] This is my actual photo and then it even tells me like hey, this is probably the car. That's the percentage of this card
+[09:14-09:18] These are other cards that it could be but it's a very low chance like that's probably it
+[09:18-09:21] So we usually go with this now. Let's say this wasn't it
+[09:21-09:23] I can search here and
+[09:23-09:28] Go find that card if I really wanted to I just start typing it and when I find I want to click on it
+[09:28-09:34] And eventually it learns over time especially with so many people using the website that the algorithm the AI is gonna learn
+[09:34-09:39] Hey, that when this card gets scanned. This is probably the card. So that's something that's really important to me, too
+[09:40-09:41] over here
+[09:41-09:49] Again, I can change this here if I wanted to if I really wanted to this is the pricing they get this from TCG player
+[09:49-09:52] So that's just imported there. So like as I'm looking at my pricing
+[09:52-09:53] I'm like, okay
+[09:53-09:57] So what is TCG player pricing the market even though I'm gonna list this on eBay?
+[09:57-10:02] This is I eBay only allows you to put your list cards over 99 cents or higher
+[10:02-10:05] You can't listen to lower in that so I'm automatically put 99 cents
+[10:05-10:11] And then if I scanned it before a rem in memorizes what I market it at because the last thing I want to do is
+[10:11-10:14] Go back and do things like super expensive
+[10:14-10:20] So it tells me that I've scanned these before and it remembers what I've what I priced them at too
+[10:20-10:24] It's not it's not 100% on this for sure because some of these are wonky
+[10:25-10:28] What else would oh and then on this side again?
+[10:28-10:32] You can replace the card the ones I really want is this eBay listing
+[10:32-10:35] I think you've seen so it's like goes through all the listings at the moment
+[10:35-10:37] So it pulls it up here on the website
+[10:37-10:41] I don't even know how they do that and then you kind of can just see everything here
+[10:42-10:42] and
+[10:42-10:47] Then I believe this is something that we can talk about the link affiliate link
+[10:47-10:51] It takes you to here and what I like about that is that I'm actually a
+[10:51-10:53] eBay ambassador
+[10:53-10:58] Affiliate so I'm pretty sure eventually we can figure out how to do that
+[10:59-11:05] So when people are like doing this I can have that where like hey this is scan and this will automatically this
+[11:05-11:10] I don't know how they do it the system will automatically link my stuff for my ambassadors because if I was to go here
+[11:11-11:16] And it does this automatically there's no way they do this one by one
+[11:17-11:19] Here it would just grab this one right here
+[11:19-11:24] It would share and so this is the link for my affiliate that make money on the back end
+[11:24-11:28] So if there's a way that we also can do that where it shows all of them
+[11:28-11:33] And it just links all the links with my affiliates so I can make money on that side that would be amazing
+[11:34-11:40] And then eBay so it actually opens up eBay and it takes me to whatever it is
+[11:40-11:46] So it says this usually this is kind of wonky like it doesn't really show like anything because most of times
+[11:46-11:51] It doesn't does nothing sold of that card and so the person would have to come here and just kind of filter this out
+[11:51-11:58] Like what's listed then okay? Hey, these are all the listed ones and then this is if they're trying to figure out what the market price is for eBay and
+[11:59-12:00] This is super helpful
+[12:00-12:05] But again if they give those up like a really popular card that would have been cells on the eBay
+[12:05-12:10] But since there's not then they have to go to and do their own research on figuring out the pricing
+[12:10-12:11] But we don't do that for them
+[12:11-12:15] So let's get rid of that and then TCG player opens up TCG player
+[12:16-12:22] So even though we have TCG player right here as you can see like it says five cents if we open up TCG player here
+[12:23-12:24] You can see here
+[12:24-12:29] This is where they get the market price of five cents from TCG player and they go down here
+[12:29-12:32] They can do their own research of like oh, what do I want to list mine for type of thing?
+[12:33-12:38] So that's kind of basically what happens and then at the very end once everything's said and done
+[12:39-12:42] Pretty much what they'll do is they'll come up here
+[12:43-12:47] This is the stuff come up here. They'll press this listing or exports
+[12:47-12:52] So they have a way to just click this and it'll just list it automatically to eBay
+[12:52-12:55] I haven't really played with it because I haven't been listing a lot
+[12:55-13:01] Eventually we'll get there add to inventory. That's a beta again. I think it's the same thing though added to the inventory
+[13:01-13:06] I think this is inventory here that doesn't actually go on to eBay. It's just like puts it on hold
+[13:06-13:09] They can list it later if they want. This is the one. It's a export
+[13:10-13:13] ESV so I just click that and then I'll put export to eBay
+[13:14-13:19] it'll make the file here and then before there was a way to
+[13:20-13:21] Open it up
+[13:21-13:26] But I'm guessing they don't have that anymore. So I would just go to eBay
+[13:27-13:31] And I'll go to my thing here if we can get this right here
+[13:33-13:37] Somewhere like around here so they can know hey click this link
+[13:37-13:41] It'll take you to your eBay so that way you'll be on this page for them specifically
+[13:41-13:45] And then all they do is they click this right here. They click this they go download
+[13:45-13:48] They click their file whatever that file is and then oops
+[13:49-13:50] I don't want to press it
+[13:50-13:54] They'll select it and then it would just upload and it will take a little bit for them
+[13:54-13:56] And they can go do whatever they want to do once it says complete
+[13:56-14:03] It'll eventually update the listing onto their eBay page exactly and so that's really the whole process of what I'm trying to do
+[14:03-14:05] I know it's a lot
+[14:05-14:09] Again if you don't feel like we can completely do all this
+[14:09-14:14] I need to know because I don't want to go all the way with this and not be able to at least do those
+[14:14-14:16] Like the main things that I want
+[14:16-14:20] There's other things that I would like to add on to the sites like from the other websites
+[14:20-14:26] But that is like this website that is the most simplistic thing that they allow us to do
+[14:26-14:30] They have so much more so if I can't even provide those things
+[14:31-14:37] There's no reason for me to even start this venture because I'm not gonna be able to compete because out of all the companies
+[14:37-14:40] this one card uploader is the simplest and
+[14:41-14:43] The one that people use the least
+[14:44-14:48] Because other ones have a lot more high-tech stuff that they can do I
+[14:48-14:52] Personally believe that people will use the site because of how I'm very
+[14:52-14:57] Informational and how I teach it and it's not gonna be as expensive as everybody else
+[14:58-15:00] Because again, we I want to build over time a
+[15:01-15:07] Continuous following of people just using the sites and we'll make a discord and everything like that too as well
+[15:07-15:12] As we'll have other ways to make money on the site so we can actually make this a little less expensive
+[15:12-15:15] I would like to get this down like seven bucks a month for the membership
+[15:15-15:18] So I don't know how that's gonna work or ten bucks a month. We'll see
+[15:19-15:24] As well as like how many users we can handle so the more users we we get of course the more
+[15:24-15:29] I'm probably gonna have to pay on the back end for us to keep up with everything with the maintenance and stuff like that
+[15:29-15:34] If we need to buy anything to do up how many users we can use at a time
+[15:34-15:38] So yeah, that's pretty much everything in a nutshell
+[15:38-15:42] I know it's a lot, but you just need to let me know like is this something we can do
+[15:42-15:48] Can we if it's something we can't do I need to know because if we can't do this then we need to stop and
+[15:49-15:51] get to another
+[15:51-15:57] Idea that I have of other stuff because there's also real estate websites and apps I want to develop to
+[15:57-16:01] And we can kind of just go from there. So let me know. I appreciate it man. Thank you

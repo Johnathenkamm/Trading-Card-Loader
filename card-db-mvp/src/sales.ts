@@ -16,6 +16,7 @@ import { query, one, toPg } from "./pg.ts";
 import type { SoldSale } from "./db.ts";
 import { identify } from "./app/identify.ts";
 import { parseInput } from "./app/identify.ts";
+import { ebayLink } from "./affiliate.ts";
 
 /**
  * Sold-sales archive schema (idempotent, runs at server start like the other
@@ -104,6 +105,8 @@ export function soldListingLink(s: LinkFields): string | null {
   if (host === "ebay.com" || host.endsWith(".ebay.com") || /(^|\.)ebay\.[a-z.]+$/.test(host)) {
     // Search / category / signed-in pages aren't listings; only /itm/<id> is.
     if (!EBAY_ITEM_PATH.test(u.pathname)) return null;
+    // Archived listings link out with the owner's affiliate campaign too.
+    return ebayLink(s.url, "sold-archive");
   }
   return s.url;
 }

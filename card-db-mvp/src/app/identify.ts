@@ -67,6 +67,8 @@ export type IdentifyOptions = {
   excludeSets?: string[];
   prioritizeTerms?: string[]; // lower-case keywords against name + set name
   excludeTerms?: string[];
+  /** Restrict candidates to one game (the batch's "Database": pokemon, mtg, onepiece …). */
+  game?: string;
 };
 const PRIORITY_SET_BOOST = 0.1;
 const PRIORITY_TERM_BOOST = 0.05;
@@ -348,7 +350,8 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
   const exTerms = opts.excludeTerms ?? [];
   const priTerms = opts.prioritizeTerms ?? [];
   const hay = (r: Row) => `${r.name} ${r.set_name}`.toLowerCase();
-  const rows = fetched.filter((r) => !exSets.has(r.set_slug) && !exTerms.some((t) => hay(r).includes(t)));
+  const game = (opts.game ?? "").trim().toLowerCase();
+  const rows = fetched.filter((r) => (!game || r.game_slug === game) && !exSets.has(r.set_slug) && !exTerms.some((t) => hay(r).includes(t)));
 
   const scored = rows
     .map((r) => {

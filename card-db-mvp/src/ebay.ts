@@ -18,6 +18,8 @@
 // "eBay listed ↗" link-out remains). Results are cached in-memory for 10
 // minutes per query — default keysets get 5,000 calls/day.
 
+import { ebayLink } from "./affiliate.ts";
+
 const ENV = () => ({
   clientId: process.env.EBAY_CLIENT_ID ?? "",
   clientSecret: process.env.EBAY_CLIENT_SECRET ?? "",
@@ -109,8 +111,9 @@ export async function searchListed(query: string, limit = 10): Promise<EbayListi
       title: String(it.title ?? ""),
       price_cents: price?.value != null ? Math.round(Number(price.value) * 100) : null,
       currency: price?.currency ?? "USD",
-      // itemAffiliateWebUrl appears when an EPN campaign id is configured on the keyset
-      url: it.itemAffiliateWebUrl ?? it.itemWebUrl ?? null,
+      // itemAffiliateWebUrl appears when an EPN campaign id is configured on the
+      // keyset; otherwise the plain item URL is tagged here (EBAY_EPN_CAMPID).
+      url: it.itemAffiliateWebUrl ?? (it.itemWebUrl ? ebayLink(String(it.itemWebUrl), "live-panel") : null),
       image: it.thumbnailImages?.[0]?.imageUrl ?? it.image?.imageUrl ?? null,
       condition: it.condition ?? null,
       buying: buyingLabel(it.buyingOptions, it.bidCount),
@@ -141,7 +144,7 @@ function mockListings(query: string, limit: number): EbayListing[] {
     title: `${query} — mock listing ${i + 1}`,
     price_cents: Math.round(anchor * b.mult),
     currency: "USD",
-    url: "https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(query),
+    url: ebayLink("https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(query), "live-panel"),
     image: null,
     condition: b.cond,
     buying: b.buy,
