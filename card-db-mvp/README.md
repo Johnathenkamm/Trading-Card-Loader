@@ -193,6 +193,14 @@ top of `src/seed.ts` to change them.
   listing and Shopify product CSVs from inventory rows and blank listings, with
   per-channel preferences from Settings → Shopify / Whatnot / TCGplayer / Mana Pool.
 - **Scan / add** (`/app/scan`) — two entry paths, both feeding the review queue:
+  - **Setup block** (inventory outcome only, CardUploader's Ungraded Cards
+    setup page): **Platform** (eBay Fixed Price / eBay Auctions / TCGplayer —
+    stamped on the batch and picked up by "Export batch"), pricing rule,
+    **Start price** (one price for every card, e.g. $0.99; blank = the rule),
+    SKU prefix with an **Increment** checkbox (unticked = every card carries
+    the bare prefix as a box label; inventory SKUs are therefore no longer
+    unique), **Store category** (per-batch eBay Store category id), and "save
+    as my defaults". The values ride along with every upload chunk.
   - **Database** select on both forms (CardUploader's "Database"): which game
     the cards are from — Pokémon first, One Piece second (disabled until its
     catalog is seeded), then the rest; "Any game" auto-detects. It becomes
@@ -206,7 +214,12 @@ top of `src/seed.ts` to change them.
     phone's photo library with multi-select (the main input carries no
     `capture`, which would force the camera one shot at a time); a separate
     **Take a photo** button opens the camera, and every pick adds to the
-    selection. **Several cards per photo** (binder pages, loose cards on a
+    selection. Three layouts: **1 image** (one card per photo), **2 images**
+    (front and back pairs in shooting order — an even number, **Swap all**
+    flips which is the front; the back is stored as the card's condition
+    photo and shown in review; the chunked sender posts each pair as
+    `images` + `backs`, the no-script form pairs consecutive photos), and
+    **Several cards per photo** (binder pages, loose cards on a
     plain background) is found and cropped on the device: background colour
     from the photo's border, mask of what differs from it, enclosed holes
     filled from a border flood, blobs labelled and split where their coverage
@@ -239,7 +252,14 @@ top of `src/seed.ts` to change them.
   detection**; keyboard shortcuts (`j/k` move, `y` approve, `s` skip). "Add N to
   inventory" commits matched cards, optionally merging duplicate quantities.
   Every matched row carries **eBay listed ↗ · eBay sold ↗ · TCGplayer ↗**
-  research link-outs (affiliate-tagged, see below). **Batch tools**
+  research link-outs (affiliate-tagged, see below) and a **Compare** button
+  that opens the **Card Comparison & Search** modal (CardUploader's): your
+  photo beside the matched catalog card with its confidence, the alternatives
+  with their %, a search box over the catalog, **Replace card**, and ←/→ to
+  walk the batch ("continue to next card" reopens on the next row after a
+  replace). The header shows the batch's Platform and an **Export batch**
+  button (`/app/export/{ebay|tcgplayer}.csv?batch=ID`: the batch's inventory
+  rows, auction rows for eBay Auctions, the batch's store category). **Batch tools**
   (`POST /app/review/:id/bulk`, CardUploader's Bulk Edit): *Set price for all
   cards*, and *Edit SKU prefix* — number the batch in order from a prefix and
   start number, skipping duplicates that will merge, and move the seller's

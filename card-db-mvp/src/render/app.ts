@@ -328,7 +328,9 @@ export async function renderBatches(msg?: string): Promise<{ html: string; title
         <td class="mono${b.failed ? " bad" : ""}">${b.failed}</td>
         <td class="mono">${money(b.value_cents)}</td>
         <td>${state}</td>
-        <td class="act"><a class="btn sm" href="/app/review/${b.id}">${b.review ? "Review →" : "Open"}</a></td>
+        <td class="act"><a class="btn sm" href="/app/review/${b.id}">${b.review ? "Review →" : "Open"}</a>${
+          b.approved ? ` <a class="btn sm ghost" href="/app/export/${b.platform === "tcgplayer" ? "tcgplayer" : "ebay"}.csv?batch=${b.id}" target="_blank" title="Export this batch's inventory rows as a ${b.platform === "tcgplayer" ? "TCGplayer" : "eBay"} file">CSV</a>` : ""
+        }</td>
       </tr>`;
     })
     .join("");
@@ -618,12 +620,28 @@ export async function renderScan(
     ? "Price a binder page, a stack, or a list against the catalog. Nothing is added to inventory, and the priced list can be shared by link."
     : "Upload photos or paste a list. Every card is identified against the catalog, scored for confidence, and anything uncertain waits in review before it reaches inventory.";
 
-  // Fields that only matter when cards are going into stock.
+  // Fields that only matter when cards are going into stock: CardUploader's
+  // Ungraded Cards SETUP block — Platform, listing defaults (condition is in the
+  // row above), start price, SKU prefix + increment, store category. The
+  // values ride along with every upload chunk and are stamped on the batch.
   const stockFields = priceMode
     ? ""
-    : `<div class="fld-row">
-            <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
-            <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12"></label>
+    : `<div class="setup-block">
+            <div class="sb-head"><b>Setup</b><span class="hint">listing defaults for this batch — saved to Configuration when "save as my defaults" is ticked</span></div>
+            <div class="fld-row">
+              <label class="fld"><span>Platform <small>where this batch is going</small></span><select name="platform">${opt("ebay-fixed", "eBay Fixed Price", "ebay-fixed")}${opt("ebay-auction", "eBay Auctions", "ebay-fixed")}${opt("tcgplayer", "TCGplayer", "ebay-fixed")}</select></label>
+              <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
+              <label class="fld"><span>Start price ($) <small>optional · one price for every card; blank = the rule</small></span><input type="text" name="start_price" value="" class="mono" inputmode="decimal" placeholder="0.99"></label>
+            </div>
+            <div class="fld-row">
+              <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12" class="mono"></label>
+              <label class="fld"><span>Store category <small>your eBay Store category id</small></span><input type="text" name="store_category" value="${esc(seller.ebay_store_category ?? "")}" class="mono" inputmode="numeric" placeholder="optional"></label>
+            </div>
+            <div class="ckrow">
+              <input type="hidden" name="sku_increment_present" value="1">
+              <label class="ckbox sm"><input type="checkbox" name="sku_increment" value="1" checked> <span>Increment <small>${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}, -${String(seller.sku_next + 1).padStart(seller.sku_pad, "0")}… · unticked = every card is just "${esc(seller.sku_prefix)}" (a box label)</small></span></label>
+              <label class="ckbox sm"><input type="checkbox" name="save_defaults" value="1"> <span>Save condition, language and rule as my defaults</span></label>
+            </div>
           </div>`;
   const languageField = priceMode
     ? ""
@@ -850,10 +868,25 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
 
   const priceHint = `${market != null ? `mkt ${money(market)}` : "no market price"}${item.prev_price_cents != null ? ` · <span class="prev">you listed at ${money(item.prev_price_cents)}</span>` : ""}`;
 
-  return `<div class="review-item status-${item.status}" data-item="${item.id}" tabindex="0">
+  // Data for the Card Comparison & Search modal (APP_JS): your photo vs the
+  // matched catalog card, the confidence, and the alternatives with their %.
+  const cmpAttrs = [
+    `data-action="${action}"`,
+    `data-scan="${esc(item.image_url ?? "")}"`,
+    `data-catalog="${esc(vf ? vf.image_large || vf.image_small || "" : "")}"`,
+    `data-name="${esc(vf ? vf.card_name : "")}"`,
+    `data-raw="${esc(item.raw_input)}"`,
+    `data-sub="${esc(vf ? `${vf.set_name}${vf.number ? " · #" + vf.number : ""} · ${vf.finish_label}` : "")}"`,
+    `data-conf="${vf ? Math.round(item.ai_confidence * 100) : ""}"`,
+    `data-vid="${item.matched_variant_id ?? ""}"`,
+    `data-alts="${esc(JSON.stringify(alts))}"`,
+  ].join(" ");
+
+  return `<div class="review-item status-${item.status}" data-item="${item.id}" tabindex="0" ${cmpAttrs}>
     <div class="ri-left">
       <div class="ri-thumb${item.image_url ? " is-scan" : ""}">${scanImg ? `<img src="${esc(scanImg)}" alt="" loading="lazy">` : `<span class="noimg">?</span>`}${item.image_url ? `<span class="scan-tag">your scan</span>` : ""}</div>
       ${confBadge(item)}
+      <button type="button" class="btn sm ri-compare" title="Compare your photo with the matched card, see alternatives, search and replace">Compare</button>
       ${imageControl(item, batch)}
     </div>
     <div class="ri-mid">
@@ -962,8 +995,14 @@ export async function renderReview(batchId: number, filterTab: string | undefine
       </div>
     </details>`;
 
+  // The batch's Platform decides which file "Export batch" writes (rows reach
+  // the file once they are in inventory, i.e. after "Add to inventory").
+  const platformLabel = batch.platform === "tcgplayer" ? "TCGplayer" : batch.platform === "ebay-auction" ? "eBay Auctions" : "eBay Fixed Price";
+  const exportHref = `/app/export/${batch.platform === "tcgplayer" ? "tcgplayer" : "ebay"}.csv?batch=${batch.id}`;
+  const exportBtn = `<a class="btn" href="${exportHref}" target="_blank" title="Every card of this batch that is in inventory, as a ${platformLabel} file${batch.store_category ? ` · store category ${esc(batch.store_category)}` : ""}">Export batch → ${platformLabel === "TCGplayer" ? "TCGplayer" : "eBay"} CSV</a>`;
+
   const html = `<div class="wrap ws">
-    ${wsHead("scan", `Review batch #${batch.id}`, esc(batch.label || "Identify, correct, price, then add to inventory."), `<a class="btn" href="/app/scan">New batch</a>`, { navMode: "collapsed" })}
+    ${wsHead("scan", `Review batch #${batch.id}`, `${esc(batch.label || "Identify, correct, price, then add to inventory.")} <span class="chip">${platformLabel}</span>`, `${exportBtn}<a class="btn" href="/app/scan">New batch</a>`, { navMode: "collapsed" })}
     ${flash(msg)}
     <div class="batch-progress">
       <div class="bp-bar"><div class="bp-fill" style="width:${pctDone}%"></div></div>
@@ -1524,7 +1563,8 @@ export function dropzone(opts: { max: number; pro: boolean; what: string }): str
             <div class="dz-preview" id="dzPreview" hidden></div>
           </label>
           <div class="dz-layout" role="radiogroup" aria-label="What is in each photo?">
-            <label><input type="radio" name="layout" value="single" checked> <span><b>One card per photo</b> <small>phone shots or scanner images, one card each</small></span></label>
+            <label><input type="radio" name="layout" value="single" checked> <span><b>1 image</b> — one card per photo <small>phone shots or scanner images, front side only</small></span></label>
+            <label><input type="radio" name="layout" value="pairs"> <span><b>2 images</b> — front and back pairs <small>photos are taken in order: front, back, front, back… (an even number); the back is kept as the card's condition photo. <button type="button" class="btn sm" id="dzSwap" hidden>Swap all</button></small></span></label>
             <label><input type="radio" name="layout" value="multi"> <span><b>Several cards per photo</b> <small>binder pages or loose cards on a plain background — each card is found and cropped on your device, so a 9-pocket page counts as 9 cards</small></span></label>
           </div>`;
 }
@@ -1565,6 +1605,10 @@ export const APP_JS = `<script>(function(){
     function baseName(n){n=n||'photo';var i=n.lastIndexOf('.');return i>0?n.slice(0,i):n;}
     function layout(){var r=upForm&&upForm.querySelector('input[name=layout]:checked');return r?r.value:'single';}
     function multi(){return layout()==='multi'&&canShrink;}
+    // "2 images": photos pair up in selection order (front, back, front, back…);
+    // Swap all flips which of each pair is the front.
+    var swapped=false, swapBtn=document.getElementById('dzSwap');
+    function pairs(){return layout()==='pairs';}
     function rectsOf(f){var d=det[key(f)];return d&&d.rects&&d.rects.length>1?d.rects:null;}
     function cardsOf(f){var r=multi()?rectsOf(f):null;return r?r.length:1;}
     function resetJob(){job=null;var b=document.getElementById('dzBar');if(b)b.hidden=true;}
@@ -1579,7 +1623,8 @@ export const APP_JS = `<script>(function(){
       var n=picked.length, total=0, biggest=0, cards=0;
       for(var i=0;i<n;i++){var s=picked[i].size||0;total+=s;if(s>biggest)biggest=s;cards+=cardsOf(picked[i]);}
       var over=[];
-      if(cards>maxFiles)over.push(cards+(multi()?' cards across '+n+' photos':' photos selected')+' — max '+maxFiles+' per upload');
+      if(pairs()){cards=Math.floor(n/2);if(n%2)over.push(n+' photos — front and back pairs need an even number');}
+      if(cards>maxFiles)over.push(cards+(multi()?' cards across '+n+' photos':pairs()?' cards ('+n+' photos)':' photos selected')+' — max '+maxFiles+' per upload');
       if(canChunk){if(biggest>maxBytes)over.push('one photo is '+mb(biggest)+' — max '+mb(maxBytes)+' per photo');}
       else if(total>maxBytes)over.push(mb(total)+' selected — max '+mb(maxBytes)+' per upload');
       return {n:n,cards:cards,total:total,msg:over.join(' · ')};
@@ -1592,12 +1637,14 @@ export const APP_JS = `<script>(function(){
         else if(!n)txt='No photos selected yet';
         else if(m&&detecting)txt='Finding cards… '+Object.keys(det).length+' of '+n+' photos scanned';
         else if(m)txt=n+' photo'+(n>1?'s':'')+' · '+c.cards+' card'+(c.cards===1?'':'s')+' found · '+mb(c.total);
+        else if(pairs())txt=n+' photos · '+c.cards+' card'+(c.cards===1?'':'s')+' (front + back) · '+mb(c.total);
         else txt=n+' photo'+(n>1?'s':'')+' ready · '+mb(c.total);
         cnt.textContent=txt; cnt.classList.toggle('is-over',bad);
       }
       dz.classList.toggle('over',bad);
       if(btn)btn.disabled = n===0||bad||(m&&detecting);
       if(clearBtn)clearBtn.hidden = n===0;
+      if(swapBtn)swapBtn.hidden = !(pairs()&&n>1);
       if(prev){
         prev.innerHTML=''; prev.hidden = n===0;
         for(var i=0;i<Math.min(n,24);i++){(function(f){
@@ -1605,6 +1652,7 @@ export const APP_JS = `<script>(function(){
             var u=URL.createObjectURL(f),wrap=document.createElement('span');wrap.className='dz-thumb';
             var im=document.createElement('img');im.src=u;im.onload=function(){URL.revokeObjectURL(u);};wrap.appendChild(im);
             if(m&&det[key(f)]){var r=rectsOf(f),b=document.createElement('i');b.className='dz-badge'+(r?'':' none');b.textContent=r?String(r.length):'1';b.title=r?r.length+' cards found':'no separate cards found — sent as one card';wrap.appendChild(b);}
+            if(pairs()){var isBack=((i%2===1)!==swapped),pb=document.createElement('i');pb.className='dz-badge'+(isBack?' back':'');pb.textContent=isBack?'B':'F';pb.title=isBack?'back':'front';wrap.appendChild(pb);if(isBack)wrap.classList.add('pair-b');}
             prev.appendChild(wrap);
           }catch(e){}
         })(picked[i]);}
@@ -1617,6 +1665,7 @@ export const APP_JS = `<script>(function(){
     if(cam){cam.addEventListener('change',function(){addFiles(cam.files||[]);if(canChunk)cam.value='';});}
     if(camBtn&&cam)camBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();cam.click();});
     if(clearBtn)clearBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();picked=[];resetJob();render();});
+    if(swapBtn)swapBtn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();swapped=!swapped;resetJob();render();});
     ['dragenter','dragover'].forEach(function(ev){dz.addEventListener(ev,function(e){e.preventDefault();dz.classList.add('drag');});});
     ['dragleave','drop'].forEach(function(ev){dz.addEventListener(ev,function(e){e.preventDefault();dz.classList.remove('drag');});});
     dz.addEventListener('drop',function(e){if(e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files.length)addFiles(e.dataTransfer.files);});
@@ -1767,6 +1816,11 @@ export const APP_JS = `<script>(function(){
     // card cut out of a photo (rect set, from the binder-page scan above).
     function unitsOf(){
       var out=[];
+      if(pairs()){
+        // front/back pairs in selection order; a unit is the front with its back riding along
+        for(var i=0;i+1<picked.length;i+=2){var a=picked[i],b=picked[i+1],fr=swapped?b:a,bk=swapped?a:b;out.push({file:fr,rect:null,name:fr.name||'front.jpg',back:bk});}
+        return out;
+      }
       picked.forEach(function(f){
         var r=multi()?rectsOf(f):null;
         if(r)r.forEach(function(rc,i){out.push({file:f,rect:rc,name:baseName(f.name)+'-'+(i+1)+'.jpg'});});
@@ -1827,6 +1881,11 @@ export const APP_JS = `<script>(function(){
           while(active<3&&k<byFile.length){(function(g){active++;shrinkUnits(g.file,g.idx.map(function(j){return units[j];})).then(function(res){g.idx.forEach(function(j,n){out[j]=res[n];});active--;next();});})(byFile[k++]);}
         }
         next();
+      }).then(function(fronts){
+        // pairs mode: shrink each back too and attach it to its front
+        var p=Promise.resolve();
+        units.forEach(function(u,i){if(!u.back)return;p=p.then(function(){return shrinkUnits(u.back,[{file:u.back,rect:null,name:u.back.name||'back.jpg'}]).then(function(res){fronts[i].back=res[0];});});});
+        return p.then(function(){return fronts;});
       });
     }
     function warn(e){e.preventDefault();e.returnValue='';}
@@ -1845,7 +1904,7 @@ export const APP_JS = `<script>(function(){
           if(gi+1<groups.length)prepped(gi+1);
           return prepped(gi).then(function(items){
             progress(job.done,total,'Uploading '+(job.done+1)+'–'+(job.done+g.length)+' of '+total+'…');
-            var fd=fieldsOf(); items.forEach(function(it){fd.append('images',it.blob,it.name);});
+            var fd=fieldsOf(); items.forEach(function(it){fd.append('images',it.blob,it.name);if(it.back)fd.append('backs',it.back.blob,it.back.name);});
             return post(base+'/'+id+'/chunk',fd,2);
           }).then(function(){job.prepped[gi]=null;job.next=gi+1;job.done+=g.length;progress(job.done,total,job.done+' of '+total+' identified');});
         });});
@@ -1869,6 +1928,75 @@ export const APP_JS = `<script>(function(){
       run();
     });
     render();
+  }
+
+  // ---- Card Comparison & Search (review page) ----
+  // CardUploader's modal: your photo beside the matched catalog card with its
+  // confidence, the alternatives with their %, a search box, Replace, and
+  // ←/→ to walk the batch. Built from the data-* attributes on each row.
+  var cmpItems=Array.prototype.slice.call(document.querySelectorAll('.review-item[data-action]'));
+  if(cmpItems.length){
+    var cm=document.createElement('div');cm.className='cmp-modal';cm.hidden=true;
+    cm.innerHTML='<div class="cmp-box" role="dialog" aria-modal="true" aria-label="Card comparison and search">'
+      +'<div class="cmp-head"><div><h2 class="cmp-title"></h2><div class="cmp-sub"></div></div><div class="cmp-nav"><span class="hint cmp-count"></span><button type="button" class="btn sm cmp-prev" title="Previous card (left arrow)">&#8249;</button><button type="button" class="btn sm cmp-next" title="Next card (right arrow)">&#8250;</button><button type="button" class="btn sm ghost cmp-close" title="Close (Esc)">&#10005;</button></div></div>'
+      +'<div class="cmp-grid"><div class="cmp-pane"><div class="lbl">Your photo</div><div class="frame cmp-scan"></div></div><div class="cmp-pane"><div class="lbl">Matched card</div><div class="frame cmp-cat"></div><div class="conf cmp-conf"></div></div>'
+      +'<div class="cmp-side"><div class="lbl">Alternatives &amp; search</div><input type="search" class="cmp-q" placeholder="Search for a card (name, number, set)…" aria-label="Search cards"><div class="cmp-list"></div></div></div>'
+      +'<div class="cmp-foot"><span class="hint">up/down pick · Enter replace · left/right next card · Esc close</span><label class="ckbox sm"><input type="checkbox" class="cmp-cont" checked> continue to next card</label><button type="button" class="btn ghost cmp-cancel">Cancel</button><button type="button" class="btn primary cmp-replace" disabled>Replace card</button></div></div>';
+    document.body.appendChild(cm);
+    var cur=-1, sel=null, list=cm.querySelector('.cmp-list'), q=cm.querySelector('.cmp-q'), rep=cm.querySelector('.cmp-replace'), qt;
+    function img(el,src){el.innerHTML=src?'<img src="'+src+'" alt="">':'<span>no image</span>';}
+    function altEl(a,current){
+      var b=document.createElement('button');b.type='button';b.className='cmp-alt'+(current?' current':'');b.setAttribute('data-vid',a.variant_id);
+      b.innerHTML=(a.image?'<img src="'+a.image+'" alt="">':'<span></span>')+'<span><div class="l"></div><div class="s"></div></span><span class="pct"></span>';
+      b.querySelector('.l').textContent=a.label||'';b.querySelector('.s').textContent=(a.set||'')+(a.finish?' · '+a.finish:'');
+      b.querySelector('.pct').textContent=current?'current':(a.score!=null&&a.score!==''?a.score+'%':'');
+      b.addEventListener('click',function(){select(b);});b.addEventListener('dblclick',function(){select(b);replace();});
+      return b;
+    }
+    function select(b){list.querySelectorAll('.cmp-alt').forEach(function(x){x.classList.remove('selected');});sel=b;if(b){b.classList.add('selected');b.scrollIntoView({block:'nearest'});}rep.disabled=!b||b.classList.contains('current');}
+    function show(i){
+      if(i<0||i>=cmpItems.length)return;cur=i;var it=cmpItems[i],d=it.dataset;
+      cm.querySelector('.cmp-title').textContent=d.name||d.raw||'Unmatched card';cm.querySelector('.cmp-sub').textContent=d.name?d.sub:'no catalog match yet — search on the right';
+      cm.querySelector('.cmp-count').textContent=(i+1)+' of '+cmpItems.length;
+      img(cm.querySelector('.cmp-scan'),d.scan);img(cm.querySelector('.cmp-cat'),d.catalog);
+      cm.querySelector('.cmp-conf').textContent=d.conf?d.conf+'% match':'no match yet';
+      list.innerHTML='';sel=null;rep.disabled=true;q.value='';
+      var alts=[];try{alts=JSON.parse(d.alts||'[]');}catch(e){}
+      if(d.name)list.appendChild(altEl({variant_id:d.vid,label:d.name,set:d.sub,finish:'',image:d.catalog,score:d.conf},true));
+      alts.forEach(function(a){list.appendChild(altEl(a,false));});
+      cm.querySelector('.cmp-prev').disabled=i===0;cm.querySelector('.cmp-next').disabled=i===cmpItems.length-1;
+      cm.hidden=false;document.body.style.overflow='hidden';
+    }
+    function close(){cm.hidden=true;document.body.style.overflow='';}
+    function replace(){
+      if(!sel||sel.classList.contains('current'))return;var it=cmpItems[cur];
+      var f=document.createElement('form');f.method='post';f.action=it.dataset.action;
+      f.innerHTML='<input type="hidden" name="do" value="replace"><input type="hidden" name="variant_id">';f.querySelector('[name=variant_id]').value=sel.getAttribute('data-vid');
+      // reopen on the next card once the page comes back
+      try{if(cm.querySelector('.cmp-cont').checked&&cur+1<cmpItems.length)sessionStorage.setItem('ci-cmp-next',cmpItems[cur+1].getAttribute('data-item'));}catch(e){}
+      document.body.appendChild(f);f.submit();
+    }
+    q.addEventListener('input',function(){clearTimeout(qt);var v=q.value.trim();if(v.length<2)return;qt=setTimeout(function(){
+      fetch('/api/identify?q='+encodeURIComponent(v)).then(function(r){return r.json();}).then(function(rows){
+        list.innerHTML='';sel=null;rep.disabled=true;
+        if(!rows.length){list.innerHTML='<div class="mnone">No matches</div>';return;}
+        rows.forEach(function(r){list.appendChild(altEl(r,false));});
+      }).catch(function(){});},160);});
+    cm.querySelector('.cmp-close').addEventListener('click',close);cm.querySelector('.cmp-cancel').addEventListener('click',close);
+    cm.querySelector('.cmp-prev').addEventListener('click',function(){show(cur-1);});cm.querySelector('.cmp-next').addEventListener('click',function(){show(cur+1);});
+    rep.addEventListener('click',replace);
+    cm.addEventListener('click',function(e){if(e.target===cm)close();});
+    document.addEventListener('keydown',function(e){
+      if(cm.hidden)return;
+      if(e.key==='Escape'){close();return;}
+      if(e.target===q&&(e.key==='ArrowLeft'||e.key==='ArrowRight'))return;
+      if(e.key==='ArrowLeft'){e.preventDefault();show(cur-1);}
+      else if(e.key==='ArrowRight'){e.preventDefault();show(cur+1);}
+      else if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();var all=Array.prototype.slice.call(list.querySelectorAll('.cmp-alt'));if(!all.length)return;var i=all.indexOf(sel);i=e.key==='ArrowDown'?Math.min(all.length-1,i+1):Math.max(0,i-1);select(all[i]);}
+      else if(e.key==='Enter'&&e.target!==q){e.preventDefault();replace();}
+    });
+    cmpItems.forEach(function(it,i){var b=it.querySelector('.ri-compare');if(b)b.addEventListener('click',function(){show(i);});});
+    try{var nx=sessionStorage.getItem('ci-cmp-next');if(nx){sessionStorage.removeItem('ci-cmp-next');var idx=-1;cmpItems.forEach(function(x,i){if(x.getAttribute('data-item')===nx)idx=i;});if(idx>=0)show(idx);}}catch(e){}
   }
 
   // auto-submit selects that change price/title (save the row)

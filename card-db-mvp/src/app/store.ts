@@ -65,6 +65,11 @@ export async function ensureWorkspaceSchema(): Promise<void> {
   await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS price_floor_cents integer`);
   await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS description_templates jsonb`);
   await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS channel_prefs jsonb`);
+  // SKUs are no longer unique per seller: with "Increment" unticked on the upload
+  // page every card in a batch carries the bare prefix as a box label (the way
+  // CardUploader's SKU prefix works). A plain index keeps SKU lookups fast.
+  await query(`ALTER TABLE inventory DROP CONSTRAINT IF EXISTS inventory_seller_id_sku_key`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_inv_sku ON inventory(seller_id, sku)`);
   // eBay Best Offer: the seller's default for new listings + the per-listing flag
   await query(`ALTER TABLE sellers ADD COLUMN IF NOT EXISTS best_offer boolean NOT NULL DEFAULT false`);
   await query(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS best_offer boolean NOT NULL DEFAULT false`);
@@ -77,6 +82,10 @@ export async function ensureWorkspaceSchema(): Promise<void> {
   // batch kind (scan | graded | creator | pricing) + public share token for pricing batches
   await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'scan'`);
   await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS share_token text`);
+  // per-batch setup (CardUploader's Ungraded Cards setup page): platform, store category, SKU increment
+  await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS platform text`);
+  await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS store_category text`);
+  await query(`ALTER TABLE scan_batches ADD COLUMN IF NOT EXISTS sku_increment boolean`);
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_batches_share ON scan_batches(share_token) WHERE share_token IS NOT NULL`);
   // blank listings have no inventory row
   await query(`ALTER TABLE listings ALTER COLUMN inventory_id DROP NOT NULL`);
@@ -123,6 +132,9 @@ export type ScanBatch = {
   finished_at: string | null;
   kind: string; // scan | graded | creator | pricing
   share_token: string | null;
+  platform: string | null; // ebay-fixed | ebay-auction | tcgplayer — the batch's "Platform" (export target)
+  store_category: string | null; // eBay Store category id for this batch (overrides the seller default)
+  sku_increment: boolean | null; // false = every card gets the bare prefix (a box label), no counter
 };
 
 export type ScanItem = {
@@ -312,13 +324,24 @@ export async function previousPrice(variantId: number, condition: string): Promi
 
 // ---- scan batches & items -------------------------------------------------
 
-export async function createBatch(source: string, label: string | null, kind = "scan"): Promise<number> {
+export type BatchSetup = { platform?: string | null; store_category?: string | null; sku_increment?: boolean | null };
+
+export async function createBatch(source: string, label: string | null, kind = "scan", setup: BatchSetup = {}): Promise<number> {
   const r = await one<{ id: number }>(
-    `INSERT INTO scan_batches(seller_id, source, label, status, total, processed, created_at, kind)
-     VALUES ($1, $2, $3, 'processing', 0, 0, $4, $5) RETURNING id`,
-    [currentSellerId(), source, label, nowIso(), kind]
+    `INSERT INTO scan_batches(seller_id, source, label, status, total, processed, created_at, kind, platform, store_category, sku_increment)
+     VALUES ($1, $2, $3, 'processing', 0, 0, $4, $5, $6, $7, $8) RETURNING id`,
+    [currentSellerId(), source, label, nowIso(), kind, setup.platform ?? null, setup.store_category ?? null, setup.sku_increment ?? null]
   );
   return r!.id;
+}
+
+/** Inventory rows that came out of one batch (via scan_items.source_item_id), for per-batch exports. */
+export function inventoryForBatch(batchId: number): Promise<InventoryRow[]> {
+  return query<InventoryRow>(
+    `SELECT i.* FROM inventory i JOIN scan_items s ON s.id = i.source_item_id
+     WHERE i.seller_id=$1 AND s.batch_id=$2 ORDER BY i.id`,
+    [currentSellerId(), batchId]
+  );
 }
 
 /**
@@ -423,7 +446,7 @@ export async function addItemFromIdentify(
   raw: string,
   result: IdentifyResult,
   seller: Seller,
-  opts: { imageUrl?: string | null; backImageUrl?: string | null; grade?: string | null; grader?: string | null; cert?: string | null } = {}
+  opts: { imageUrl?: string | null; backImageUrl?: string | null; grade?: string | null; grader?: string | null; cert?: string | null; sku?: string | null } = {}
 ): Promise<number> {
   const best = result.best;
   const condition = seller.default_condition;
@@ -446,8 +469,8 @@ export async function addItemFromIdentify(
     `INSERT INTO scan_items(
       batch_id, seller_id, raw_input, image_url, back_image_url, matched_card_id, matched_variant_id,
       ai_confidence, alternatives, status, condition, language, quantity,
-      price_mode, price_pct, price_cents, prev_price_cents, created_at, grade, grader, cert)
-     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21) RETURNING id`,
+      price_mode, price_pct, price_cents, prev_price_cents, created_at, grade, grader, cert, sku)
+     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22) RETURNING id`,
     [
       batchId,
       raw,
@@ -470,6 +493,7 @@ export async function addItemFromIdentify(
       grade,
       grader,
       opts.cert ?? null,
+      opts.sku ?? null,
     ]
   );
   return r!.id;

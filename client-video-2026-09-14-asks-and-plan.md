@@ -92,6 +92,8 @@
 
 ## 3. The plan, easiest → hardest
 
+> **Status (Sept 19, 2026):** Tier 0 and Tier 1 are done (commit `2a1ec43`). Tier 2 items 8, 9, 10 and 11 are built (setup block, front/back pairing, comparison modal, results-row link-outs + per-batch export); item 12 waits on the client's eBay keyset and item 13 on the plan-price decision.
+
 ### Tier 0 — decision + restore (½–1 day)
 **Restore the seller workspace from `2e6de1b`.** Bring back the modules listed in §0, re-add the `/app` routes and POST handlers in `server.ts`, keep the current `/collection` buyer pages if the user wants both (they share `scan_batches`/`scan_items`), and keep the uncommitted binder-page detector — it is exactly the "several cards per photo" upload the client will use. Hide **Orders** behind a flag (client: not yet). Re-run the Sept 13 smoke script.
 

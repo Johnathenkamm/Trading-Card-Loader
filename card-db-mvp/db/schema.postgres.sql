@@ -313,7 +313,9 @@ CREATE TABLE IF NOT EXISTS scan_items (
   created_at         timestamptz NOT NULL DEFAULT now()
 );
 
--- Confirmed stock. Every physical card gets a unique SKU per seller.
+-- Confirmed stock. SKUs normally increment (PREFIX-000001) but are NOT unique:
+-- with "Increment" unticked on the upload page every card in a batch carries
+-- the bare prefix as a box label (CardUploader's SKU prefix behaviour).
 CREATE TABLE IF NOT EXISTS inventory (
   id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   seller_id      bigint  NOT NULL REFERENCES sellers(id) ON DELETE CASCADE,
@@ -332,9 +334,9 @@ CREATE TABLE IF NOT EXISTS inventory (
   status         text    NOT NULL DEFAULT 'in_stock',   -- in_stock | listed | sold
   source_item_id bigint  REFERENCES scan_items(id) ON DELETE SET NULL,
   created_at     timestamptz NOT NULL DEFAULT now(),
-  updated_at     timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (seller_id, sku)
+  updated_at     timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_inv_sku ON inventory(seller_id, sku);
 
 -- "Remember previous prices." One row per (variant, condition) sale/list event.
 CREATE TABLE IF NOT EXISTS inventory_price_history (

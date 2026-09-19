@@ -56,7 +56,7 @@ import {
   getConnection, publishListing, endListing, syncQuantityForInventory, fetchOpenOrders, markShippedOnEbay, touchOrderSync, EbayError,
   startScheduler, runScheduledPublishes,
 } from "./app/ebay-sell.ts";
-import { scheduleListing, setListingsBestOffer, setListingsStatus } from "./app/store.ts";
+import { scheduleListing, setListingsBestOffer, setListingsStatus, inventoryForBatch, type BatchSetup } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
 import { startSoldSampleOnBoot, importSoldFeed, parseFeedText, readFeedFile, soldArchiveSummary, deleteSoldSource, SAMPLE_FEED, SAMPLE_SOURCE } from "./app/soldimport.ts";
@@ -331,6 +331,26 @@ async function matchingFromForm(f: Record<string, string>): Promise<MatchingPref
   if (f.save_matching === "1") await updateSeller({ matching_prefs: serializeMatchingPrefs(prefs) });
   return prefs;
 }
+/**
+ * The upload page's Setup block (CardUploader's Ungraded Cards setup): the
+ * batch's platform, eBay store category and whether SKUs increment. The
+ * increment checkbox travels with a "present" flag so forms without the block
+ * (graded, owner uploader) keep the counter behaviour.
+ */
+function batchSetupFrom(f: Record<string, string>): BatchSetup {
+  const platform = ["ebay-fixed", "ebay-auction", "tcgplayer"].includes(f.platform ?? "") ? f.platform : null;
+  const store_category = (f.store_category ?? "").trim().slice(0, 40) || null;
+  const sku_increment = f.sku_increment_present === "1" ? f.sku_increment === "1" : null;
+  return { platform, store_category, sku_increment };
+}
+/** With "Increment" unticked every card in the batch carries the bare prefix (a box label) instead of a counter. */
+const fixedSku = (setup: BatchSetup, seller: Seller): string | null => (setup.sku_increment === false ? seller.sku_prefix : null);
+/** "Start price": one price for every card in the batch (CardUploader's default starting price). */
+const startPriceView = (f: Record<string, string>): Partial<Seller> => {
+  const c = toCents(f.start_price);
+  return c != null && c > 0 ? { price_mode: "fixed", price_pct: 0, price_fixed_cents: c } : {};
+};
+
 /** Matching options for a batch: the saved/typed Advanced Matching prefs plus the batch's game ("Database" select). */
 const identifyOpts = (p: MatchingPrefs, game?: string): IdentifyOptions => {
   const g = (game ?? "").trim().toLowerCase();
@@ -369,8 +389,9 @@ async function handleScan(f: Record<string, string>, kind = "scan"): Promise<str
     await updateSeller({ default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct });
   }
   const matching = identifyOpts(await matchingFromForm(f), f.game);
+  const setup = batchSetupFrom(f);
 
-  const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
+  const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct, ...startPriceView(f) };
 
   const lines = (f.lines || "")
     .split(/\r?\n/)
@@ -380,10 +401,10 @@ async function handleScan(f: Record<string, string>, kind = "scan"): Promise<str
 
   if (!lines.length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Paste at least one card line.");
 
-  const batchId = await createBatch("paste", f.label?.trim() || null, kind);
+  const batchId = await createBatch("paste", f.label?.trim() || null, kind, setup);
   for (const line of lines) {
     const result = await identify(line, matching);
-    await addItemFromIdentify(batchId, line, result, seller);
+    await addItemFromIdentify(batchId, line, result, seller, { sku: fixedSku(setup, seller) });
   }
   await detectDuplicates(batchId);
   await finalizeBatch(batchId);
@@ -565,7 +586,7 @@ async function uploadSettings(fields: Record<string, string>, persist: boolean):
   }
   const f = persist ? fields : { ...fields, save_matching: "" };
   const matching = identifyOpts(await matchingFromForm(f), f.game);
-  const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct };
+  const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct, ...startPriceView(f) };
   return { seller, matching };
 }
 
@@ -574,32 +595,52 @@ const uploadImages = (files: UploadedFile[]): UploadedFile[] => files.filter((f)
 /** Open a photo batch (chunked upload step 1). Persists any "save as default" choices. */
 async function startScanUpload(fields: Record<string, string>, kind: string): Promise<number> {
   await uploadSettings(fields, true);
-  return createBatch("upload", fields.label?.trim() || null, kind);
+  return createBatch("upload", fields.label?.trim() || null, kind, batchSetupFrom(fields));
+}
+
+/**
+ * Pair fronts with backs for the "2 images" layout. The dropzone script sends
+ * each pair as an `images` file plus a `backs` file in the same order; the
+ * no-script form sends one `images` list in shooting order (front, back, …),
+ * so consecutive photos pair up. Anything else is front-only.
+ */
+function pairPhotos(fields: Record<string, string>, files: UploadedFile[]): Array<{ front: UploadedFile; back: UploadedFile | null }> {
+  const fronts = uploadImages(files);
+  const backs = files.filter((f) => f.field === "backs" && isImage(f));
+  if (backs.length) return fronts.map((front, i) => ({ front, back: backs[i] ?? null }));
+  if (fields.layout === "pairs" && fronts.length >= 2) {
+    const out: Array<{ front: UploadedFile; back: UploadedFile | null }> = [];
+    for (let i = 0; i < fronts.length; i += 2) out.push({ front: fronts[i], back: fronts[i + 1] ?? null });
+    return out;
+  }
+  return fronts.map((front) => ({ front, back: null }));
 }
 
 /**
  * Store + identify photos into an open batch (chunked upload step 2, repeated).
- * `room` is how many more photos the batch may take; extras are dropped.
- * Returns the number added.
+ * `room` is how many more cards the batch may take; extras are dropped.
+ * Returns the number of cards added (a front+back pair is one card).
  */
 async function ingestScanPhotos(batchId: number, fields: Record<string, string>, files: UploadedFile[], room: number): Promise<number> {
-  const imgs = uploadImages(files).slice(0, Math.max(0, room));
-  if (!imgs.length) return 0;
+  const units = pairPhotos(fields, files).slice(0, Math.max(0, room));
+  if (!units.length) return 0;
   const { seller, matching } = await uploadSettings(fields, false);
+  const setup = batchSetupFrom(fields);
   const store = storage();
-  for (const file of imgs) {
-    const put = await store.put(keyFor(seller.id, file.filename), file.data, file.contentType);
+  for (const { front, back } of units) {
+    const put = await store.put(keyFor(seller.id, front.filename), front.data, front.contentType);
+    const putBack = back ? await store.put(keyFor(seller.id, back.filename), back.data, back.contentType) : null;
     // Vision provider reads the card (pixels → labels → catalog match); falls back
     // to the filename hint when no provider is configured (see app/vision.ts).
-    const { result: r0, hintText } = await visionIdentify({ data: file.data, filename: file.filename, contentType: file.contentType }, matching);
+    const { result: r0, hintText } = await visionIdentify({ data: front.data, filename: front.filename, contentType: front.contentType }, matching);
     // An uploaded photo we couldn't auto-match isn't a failure — it's a review
     // task with the image in hand, so route "failed" → "needs_review".
     const result = r0.status === "failed" ? { ...r0, status: "needs_review" as const } : r0;
     // Show the recognizer's reading (or the filename) as the item's raw label.
-    await addItemFromIdentify(batchId, hintText || file.filename, result, seller, { imageUrl: put.url });
+    await addItemFromIdentify(batchId, hintText || front.filename, result, seller, { imageUrl: put.url, backImageUrl: putBack?.url ?? null, sku: fixedSku(setup, seller) });
   }
-  await bumpBatchProgress(batchId, imgs.length);
-  return imgs.length;
+  await bumpBatchProgress(batchId, units.length);
+  return units.length;
 }
 
 /** Close a photo batch (chunked upload step 3): duplicates, totals, titles. Returns the landing URL. */
@@ -1096,13 +1137,23 @@ function serveUpload(res: ServerResponse, path: string): void {
  * listing ids, `all=1` = every inventory row plus every blank listing draft.
  */
 async function exportCsv(res: ServerResponse, url: URL, fmt: string): Promise<void> {
-  const seller = await getSeller();
+  const base = await getSeller();
   const all = url.searchParams.get("all") === "1";
-  const invIds = all ? (await listInventory({})).map((r) => r.id) : (url.searchParams.get("ids") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
+  // `batch=` exports one batch's inventory rows with the batch's own setup
+  // (eBay Auctions → auction rows; its store category over the seller default).
+  const batchId = intOr(url.searchParams.get("batch"), 0);
+  const batch = batchId ? await getBatch(batchId) : null;
+  const invIds = all
+    ? (await listInventory({})).map((r) => r.id)
+    : batch
+    ? (await inventoryForBatch(batch.id)).map((r) => r.id)
+    : (url.searchParams.get("ids") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
   const listingIds = (url.searchParams.get("listings") || "").split(",").map((s) => intOr(s, 0)).filter(Boolean);
   const invs = (await Promise.all(invIds.map((id) => getInventoryItem(id)))).filter((x): x is NonNullable<typeof x> => !!x);
-  const blanks = all ? await listBlankListings() : await getListings(listingIds);
-  const items = [...itemsFromRows(await exportRowsFor(invs, { format: "fixed" })), ...blanks.filter((l) => l.inventory_id == null).map(itemFromBlankListing)];
+  const blanks = all ? await listBlankListings() : batch ? [] : await getListings(listingIds);
+  const format = batch?.platform === "ebay-auction" ? "auction" : "fixed";
+  const seller: Seller = batch?.store_category ? { ...base, ebay_store_category: batch.store_category } : base;
+  const items = [...itemsFromRows(await exportRowsFor(invs, { format })), ...blanks.filter((l) => l.inventory_id == null).map(itemFromBlankListing)];
   const prefs = parseChannelPrefs(seller.channel_prefs);
   let csv: string;
   switch (fmt) {
