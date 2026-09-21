@@ -36,6 +36,7 @@ const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 // (85 = Pokemon Japan when a JP catalog lands).
 const CATEGORY_BY_GAME: Record<string, number> = {
   pokemon: 3,
+  onepiece: 68,
   mtg: 1,
 };
 
@@ -189,10 +190,11 @@ async function syncSet(
     priceByProduct.set(pr.productId, arr);
   }
 
+  const byId = new Map<number, TcgProduct>(products.map((p) => [p.productId, p]));
   const cards = (await query(
-    "SELECT id, name, number, number_sort FROM cards WHERE set_id=$1",
+    "SELECT id, name, number, number_sort, tcgplayer_product_id FROM cards WHERE set_id=$1",
     [set.id]
-  )) as Array<{ id: number; name: string; number: string | null; number_sort: number | null }>;
+  )) as Array<{ id: number; name: string; number: string | null; number_sort: number | null; tcgplayer_product_id: number | null }>;
 
   const day = today();
   let matched = 0;
@@ -201,11 +203,12 @@ async function syncSet(
   const unmatched: string[] = [];
 
   for (const card of cards) {
-    // product match: collector number first, card name as tie-break/fallback
-    let product: TcgProduct | undefined;
+    // product match: a stored product id is exact (cards imported from TCGCSV,
+    // or matched on an earlier run); else collector number, name as tie-break
+    let product: TcgProduct | undefined = card.tcgplayer_product_id ? byId.get(Number(card.tcgplayer_product_id)) : undefined;
     const nm = nameKey(card.name);
     const numCandidates = card.number_sort != null ? byNumber.get(card.number_sort) ?? [] : [];
-    if (numCandidates.length === 1) product = numCandidates[0];
+    if (product) { /* exact */ } else if (numCandidates.length === 1) product = numCandidates[0];
     else if (numCandidates.length > 1) {
       product =
         numCandidates.find((p) => nameKey(p.cleanName ?? p.name) === nm) ??

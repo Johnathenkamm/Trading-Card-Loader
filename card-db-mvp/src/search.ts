@@ -88,6 +88,8 @@ const GAME_WORDS: Record<string, string> = {
   mtg: "mtg",
   magic: "mtg",
   gathering: "mtg",
+  onepiece: "onepiece",
+  optcg: "onepiece",
 };
 
 type ParsedQuery = {
@@ -111,6 +113,13 @@ async function parseQuery(raw: string): Promise<ParsedQuery> {
   let terms = p.nameTerms;
 
   let gameFromQuery: string | undefined;
+  // "one piece" is two tokens; fold them before the single-word game check
+  for (let i = 0; i + 1 < terms.length; i++) {
+    if (terms[i] === "one" && terms[i + 1] === "piece") {
+      terms.splice(i, 2, "onepiece");
+      break;
+    }
+  }
   terms = terms.filter((w) => {
     if (GAME_WORDS[w] && !gameFromQuery) {
       gameFromQuery = GAME_WORDS[w];

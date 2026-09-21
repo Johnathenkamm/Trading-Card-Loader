@@ -13,6 +13,8 @@ import { MAX_UPLOAD_FILES_PRO } from "../upload.ts";
 import type { Seller } from "../app/store.ts";
 import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow } from "../app/admin.ts";
 import type { SoldArchiveSummary } from "../app/soldimport.ts";
+import type { CatalogGameStats, ImportProgress } from "../app/catalog-import.ts";
+import { EBAY_MARKETPLACES, type EbayAdminStatus } from "../app/ebay-admin.ts";
 
 type Page = { html: string; title: string; description: string };
 
@@ -63,6 +65,8 @@ function subnav(active: string): string {
     ["/admin/users", "Users", "users"],
     ["/admin/upload", "My uploader", "upload"],
     ["/admin/sold", "Sold prices", "sold"],
+    ["/admin/catalog", "Catalog", "catalog"],
+    ["/admin/ebay", "eBay", "ebay"],
     ["/admin/activity", "Activity", "activity"],
     ["/admin/feedback", "Feedback", "feedback"],
   ];
@@ -537,6 +541,177 @@ export function renderAdminSold(s: SoldArchiveSummary, msg?: string, sampleOnBoo
     ${APP_JS}
   </div>`;
   return { html, title: "Sold prices — Owner console | CardIndex", description: "Import sold-sales feeds." };
+}
+
+// ---- Catalog (games, sets, cards; TCGCSV import) ----------------------------
+// Hosted deploys have no shell to the database, so growing the catalog is a
+// button here: the import runs inside the server (src/app/catalog-import.ts)
+// and this page shows its progress; the photo-ID index follows automatically.
+
+export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress, msg?: string): Page {
+  const pct = p.groupsTotal ? Math.round((p.groupsDone / p.groupsTotal) * 100) : 0;
+  const rows = stats
+    .map(
+      (g) => `<tr>
+        <td><b>${esc(g.name)}</b><div class="sub mono">${esc(g.slug)}</div></td>
+        <td class="mono">${g.sets.toLocaleString()}</td>
+        <td class="mono">${g.cards.toLocaleString()}</td>
+        <td class="mono">${g.cards ? `${g.hashed.toLocaleString()} <span class="sub">(${Math.round((g.hashed / g.cards) * 100)}%)</span>` : "—"}</td>
+        <td class="sub" title="${esc(g.lastImport ?? "")}">${g.lastImport ? ago(g.lastImport) : g.inCatalog ? "seeded" : "not imported"}</td>
+        <td class="act">${
+          ["pokemon", "onepiece", "mtg"].includes(g.slug)
+            ? `<form method="post" action="/admin/catalog/import" class="inline"><input type="hidden" name="game" value="${esc(g.slug)}"><button class="btn sm${g.inCatalog ? "" : " primary"}" type="submit" ${p.running ? "disabled" : ""}>${g.inCatalog ? "Import new sets" : "Import"}</button><label class="ckbox sm" title="Re-import every set, not just new ones"><input type="checkbox" name="force" value="1"> force</label></form>`
+            : ""
+        }</td>
+      </tr>`
+    )
+    .join("");
+
+  const status = p.startedAt
+    ? `<div class="ws-panel">
+        <div class="ws-panel-head"><h2>${p.running ? "Importing…" : p.error ? "Last import failed" : "Last import"}</h2><span class="eyebrow">${esc(p.game ?? "")} · ${p.running ? `${p.groupsDone}/${p.groupsTotal} sets` : `finished ${ago(p.finishedAt)}`}</span></div>
+        ${p.running ? `<div class="batch-progress"><div class="bp-bar"><div class="bp-fill" style="width:${pct}%"></div></div><div class="bp-stats"><span>${pct}%</span><span>${esc(p.current ?? "")}</span></div></div>` : ""}
+        <div class="stat-cards home-stats">
+          <div class="stat"><div class="k">New sets</div><div class="v mono">${p.sets}</div></div>
+          <div class="stat"><div class="k">New cards</div><div class="v mono">${p.cardsAdded.toLocaleString()}</div><div class="s">${p.cardsUpdated.toLocaleString()} updated</div></div>
+          <div class="stat"><div class="k">Prices written</div><div class="v mono">${p.prices.toLocaleString()}</div><div class="s">${p.variants.toLocaleString()} new printings</div></div>
+          <div class="stat${p.errors ? " attn" : ""}"><div class="k">Skipped · errors</div><div class="v mono">${p.skipped} · ${p.errors}</div></div>
+        </div>
+        <pre class="import-log">${esc(p.log.slice(-30).join("\n"))}</pre>
+        ${p.running ? `<p class="hint">This page refreshes itself every 5 seconds while the import runs.</p>` : ""}
+      </div>`
+    : `<div class="ws-panel"><div class="ws-panel-head"><h2>No import yet this session</h2></div><p class="hint">Press <b>Import</b> on a game. Pokémon is ~220 TCGplayer groups (sets, promos, trainer kits) and One Piece ~90; a first import takes several minutes and then hashes every new card image for photo identification, which takes longer. Re-running only fetches sets that were not imported before; <b>force</b> refreshes everything.</p></div>`;
+
+  const html = `<div class="wrap ws">
+    ${adminHead("catalog", "Catalog", "Every game, set and card the site knows. Cards come from <b>TCGCSV</b> (TCGplayer's free daily mirror): the same product ids that price them every day and the images the photo recognizer hashes.")}
+    ${flash(msg)}
+    <div class="ws-panel">
+      <div class="ws-panel-head"><h2>Games</h2><form method="post" action="/admin/catalog/hash" class="inline"><button class="btn sm" type="submit" ${p.running ? "disabled" : ""} title="Hash every card image that isn't in the photo-ID index yet">Rebuild photo-ID index</button></form></div>
+      <div class="tablewrap"><table class="inv-table"><thead><tr><th>Game</th><th>Sets</th><th>Cards</th><th>Photo-ID index</th><th>Last import</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div>
+    ${status}
+    ${p.running ? `<meta http-equiv="refresh" content="5">` : ""}
+    ${APP_JS}
+  </div>`;
+  return { html, title: "Catalog — Owner console | CardIndex", description: "Import and refresh the card catalog." };
+}
+
+// ---- eBay integration -------------------------------------------------------
+// One page for everything eBay: the keyset (entered here, or from the env),
+// whether live listings + prices (Browse API) and the seller link (Sell APIs)
+// can run, a live search test, and how much eBay data the site holds.
+
+type EbayConnRow = { seller_id: number; display_name: string; email: string | null; ebay_user: string | null; marketplace: string; connected_at: string; last_policy_sync: string | null; last_order_sync: string | null; last_sold_harvest: string | null; published: number };
+
+export function renderAdminEbay(s: EbayAdminStatus, conns: EbayConnRow[], msg?: string): Page {
+  const src = (k: keyof EbayAdminStatus["sources"]) => {
+    const v = s.sources[k];
+    return v === "console" ? `<span class="pill sold">console</span>` : v === "env" ? `<span class="pill listed">env</span>` : `<span class="pill">not set</span>`;
+  };
+  const okPill = (ok: boolean, yes = "ready", no = "not ready") => (ok ? `<span class="pill sold">${yes}</span>` : `<span class="pill pending">${no}</span>`);
+
+  const stats = `<div class="stat-cards home-stats">
+    <div class="stat${s.browseReady ? "" : " attn"}"><div class="k">Live listings &amp; prices</div><div class="v" style="font-size:1.1rem">${okPill(s.browseReady)}</div><div class="s">Browse API · ${s.config.mock ? "mock mode" : s.config.env}${s.health.calls ? ` · ${s.health.calls} calls this boot` : ""}</div></div>
+    <div class="stat${s.sellReady ? "" : " attn"}"><div class="k">Seller link</div><div class="v" style="font-size:1.1rem">${okPill(s.sellReady)}</div><div class="s">Sell APIs · ${s.connections} account${s.connections === 1 ? "" : "s"} connected · ${s.published} live listing${s.published === 1 ? "" : "s"}</div></div>
+    <div class="stat${s.epnCampaign ? "" : " attn"}"><div class="k">Affiliate campaign</div><div class="v" style="font-size:1.1rem">${okPill(!!s.epnCampaign, "tagging links", "not set")}</div><div class="s">${s.epnCampaign ? `Ambassador / EPN campaign <span class="mono">${esc(s.epnCampaign)}</span>` : `paste the client's campaign id below`}</div></div>
+    <div class="stat"><div class="k">Sold prices from eBay</div><div class="v mono">${s.harvestedSales.toLocaleString()}</div><div class="s">real sales harvested from connected sellers' orders</div></div>
+  </div>`;
+
+  const keys = `<form class="ws-panel settings-form" method="post" action="/admin/ebay/settings">
+    <div class="ws-panel-head"><h2>Developer keyset</h2><span class="eyebrow">values saved here override the env</span></div>
+    <p class="hint">Register free at <a href="https://developer.ebay.com" target="_blank" rel="noopener">developer.ebay.com</a> → <b>Application Keys</b> → create a <b>Production</b> keyset. The <b>App ID</b> is the client id, the <b>Cert ID</b> the client secret. That alone powers the live-listings popup and the price research links. For "Connect eBay account" (policies, direct publish, orders), open <b>User Tokens</b> → <b>Get a token from eBay via your application</b>, add a redirect whose <em>auth accepted URL</em> is <span class="mono">${esc(s.callbackUrl)}</span>, and paste the RuName below.</p>
+    <div class="fld-row">
+      <label class="fld"><span>App ID (client id) ${src("client_id")}</span><input name="client_id" value="" placeholder="${esc(s.config.clientIdMasked || "e.g. JohnDoe-CardInde-PRD-1a2b3c4d5-6e7f8g9h")}" class="mono" autocomplete="off"></label>
+      <label class="fld"><span>Cert ID (client secret) ${src("client_secret")}</span><input name="client_secret" type="password" value="" placeholder="${esc(s.config.hasSecret ? s.config.secretMasked + " (kept unless you type a new one)" : "PRD-…")}" class="mono" autocomplete="new-password"></label>
+    </div>
+    <div class="fld-row">
+      <label class="fld"><span>RuName (redirect name) ${src("ru_name")}</span><input name="ru_name" value="${esc(s.config.ruName)}" placeholder="optional · needed for Connect eBay account" class="mono" autocomplete="off"></label>
+      <label class="fld"><span>Environment ${src("env")}</span><select name="env">${opt("production", "Production (real listings)", s.config.env)}${opt("sandbox", "Sandbox (test keys, fake listings)", s.config.env)}</select></label>
+      <label class="fld"><span>Marketplace ${src("marketplace")}</span><select name="marketplace">${EBAY_MARKETPLACES.map(([id, label]) => opt(id, label, s.config.marketplace)).join("")}</select></label>
+    </div>
+    <label class="fld ckbox"><input type="checkbox" name="mock" value="1"${s.config.mock ? " checked" : ""}> <span><b>Mock mode</b> <small>canned listings and a canned seller flow so every screen can be tried with no keys; turn it off once real keys are in</small></span></label>
+    <h3 class="set-sub">Affiliate campaign (eBay Ambassador / Partner Network) ${src("epn_campid")}</h3>
+    <p class="hint">The client's Ambassador account is an eBay Partner Network membership. Paste the <b>10-digit campaign id</b> from their EPN dashboard, or simply paste <b>any share link</b> they generated at ambassador.ebay.com — the id is read out of <span class="mono">campid=…</span>. Every eBay link the site emits then carries it.</p>
+    <div class="fld-row">
+      <label class="fld"><span>Campaign id or share link</span><input name="epn_campid" value="" placeholder="${esc(s.epnCampaign ? `current: ${s.epnCampaign} (kept unless you paste a new one)` : "5339141403 — or https://www.ebay.com/itm/…&campid=5339141403&…")}" class="mono" autocomplete="off"></label>
+      <label class="fld ckbox"><input type="checkbox" name="epn_clear" value="1"> <span>Clear the console value <small>(fall back to EBAY_EPN_CAMPID in the env)</small></span></label>
+    </div>
+    <div class="cfg-actions">
+      <button class="btn primary" type="submit">Save eBay settings</button>
+      <button class="btn ghost" type="submit" formaction="/admin/ebay/clear" onclick="return confirm('Remove the keys saved in the console? The env values (if any) apply again.')">Remove console keys</button>
+    </div>
+  </form>`;
+
+  const t = s.lastTest;
+  const testResult = t
+    ? `<div class="ws-panel">
+        <div class="ws-panel-head"><h2>Last test</h2><span class="eyebrow">${esc(ago(t.at))} · ${t.ms} ms · ${t.ok ? `${t.count} listing${t.count === 1 ? "" : "s"}` : "failed"}</span></div>
+        <p class="hint">Query: <span class="mono">${esc(t.query)}</span></p>
+        ${
+          t.ok
+            ? t.items.length
+              ? `<div class="ebay-pop-list">${t.items
+                  .map(
+                    (it) => `<a class="ebay-item" href="${esc(it.url ?? "#")}" target="_blank" rel="noopener nofollow">
+                    ${it.image ? `<img src="${esc(it.image)}" alt="">` : `<span class="ebay-noimg"></span>`}
+                    <span class="ebay-t">${esc(it.title)}</span>
+                    <span class="ebay-m">${esc(it.condition ?? "")}${it.buying ? " · " + esc(it.buying) : ""}${it.seller ? " · " + esc(it.seller) : ""}${it.country ? " · " + esc(it.country) : ""}</span>
+                    <span class="ebay-p">${it.price_cents != null ? money(it.price_cents) : "—"}${it.shipping_cents != null ? `<small>${it.shipping_cents ? "+" + money(it.shipping_cents) + " ship" : "free ship"}</small>` : ""}</span>
+                  </a>`
+                  )
+                  .join("")}</div>`
+              : `<p class="hint">eBay answered but found no live listings for that query.</p>`
+            : `<div class="auth-error" role="alert">${esc(t.error ?? "unknown error")}</div>
+               <p class="hint">Common causes: keys copied with a stray space, a <b>sandbox</b> keyset with Environment set to Production (or the reverse), or a brand-new keyset that eBay has not activated yet (takes a few minutes).</p>`
+        }
+      </div>`
+    : "";
+
+  const test = `<form class="ws-panel" method="post" action="/admin/ebay/test">
+    <div class="ws-panel-head"><h2>Test a live search</h2><span class="eyebrow">Browse API · bypasses the 10-minute cache</span></div>
+    <p class="hint">Runs the same request the review-row <b>eBay Listed</b> popup and the card-page panel use. ${s.browseReady ? "" : `<b>Nothing will run until a keyset is saved above (or mock mode is on).</b>`}</p>
+    <div class="fld-row">
+      <label class="fld"><span>Search</span><input name="q" value="${esc(t?.query ?? "Charizard 4/102 Base Set Holo")}" class="mono"></label>
+      <label class="fld"><span>Listings</span><input name="limit" value="${t?.items.length ? Math.max(10, t.items.length) : 10}" class="mono" inputmode="numeric" style="max-width:90px"></label>
+    </div>
+    <div class="cfg-actions"><button class="btn primary" type="submit" ${s.browseReady ? "" : "disabled"}>Run test</button><span class="hint">${s.health.lastOkAt ? `last successful call ${esc(ago(s.health.lastOkAt))}` : "no successful call yet this boot"}${s.health.lastError ? ` · last error ${esc(ago(s.health.lastErrorAt))}: <span class="mono">${esc(s.health.lastError.slice(0, 160))}</span>` : ""}${s.health.tokenUntil ? ` · app token valid until ${esc(stamp(s.health.tokenUntil))}` : ""}</span></div>
+  </form>`;
+
+  const where = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Where eBay shows up on the site</h2></div>
+    <div class="tablewrap"><table class="inv-table"><thead><tr><th>Surface</th><th>What it does</th><th>Needs</th><th>Status</th></tr></thead><tbody>
+      <tr><td><b>eBay Listed</b> popup on review rows</td><td class="sub" style="white-space:normal">Live listings for the matched card with price, shipping, condition, seller — every row an affiliate link.</td><td class="sub">App ID + Cert ID</td><td>${okPill(s.browseReady, "live", "hidden — link-out only")}</td></tr>
+      <tr><td><b>Live on eBay</b> panel on card pages</td><td class="sub" style="white-space:normal">Same data on the public card page, loaded on demand.</td><td class="sub">App ID + Cert ID</td><td>${okPill(s.browseReady, "live", "hidden")}</td></tr>
+      <tr><td><b>eBay listed ↗ / eBay sold ↗</b> buttons</td><td class="sub" style="white-space:normal">Link-outs to eBay's search and completed-sales filter; no API involved.</td><td class="sub">nothing (affiliate tag needs the campaign id)</td><td>${okPill(true, "always on")}</td></tr>
+      <tr><td><b>Connect eBay account</b> (Configuration → eBay)</td><td class="sub" style="white-space:normal">Business policies by id, ship-from location, publish / revise / end listings, pull orders, mark shipped.</td><td class="sub">App ID + Cert ID + RuName</td><td>${okPill(s.sellReady, "available", "needs RuName")}</td></tr>
+      <tr><td><b>Sold prices from eBay</b></td><td class="sub" style="white-space:normal">Connected sellers' paid orders are folded into the sold-sales archive every 6 h — real comps that grow with every user. (eBay has no public sold-price API; the archive is the substitute.)</td><td class="sub">a connected seller</td><td>${s.harvestedSales ? `<span class="pill sold">${s.harvestedSales.toLocaleString()} sales</span>` : `<span class="pill">none yet</span>`}</td></tr>
+    </tbody></table></div>
+  </div>`;
+
+  const connTable = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Connected sellers</h2><span class="eyebrow">${conns.length} account${conns.length === 1 ? "" : "s"}</span></div>
+    ${
+      conns.length
+        ? `<div class="tablewrap"><table class="inv-table"><thead><tr><th>Seller</th><th>eBay user</th><th>Market</th><th>Connected</th><th>Policies synced</th><th>Orders pulled</th><th>Sold harvested</th><th>Live listings</th></tr></thead><tbody>${conns
+            .map(
+              (c) => `<tr><td><a href="/admin/users/${c.seller_id}"><b>${esc(c.display_name)}</b></a><div class="sub">${esc(c.email ?? "")}</div></td><td class="mono">${esc(c.ebay_user ?? "—")}</td><td class="mono">${esc(c.marketplace)}</td><td class="sub">${esc(ago(c.connected_at))}</td><td class="sub">${c.last_policy_sync ? esc(ago(c.last_policy_sync)) : "never"}</td><td class="sub">${c.last_order_sync ? esc(ago(c.last_order_sync)) : "never"}</td><td class="sub">${c.last_sold_harvest ? esc(ago(c.last_sold_harvest)) : "never"}</td><td class="mono">${c.published}</td></tr>`
+            )
+            .join("")}</tbody></table></div>`
+        : `<p class="hint">No seller has connected an eBay account yet. Once the RuName is saved, sellers connect from Configuration → eBay.</p>`
+    }
+  </div>`;
+
+  const html = `<div class="wrap ws">
+    ${adminHead("ebay", "eBay", "Live listings and prices from eBay, the seller account link, and the affiliate tagging — configured here, no redeploy needed.")}
+    ${flash(msg)}
+    ${stats}
+    <div class="home-grid">
+      <div>${keys}${test}${testResult}</div>
+      <div>${where}${connTable}</div>
+    </div>
+    ${APP_JS}
+  </div>`;
+  return { html, title: "eBay — Owner console | CardIndex", description: "eBay integration status, keys and tests." };
 }
 
 // ---- Activity feed --------------------------------------------------------

@@ -94,7 +94,11 @@ export function levenshtein(a: string, b: string): number {
 
 export function numberSort(num: string | null | undefined): number | null {
   if (!num) return null;
-  const m = String(num).match(/\d+/);
+  const s = String(num);
+  // set-prefixed numbers ("OP11-117", "EB02-005", "ST01-001"): the card index is the last group
+  const op = s.match(/^[a-z]{1,4}\d{1,3}-(\d{1,4})/i);
+  if (op) return parseInt(op[1], 10);
+  const m = s.match(/\d+/);
   return m ? parseInt(m[0], 10) : null;
 }
 

@@ -19,14 +19,21 @@
 // minutes per query — default keysets get 5,000 calls/day.
 
 import { ebayLink } from "./affiliate.ts";
+import { ebayConfig, onEbayConfigChange } from "./app/ebay-config.ts";
 
-const ENV = () => ({
-  clientId: process.env.EBAY_CLIENT_ID ?? "",
-  clientSecret: process.env.EBAY_CLIENT_SECRET ?? "",
-  env: (process.env.EBAY_ENV ?? "production").toLowerCase(),
-  marketplace: process.env.EBAY_MARKETPLACE ?? "EBAY_US",
-  mock: process.env.EBAY_MOCK === "1",
+// Keys come from the owner console (meta table) or the env — see app/ebay-config.ts.
+const ENV = () => ebayConfig();
+onEbayConfigChange(() => {
+  tokenCache = null;
+  cache.clear();
 });
+
+/** Health for the owner console: what the last live call did. */
+export type EbayBrowseHealth = { tokenUntil: string | null; cacheEntries: number; lastError: string | null; lastErrorAt: string | null; lastOkAt: string | null; calls: number };
+const health: EbayBrowseHealth = { tokenUntil: null, cacheEntries: 0, lastError: null, lastErrorAt: null, lastOkAt: null, calls: 0 };
+export function ebayBrowseHealth(): EbayBrowseHealth {
+  return { ...health, cacheEntries: cache.size, tokenUntil: tokenCache && Date.now() < tokenCache.expiresAt ? new Date(tokenCache.expiresAt).toISOString() : null };
+}
 
 const API_HOST = () => (ENV().env === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com");
 
@@ -34,10 +41,13 @@ export type EbayListing = {
   title: string;
   price_cents: number | null;
   currency: string;
+  shipping_cents?: number | null;
   url: string | null;
   image: string | null;
   condition: string | null;
   buying: string; // "Buy It Now" | "Auction" | "Auction · N bids" | "Best Offer" | ""
+  seller?: string | null;
+  country?: string | null;
 };
 
 export function ebayConfigured(): boolean {
@@ -79,44 +89,58 @@ function buyingLabel(options: string[] | undefined, bids: number | undefined): s
   return "";
 }
 
-/** Live eBay listings for a query. Returns [] when nothing matches. */
-export async function searchListed(query: string, limit = 10): Promise<EbayListing[]> {
+/** Live eBay listings for a query. Returns [] when nothing matches. `limit` is clamped to eBay's 200. */
+export async function searchListed(query: string, limit = 10, opts: { fresh?: boolean } = {}): Promise<EbayListing[]> {
   const e = ENV();
+  limit = Math.max(1, Math.min(200, Math.floor(limit)));
   if (e.mock) return mockListings(query, limit);
 
   const key = `${e.marketplace}|${limit}|${query.toLowerCase()}`;
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.items;
+  if (!opts.fresh && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.items;
 
-  const token = await appToken();
-  const params = new URLSearchParams({
-    q: query,
-    limit: String(limit),
-    // default is FIXED_PRICE only — ask for auctions and best-offer too
-    filter: "buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}",
-  });
-  const res = await fetch(`${API_HOST()}/buy/browse/v1/item_summary/search?${params}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "X-EBAY-C-MARKETPLACE-ID": e.marketplace,
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`eBay search failed: HTTP ${res.status} ${await res.text().catch(() => "")}`);
-  const json = (await res.json()) as any;
+  health.calls++;
+  let json: any;
+  try {
+    const token = await appToken();
+    const params = new URLSearchParams({
+      q: query,
+      limit: String(limit),
+      // default is FIXED_PRICE only — ask for auctions and best-offer too
+      filter: "buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}",
+    });
+    const res = await fetch(`${API_HOST()}/buy/browse/v1/item_summary/search?${params}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-EBAY-C-MARKETPLACE-ID": e.marketplace,
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`eBay search failed: HTTP ${res.status} ${await res.text().catch(() => "")}`);
+    json = await res.json();
+    health.lastOkAt = new Date().toISOString();
+  } catch (err) {
+    health.lastError = err instanceof Error ? err.message : String(err);
+    health.lastErrorAt = new Date().toISOString();
+    throw err;
+  }
 
   const items: EbayListing[] = (json.itemSummaries ?? []).map((it: any) => {
     const price = it.price ?? it.currentBidPrice;
+    const ship = it.shippingOptions?.[0]?.shippingCost;
     return {
       title: String(it.title ?? ""),
       price_cents: price?.value != null ? Math.round(Number(price.value) * 100) : null,
       currency: price?.currency ?? "USD",
+      shipping_cents: ship?.value != null ? Math.round(Number(ship.value) * 100) : null,
       // itemAffiliateWebUrl appears when an EPN campaign id is configured on the
       // keyset; otherwise the plain item URL is tagged here (EBAY_EPN_CAMPID).
       url: it.itemAffiliateWebUrl ?? (it.itemWebUrl ? ebayLink(String(it.itemWebUrl), "live-panel") : null),
       image: it.thumbnailImages?.[0]?.imageUrl ?? it.image?.imageUrl ?? null,
       condition: it.condition ?? null,
       buying: buyingLabel(it.buyingOptions, it.bidCount),
+      seller: it.seller?.username ?? null,
+      country: it.itemLocation?.country ?? null,
     };
   });
 
@@ -144,9 +168,12 @@ function mockListings(query: string, limit: number): EbayListing[] {
     title: `${query} — mock listing ${i + 1}`,
     price_cents: Math.round(anchor * b.mult),
     currency: "USD",
+    shipping_cents: i % 2 ? 0 : 149,
     url: ebayLink("https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(query), "live-panel"),
     image: null,
     condition: b.cond,
     buying: b.buy,
+    seller: `mockseller${i + 1}`,
+    country: "US",
   }));
 }

@@ -54,6 +54,29 @@
 
 ---
 
+## 1b. Second pass (Sept 20, 2026) — details the 10-second sampling missed
+
+Re-read the transcript and pulled frames every 4 s through the setup (2:10–7:00) and results (7:00–14:10) sections. Nothing the client *said* was missed; what the finer frames add is how CardUploader's screens are laid out and which menu items exist. Built since: ✅ · partly: ◐ · not yet: ✖.
+
+| Screen | Detail seen on screen | Ours |
+|---|---|---|
+| Configuration hub | Tiles in three groups + "Config page: Default" selector + "View Setup Guide"; extra tiles Misprint (beta), Extras (Trade Me), Personal: Automatic Inventory / Buylist / Storefront | ✅ hub (Sept 19) · ✖ config-page presets, setup guide |
+| Configuration → eBay | Business policies synced from eBay with **Add Policy** per type and a default per type; Shipping settings (location, postal code, dispatch days); Auction settings (time zone, auction payment/shipping policy); **Best Offer settings** (allow, minimum %, auto-accept %); **Shipping by price range**; **Store categories** list with ids + drag order; Variation sort; Cross-border overrides (site id, country, currency); Subtitle; Automatic eBay Inventory toggle | ◐ policies + location + best-offer on/off · ✖ min/auto-accept %, price-range shipping, store-category sync, cross-border, subtitle |
+| Ungraded setup | Config page · Database (≈40 games, searchable) · Platform (eBay Auctions / Fixed / Variation, Shopify, Whatnot, TCGplayer, Mana Pool, Misprint, Extras) · Auto Crop for Phone Images · Advanced matching with **saveable named templates** · Condition · Start price · SKU prefix + Increment · Store category · Secondary category · Schedule upload time · "Next: Upload One Piece English Cards" | ✅ database, platform, condition, start price, SKU + increment, store category, matching · ✖ named matching templates, secondary category, schedule time (per batch) |
+| Upload | 1 Image / 2 Images / Custom · "Up to 500 cards or 1000 files, must be multiple of 2" · **Uploaded Cards grid** ("15 cards (15 images)", Card N label, per-card delete, Clear All, Swap All) · "Process 15 One Piece English Cards" · processing screen "Processing images → Verifying matches…", "Results open automatically when done — or find them in History" | ✅ 1/2 images, Swap all, clear, preview grid · ✖ Custom, per-card delete, processing screen |
+| Results header | Configuration Page · Export Format · **Batch Name** (PKJ-243 – One Piece E) · **Total Cards / Price / TCGP Price** totals · Select Cards · Sort · Tools · Bulk Edit · refresh · List / Export | ◐ platform chip + export button · ✖ totals row, Sort, Select Cards |
+| Results row | Uploaded vs Match thumbs (hover "Compare") · confidence "74/80" · name/type/set/year/rarity/illustrator · variant pill · Price + **Offers checkbox** · Quantity · SKU (combined "PKJ-244,PKJ-256") · Condition · TCG **NM/LP/MP/HP** + **Prev** column · Category 1/2 · Schedule · Replace / **eBay Listed** / eBay Sold / TCGplayer / Options | ✅ compare, confidence, variant, price, qty, SKU, condition, prev-price hint, link-outs, **eBay Listed popup (Sept 20)** · ✖ per-row Offers, NM/LP/MP/HP (needs TCGplayer SKU data), category selects |
+| Tools menu | Create Lot · Manage Duplicates · Convert to Playset · Check eBay Duplicates (beta) · Refetch Pricing · Regen Titles · View Matches | ◐ duplicates merge on commit · ✖ lot, playset, refetch, regen-all, eBay duplicates |
+| Bulk Edit menu | Prices (**Set Price for All** modal: base price, price filter, add/subtract, round, tiers, live preview) · Find & Replace · Use DB Image / Undo · Edit Best Offers · Schedule Upload Time · Edit Conditions · Quantity · Edit SKU · Edit Variants · Edit Store Categories · Edit Item Specifics | ✅ price-all, SKU, best offers (listings) · ✖ the rest |
+| Duplicates modal | Groups with counts, click to cycle, "Multi-edit: apply price changes to all duplicates", **Combine All Duplicates** → one row, qty 2, SKUs joined | ◐ flagged + merged on commit · ✖ modal, combine-in-place |
+| eBay Listings popup | "eBay Listings (50)", editable query, price **+ shipping**, condition, **country + seller**, "Affiliate link" per row, refresh, green "eBay" button | ✅ popup with price + shipping, condition, seller, country, affiliate rows, Open-on-eBay (Sept 20) · ✖ editable query, 50 default (ours 25) |
+| Comparison modal | "1 of 14" · **Report Issue** · 2-column alternatives grid with % | ✅ · ✖ Report Issue |
+| List / Export | List on eBay (via API) · Add to inventory (beta) · Export CSV → "Config: Default → Export eBay" · Mark as Listed · toast "Ungraded fixed price CSV exported successfully" · file name `pkj-01-pokemon-english_ebay_ungraded_fixed_price_<date>.csv` | ✅ all four paths exist (API needs keys) · ✖ menu form, file naming |
+| Inventory | 4,148 products · 26,745 cards · Price / Market totals · tabs Inventory / Pricing Tool / Deleted · Reconcile with eBay · Grouped vs All copies · Hide empty · columns Status / Platform / User SKU / Catalog SKU / Variant / TCG / Price / Market / Qty / Added | ◐ stats, tabs, search · ✖ deleted tab, reconcile, grouped copies, platform column |
+| Graded | Grader tiles PSA/CGC/BGS/TAG/ACE · **Scan with camera** · cert numbers 0/200 | ✅ paste certs · ✖ camera scan |
+
+**eBay integration in the owner console (Sept 20):** `/admin/ebay` holds the developer keyset (console values override env, no redeploy), shows what each key unlocks, runs a live Browse-API search test, lists connected sellers and harvested sold sales; the review-row **eBay Listed** popup is live whenever a keyset (or mock mode) is present.
+
 ## 2. What already exists today vs. what is in git history
 
 | Ask | In the current tree (buyer build) | In `2e6de1b` (seller build) |
@@ -92,7 +115,7 @@
 
 ## 3. The plan, easiest → hardest
 
-> **Status (Sept 19, 2026):** Tier 0 and Tier 1 are done (commit `2a1ec43`). Tier 2 items 8, 9, 10 and 11 are built (setup block, front/back pairing, comparison modal, results-row link-outs + per-batch export); item 12 waits on the client's eBay keyset and item 13 on the plan-price decision.
+> **Status (Sept 19, 2026):** Tier 0 and Tier 1 are done (commit `2a1ec43`). Tier 2 items 8, 9, 10 and 11 are built (commit `f2ea460`: setup block, front/back pairing, comparison modal, results-row link-outs + per-batch export); item 12 waits on the client's eBay keyset and item 13 on the plan-price decision. Tier 3 item 14 is built: `npm run import:catalog` / owner console → Catalog imports **all Pokémon and all One Piece** from TCGCSV (category 3 / 68) straight into Postgres and hashes the images for photo ID; pokemontcg.io was returning HTTP 500 on Sept 19 so TCGCSV is the single source. Items 15–17 remain (embedding-based photo ID, client's eBay keys, JustTCG decision).
 
 ### Tier 0 — decision + restore (½–1 day)
 **Restore the seller workspace from `2e6de1b`.** Bring back the modules listed in §0, re-add the `/app` routes and POST handlers in `server.ts`, keep the current `/collection` buyer pages if the user wants both (they share `scan_batches`/`scan_items`), and keep the uncommitted binder-page detector — it is exactly the "several cards per photo" upload the client will use. Hide **Orders** behind a flag (client: not yet). Re-run the Sept 13 smoke script.

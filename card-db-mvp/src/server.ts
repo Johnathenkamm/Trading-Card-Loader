@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
 import { getGameBySlug, getSetBySlug, getCard, getVariants, latestMarket, pool } from "./pg.ts";
 import { ebayConfigured, searchListed } from "./ebay.ts";
+import { ebaySearchUrl } from "./affiliate.ts";
 import { tcgConfigured, conditionPrices } from "./tcgplayer.ts";
 import { page } from "./render/layout.ts";
 import {
@@ -37,7 +38,7 @@ import { exportRowsFor, inventoryListingPreview, scanItemTitle, sampleTitleField
 import { prefsFromForm, serializeMatchingPrefs, isEmptyPrefs, type MatchingPrefs } from "./app/matching.ts";
 import { getAllSets } from "./pg.ts";
 import {
-  renderWorkspaceHome, renderInventory, renderBatches, renderScan, renderReview, renderListingBuilder, renderListings, renderSettings,
+  renderWorkspaceHome, renderInventory, renderBatches, renderScan, renderReview, renderListingBuilder, renderListings, renderSettings, settingsSection,
 } from "./render/app.ts";
 import {
   renderGraded, renderListingCreator, renderBlankListing, renderPricingResults, renderCardSearch,
@@ -95,8 +96,13 @@ import {
 } from "./app/admin.ts";
 import { replyFeedback, closeFeedback } from "./app/feedback.ts";
 import {
-  renderAdminHome, renderAdminUsers, renderAdminUser, renderAdminActivity, renderAdminFeedback, renderAdminUpload, renderAdminLogin, renderAdminSold,
+  renderAdminHome, renderAdminUsers, renderAdminUser, renderAdminActivity, renderAdminFeedback, renderAdminUpload, renderAdminLogin, renderAdminSold, renderAdminCatalog,
 } from "./render/admin.ts";
+import { catalogStats, catalogImportProgress, startCatalogImport, CATALOG_GAMES } from "./app/catalog-import.ts";
+import { loadEbayConfig, saveEbayConfig, clearEbayConfig } from "./app/ebay-config.ts";
+import { ebayAdminStatus, runEbayTest, ebayFormToPatch, listEbayConnections } from "./app/ebay-admin.ts";
+import { renderAdminEbay } from "./render/admin.ts";
+import { buildHashIndex } from "./app/hashindex.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 5173);
@@ -138,6 +144,8 @@ try {
   await ensureFeedbackSchema();
   await ensureEbaySchema();
   await ensureSalesSchema();
+  // eBay keyset: console-saved values (meta table) over the env — see app/ebay-config.ts.
+  await loadEbayConfig();
 } catch (err) {
   console.error("\n  Failed to prepare the workspace schema (seller prefs, graded columns, orders, feedback).\n", err);
   process.exit(1);
@@ -1054,53 +1062,91 @@ async function afterShip(orderId: number): Promise<string> {
   }
 }
 
-async function handleSettings(f: Record<string, string>): Promise<string> {
-  const rr = parseRuleKey(f.rule || "market");
-  // Description templates: up to N (name, body) pairs + which one is active.
-  const items = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => ({
-    name: (f[`desc_name_${i}`] ?? "").trim().slice(0, 40) || `Description ${i + 1}`,
-    body: (f[`desc_body_${i}`] ?? "").replace(/\r\n/g, "\n").slice(0, 8000),
-  }));
-  const activeRaw = intOr(f.desc_active, 0);
-  // `active` indexes the kept (non-empty) list; map from the form slot.
-  const kept = items.map((it, i) => ({ ...it, i })).filter((it) => it.body.trim());
-  const active = Math.max(0, kept.findIndex((it) => it.i === activeRaw));
-  const matching = prefsFromForm(f, await getAllSets());
-  await updateSeller({
-    display_name: f.display_name?.trim() || "My card shop",
-    sku_prefix: (f.sku_prefix || "CARD").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD",
-    sku_pad: Math.max(3, Math.min(9, intOr(f.sku_pad, 6))),
-    sku_next: Math.max(1, intOr(f.sku_next, 1)),
-    price_mode: rr.mode,
-    price_pct: rr.pct,
-    price_fixed_cents: toCents(f.price_fixed),
-    default_condition: f.default_condition || "NM",
-    default_language: f.default_language || "EN",
-    // Visual Title Structure Editor. Legacy title_template is left untouched (the
-    // structure takes precedence when set); an empty/invalid structure clears it.
-    title_structure: (() => {
-      const st = parseStructure(f.title_structure);
-      return st && st.blocks.length ? serializeStructure(st) : null;
-    })(),
-    ebay_store_category: f.ebay_store_category?.trim() || null,
-    item_location: f.item_location?.trim() || null,
-    ebay_shipping_policy: f.ebay_shipping_policy?.trim() || null,
-    ebay_return_policy: f.ebay_return_policy?.trim() || null,
-    ebay_payment_policy: f.ebay_payment_policy?.trim() || null,
-    training_opt_in: f.training_opt_in === "1" ? 1 : 0,
-    best_offer: f.best_offer === "1" ? 1 : 0,
-    auto_price_pref: parseAutoPricePref(f.auto_price_pref),
-    price_floor_cents: (() => {
-      const c = toCents(f.price_floor);
-      return c != null && c > 0 ? c : null;
-    })(),
-    matching_prefs: serializeMatchingPrefs(matching),
-    description_templates: serializeDescriptionTemplates({ active, items: kept.map(({ name, body }) => ({ name, body })) }),
-    channel_prefs: JSON.stringify(channelPrefsFromForm(f)),
-  });
-  // eBay: chosen policy ids + ship-from location (only when connected).
+/** Which channel_prefs keys each Configuration page owns (the rest are kept as they were). */
+const CHANNEL_KEYS: Record<string, string[]> = {
+  shopify: ["shopify_vendor", "shopify_location", "shopify_grams", "shopify_tags"],
+  whatnot: ["whatnot_category", "whatnot_shipping_profile", "whatnot_offerable"],
+  tcgplayer: ["tcg_my_store", "tcg_store_multiplier", "tcg_reserve_qty"],
+  manapool: ["manapool_note"],
+};
+
+/**
+ * Save ONE Configuration page (POST /app/settings/<section>). Each page posts
+ * only its own fields, so only those columns change — a seller editing their
+ * SKU prefix can't accidentally blank their description templates.
+ */
+async function handleSettings(f: Record<string, string>, section: string): Promise<string> {
+  const patch: Record<string, unknown> = {};
   let note = "";
-  if (await getConnection()) {
+  switch (section) {
+    case "shop":
+      patch.display_name = f.display_name?.trim() || "My card shop";
+      patch.sku_prefix = (f.sku_prefix || "CARD").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) || "CARD";
+      patch.sku_pad = Math.max(3, Math.min(9, intOr(f.sku_pad, 6)));
+      patch.sku_next = Math.max(1, intOr(f.sku_next, 1));
+      break;
+    case "pricing": {
+      const rr = parseRuleKey(f.rule || "market");
+      patch.price_mode = rr.mode;
+      patch.price_pct = rr.pct;
+      patch.price_fixed_cents = toCents(f.price_fixed);
+      patch.default_condition = f.default_condition || "NM";
+      patch.default_language = f.default_language || "EN";
+      patch.auto_price_pref = parseAutoPricePref(f.auto_price_pref);
+      const floor = toCents(f.price_floor);
+      patch.price_floor_cents = floor != null && floor > 0 ? floor : null;
+      break;
+    }
+    case "matching":
+      patch.matching_prefs = serializeMatchingPrefs(prefsFromForm(f, await getAllSets()));
+      break;
+    case "titles": {
+      // Visual Title Structure Editor. Legacy title_template is left untouched (the
+      // structure takes precedence when set); an empty/invalid structure clears it.
+      const st = parseStructure(f.title_structure);
+      patch.title_structure = st && st.blocks.length ? serializeStructure(st) : null;
+      break;
+    }
+    case "descriptions": {
+      // up to N (name, body) pairs + which one is active
+      const items = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => ({
+        name: (f[`desc_name_${i}`] ?? "").trim().slice(0, 40) || `Description ${i + 1}`,
+        body: (f[`desc_body_${i}`] ?? "").replace(/\r\n/g, "\n").slice(0, 8000),
+      }));
+      const activeRaw = intOr(f.desc_active, 0);
+      // `active` indexes the kept (non-empty) list; map from the form slot.
+      const kept = items.map((it, i) => ({ ...it, i })).filter((it) => it.body.trim());
+      const active = Math.max(0, kept.findIndex((it) => it.i === activeRaw));
+      patch.description_templates = serializeDescriptionTemplates({ active, items: kept.map(({ name, body }) => ({ name, body })) });
+      break;
+    }
+    case "ebay":
+      patch.ebay_store_category = f.ebay_store_category?.trim() || null;
+      patch.item_location = f.item_location?.trim() || null;
+      patch.ebay_shipping_policy = f.ebay_shipping_policy?.trim() || null;
+      patch.ebay_return_policy = f.ebay_return_policy?.trim() || null;
+      patch.ebay_payment_policy = f.ebay_payment_policy?.trim() || null;
+      patch.best_offer = f.best_offer === "1" ? 1 : 0;
+      break;
+    case "privacy":
+      patch.training_opt_in = f.training_opt_in === "1" ? 1 : 0;
+      break;
+    case "shopify":
+    case "whatnot":
+    case "tcgplayer":
+    case "manapool": {
+      const cur = parseChannelPrefs((await getSeller()).channel_prefs) as unknown as Record<string, unknown>;
+      const fromForm = channelPrefsFromForm(f) as unknown as Record<string, unknown>;
+      for (const k of CHANNEL_KEYS[section]) cur[k] = fromForm[k];
+      patch.channel_prefs = JSON.stringify(cur);
+      break;
+    }
+    default:
+      return " (unknown section — nothing saved)";
+  }
+  await updateSeller(patch);
+  // eBay: chosen policy ids + ship-from location (only when connected).
+  if (section === "ebay" && (await getConnection())) {
     if (f.policy_fulfillment != null || f.policy_payment != null || f.policy_return != null) {
       await setPolicyIds({ fulfillment: (f.policy_fulfillment ?? "").trim(), payment: (f.policy_payment ?? "").trim(), return: (f.policy_return ?? "").trim() });
     }
@@ -1273,9 +1319,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         .filter(Boolean)
         .join(" ")
         .trim();
+      const limit = Math.max(1, Math.min(50, intOr(url.searchParams.get("limit"), 10)));
       try {
-        const items = await searchListed(query, 10);
-        return j(200, { configured: true, query, items });
+        const items = await searchListed(query, limit);
+        return j(200, { configured: true, query, items, search_url: ebaySearchUrl(query, "live-panel-search") });
       } catch (err) {
         console.error("ebay listed:", err);
         return j(200, { configured: true, query, error: "eBay request failed — try again shortly" });
@@ -1698,6 +1745,35 @@ async function handleAdmin(
       return redirectWithCookie(res, landing + "?msg=" + encodeURIComponent(`${n} card${n === 1 ? "" : "s"} queued in your own review queue. Confirm to add them to your inventory.`), actAsCookie(ownerId));
     }
 
+    // ---- eBay integration: keys, test, clear ----
+    if (path === "/admin/ebay/settings") {
+      await saveEbayConfig(ebayFormToPatch(f));
+      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("eBay settings saved. Run the live search test to confirm the keys work."));
+    }
+    if (path === "/admin/ebay/clear") {
+      await clearEbayConfig();
+      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("Console keys removed; env values (if any) apply again."));
+    }
+    if (path === "/admin/ebay/test") {
+      const q = (f.q ?? "").trim() || "Charizard 4/102 Base Set Holo";
+      const t = await runEbayTest(q, Math.max(1, Math.min(50, intOr(f.limit, 10))));
+      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent(t.ok ? `eBay answered in ${t.ms} ms with ${t.count} listing${t.count === 1 ? "" : "s"} for "${q}".` : `The eBay request failed: ${t.error}`));
+    }
+
+    // ---- catalog import (runs in the background inside this process) ----
+    if (path === "/admin/catalog/import") {
+      const game = (f.game ?? "").trim();
+      if (!CATALOG_GAMES[game]) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Pick a game to import."));
+      if (catalogImportProgress().running) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("An import is already running."));
+      startCatalogImport(game, { force: f.force === "1" });
+      return redirect(res, "/admin/catalog?msg=" + encodeURIComponent(`Importing ${CATALOG_GAMES[game].name} from TCGCSV${f.force === "1" ? " (forced refresh)" : ""} — this page follows the progress.`));
+    }
+    if (path === "/admin/catalog/hash") {
+      if (catalogImportProgress().running) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Wait for the running import; it builds the index when it finishes."));
+      buildHashIndex({ log: (l) => console.log("  " + l) }).catch((err) => console.error("hash index:", err));
+      return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Rebuilding the photo-ID index in the background — watch the server log; the counts here update as it goes."));
+    }
+
     // ---- sold-sales archive: demo sample + remove a source ----
     if (path === "/admin/sold/sample") {
       const r = await importSoldFeed(readFeedFile(SAMPLE_FEED), { source: SAMPLE_SOURCE, demo: true, log: (l) => console.log("  " + l) });
@@ -1776,6 +1852,13 @@ async function handleAdmin(
   }
   if (path === "/admin/sold") {
     return sendPage(res, renderAdminSold(await soldArchiveSummary(), msg, process.env.SOLD_SAMPLE_ON_BOOT === "1"), "/admin/sold");
+  }
+  if (path === "/admin/catalog") {
+    return sendPage(res, renderAdminCatalog(await catalogStats(), catalogImportProgress(), msg), "/admin/catalog");
+  }
+  if (path === "/admin/ebay") {
+    const [st, conns] = await Promise.all([ebayAdminStatus(url.origin), listEbayConnections()]);
+    return sendPage(res, renderAdminEbay(st, conns, msg), "/admin/ebay");
   }
   if (path === "/admin/activity") {
     const f = { sellerId: num(url.searchParams.get("user")), kind: url.searchParams.get("kind") ?? undefined };
@@ -1859,6 +1942,7 @@ const FREE_APP_PATHS = new Set([
 ]);
 function proRequired(path: string): boolean {
   if (FREE_APP_PATHS.has(path)) return false;
+  if (path.startsWith("/app/settings/")) return false; // every Configuration page
   // Chunked photo upload steps: the price-only outcome is free; the inventory
   // outcome is gated in the `start` step itself (see handleAppAuthed).
   if (/^\/app\/scan\/upload\/(start|\d+\/(chunk|finish))$/.test(path)) return false;
@@ -2037,10 +2121,13 @@ async function handleAppAuthed(
       await setListingStatus(Number(m[1]), st);
       return redirect(res, "/app/inventory/automatic?msg=" + encodeURIComponent(st === "published" ? "Marked live." : "Listing ended."));
     }
-    if (path === "/app/settings") {
-      const note = await handleSettings(f);
-      return redirect(res, "/app/settings?msg=" + encodeURIComponent("Settings saved." + note));
+    if ((m = path.match(/^\/app\/settings\/([a-z]+)$/))) {
+      const sec = settingsSection(m[1]);
+      if (!sec) return notFound(res);
+      const note = await handleSettings(f, sec.key);
+      return redirect(res, `/app/settings/${sec.key}?msg=` + encodeURIComponent(`${sec.title} saved.` + note));
     }
+    if (path === "/app/settings") return redirect(res, "/app/settings");
     if (path === "/app/inventory/bulk") return redirect(res, await handleInventoryBulk(f));
 
     if ((m = path.match(/^\/app\/review\/(\d+)\/item\/(\d+)$/))) {
@@ -2147,6 +2234,10 @@ async function handleAppAuthed(
   }
   if (path === "/app/listings") return sendPage(res, await renderListings(msg), "/app/listings");
   if (path === "/app/settings") return sendPage(res, await renderSettings(msg), "/app/settings");
+  if ((m = path.match(/^\/app\/settings\/([a-z]+)$/))) {
+    if (!settingsSection(m[1])) return notFound(res);
+    return sendPage(res, await renderSettings(msg, m[1]), path);
+  }
 
   if ((m = path.match(/^\/app\/review\/(\d+)$/))) {
     const r = await renderReview(Number(m[1]), url.searchParams.get("tab") ?? undefined, msg);

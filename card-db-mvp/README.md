@@ -40,9 +40,17 @@ npm run pg:migrate  # load the catalog into Postgres
 npm start           # serves http://localhost:5173
 ```
 
-Data pipelines (run any time; both are re-runnable):
+Data pipelines (run any time; all are re-runnable):
 
 ```bash
+npm run import:catalog -- pokemon|onepiece|all [--force] [--groups=id,id] [--no-hash]
+                      # GROW the catalog straight into Postgres from TCGCSV (TCGplayer's free
+                      # daily mirror): every set of the game (Pokémon = category 3, One Piece =
+                      # 68), one card per single product, one printing per price sub-type,
+                      # today's prices, then the photo-ID hashes for the new cards. Incremental:
+                      # sets already imported are skipped unless --force. Never touches member
+                      # tables. The owner console runs the same thing from /admin/catalog (the
+                      # only way on Railway, which has no shell to the database).
 npm run sync:tcgcsv   # real TCGplayer market prices per PRINTING via the free TCGCSV daily
                       # mirror (~20:00 UTC refresh) + TCGplayer product ids/URLs on cards.
                       # Run daily (cron / Railway scheduled job) — each run adds a real
@@ -73,14 +81,21 @@ a grandfathered or partner keyset (JustTCG/Scrydex are the commercial
 alternatives). `TCGPLAYER_MOCK=1` renders canned condition rows for UI testing;
 unconfigured, the panel is hidden.
 
-**Live eBay listings on card pages** (`src/ebay.ts`): register free at
+**Live eBay listings and prices** (`src/ebay.ts`): register free at
 [developer.ebay.com](https://developer.ebay.com), create an application keyset,
-and set `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` in `.env` — card pages then get
-a lazy-loaded **"Live on eBay"** panel driven by eBay's Browse API (self-serve,
-no partnership needed; 5,000 calls/day to start, results cached 10 min).
-`EBAY_MOCK=1` renders canned rows for UI testing without keys; with no config
-the panel is hidden and the "eBay listed ↗" link-out remains. Sold prices are
-**not** available this way (no open eBay API) — that's the archive above.
+and paste the App ID / Cert ID into the owner console at **`/admin/ebay`**
+(stored in the `meta` table, override the env, no redeploy — `src/app/ebay-config.ts`)
+or set `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` in `.env`. That unlocks the
+**eBay Listed** popup on every review row (live listings with price, shipping,
+condition, seller and country, each an affiliate link, plus "Open on eBay") and
+the lazy-loaded **"Live on eBay"** panel on card pages, both driven by eBay's
+Browse API (self-serve, no partnership; 5,000 calls/day to start, results
+cached 10 min). The console page also runs a live search test, shows what each
+key unlocks, and lists connected sellers. `EBAY_MOCK=1` (or the console's mock
+switch) renders canned rows for UI testing without keys; with no config the
+popup falls back to the "eBay listed ↗" link-out. Sold prices are **not**
+available this way (no open eBay API) — that's the archive above, which
+connected sellers' paid orders feed automatically.
 
 `npm run dev` runs the server with `--watch` (auto-restart on edits). Requires
 **Node 24+** (TypeScript type-stripping) and Docker (for Postgres). Configuration
@@ -114,9 +129,15 @@ importer are built and waiting for whichever feed is licensed, and archiving
 starts on day one because eBay only exposes ~90 days (CardUploader's own
 archive reaches 2018 — bought, not built).
 
-Seeded sets: Pokémon **Base Set** + **Vivid Voltage**, Magic **Kamigawa: Neon
-Dynasty** (~607 cards, ~1,050 variants). Edit `POKEMON_SETS` / `MAGIC_SETS` at the
-top of `src/seed.ts` to change them.
+The demo seed covers Pokémon **Base Set** + **Vivid Voltage** and Magic
+**Kamigawa: Neon Dynasty** (~607 cards). The real catalog comes from
+`npm run import:catalog` (or the owner console's Catalog page): **all of
+Pokémon and all of One Piece** from TCGCSV, ~220 + ~90 sets. Cards imported
+that way carry TCGplayer's product id, URL and 200w/400w images; the seeded
+sets are adopted by their cached group id, keeping their higher-quality
+provider images. `seed` + `pg:migrate` remain a **demo-only** bootstrap — the
+migrate step truncates every table, members included, so never run it against
+a live database.
 
 ## Features
 
@@ -292,13 +313,23 @@ top of `src/seed.ts` to change them.
   `mkevt=1&mkcid=1&mkrid=…&campid=<id>&toolid=10001&customid=<surface>`;
   `TCGPLAYER_AFFILIATE_QS` does the same for TCGplayer links (Impact).
   Without the env vars the links are plain.
-- **Settings** (`/app/settings`) — sectioned like CardUploader's Configuration:
-  shop & SKU scheme, default pricing + automatic-pricing preference + floor,
-  default matching options, the visual title structure editor, **description
-  templates** (up to three, one active, `{variables}` inserted at the cursor,
-  live preview; the active template feeds the listing builder, bulk listing
-  creation and the CSV export), and saved eBay listing preferences (store
-  category id, item location, policy names, **accept Best Offers by default**).
+- **Configuration** (`/app/settings`) — laid out like CardUploader's
+  Configuration: a hub of tiles grouped into *Card settings* (Shop & SKUs,
+  Pricing & condition, Matching, Titles, Descriptions), *Platform settings*
+  (eBay, Shopify, Whatnot, TCGplayer, Mana Pool) and *Account* (Privacy, your
+  plan), each tile showing its current values and a dot when it needs
+  attention. Every tile opens **one short page** (`/app/settings/<key>`) that
+  saves only its own fields (`POST /app/settings/<key>`), so editing the SKU
+  prefix can never blank the description templates; channel pages merge into
+  the shared channel preferences. Old `#s-…` anchors redirect to the right
+  page. The pages themselves: shop & SKU scheme; default pricing +
+  automatic-pricing preference + floor; default matching options; the visual
+  title structure editor; **description templates** (up to three, one
+  active, `{variables}` inserted at the cursor, live preview; the active
+  template feeds the listing builder, bulk listing creation and the CSV
+  export); eBay (connection, policies, store category id, item location,
+  policy names, **accept Best Offers by default**); channel CSV preferences;
+  the identification-training opt-in.
 - **Accounts & login** (`/signup`, `/login`, `/logout`, `/reset-password`) —
   email + password sign-in (scrypt-hashed, HttpOnly `SameSite=Lax` session
   cookies stored in Postgres). Sign-up asks for a shop name, email and password
@@ -355,6 +386,15 @@ top of `src/seed.ts` to change them.
   `ADMIN_EMAIL`, hidden from the user lists, and never a customer's). With an
   owner session, `/app` is that own workspace (inventory, batches, listings,
   settings), so nothing the owner adds ever lands in someone else's account.
+  **eBay** (`/admin/ebay`) holds the developer keyset (App ID, Cert ID,
+  RuName, environment, marketplace, mock switch — console values override the
+  env), shows whether live listings, the seller link and affiliate tagging are
+  ready, runs a live search test with timing, and lists connected sellers with
+  their sync times (`src/app/ebay-admin.ts`).
+  **Catalog** (`/admin/catalog`) shows every game with its set / card /
+  photo-index counts and imports or refreshes a game from TCGCSV in the
+  background with live progress (`src/app/catalog-import.ts`), plus a
+  "Rebuild photo-ID index" button.
   **Sold prices** (`/admin/sold`) imports a sold-sales feed file (.csv/.json,
   same columns and canonicalization as `npm run import:sold`), loads the demo
   sample, removes everything imported under one source, and summarizes the

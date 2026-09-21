@@ -20,9 +20,12 @@
 // the click came from so the EPN reports show which surface earns.
 
 export function epnCampaignId(): string | null {
-  const v = (process.env.EBAY_EPN_CAMPID ?? "").trim();
+  // console-saved value (owner console → eBay) over the env
+  const v = epnCampaignSetting();
   return /^\d{6,12}$/.test(v) ? v : null;
 }
+
+import { epnCampaignSetting } from "./app/ebay-config.ts";
 
 export function affiliateConfigured(): boolean {
   return epnCampaignId() != null || !!(process.env.TCGPLAYER_AFFILIATE_QS ?? "").trim();

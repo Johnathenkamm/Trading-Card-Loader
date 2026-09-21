@@ -427,7 +427,7 @@ export function renderOrders(orders: OrderWithItems[], f: { platform: string; st
       ${
         ebay.connected
           ? `<form method="post" action="/app/orders/fetch-ebay" class="inline"><button class="btn primary" type="submit" title="Pull open orders from eBay (Fulfillment API)${ebay.lastSync ? " · last " + esc(ebay.lastSync.slice(0, 16).replace("T", " ")) : ""}">Fetch eBay orders</button></form>`
-          : `<a class="btn" href="/app/settings#s-ebay" title="Connect your eBay account to pull orders">Fetch eBay orders</a>`
+          : `<a class="btn" href="/app/settings/ebay" title="Connect your eBay account to pull orders">Fetch eBay orders</a>`
       }
       <button class="btn" type="button" disabled title="Needs a Mana Pool API connection — next integration">Fetch Mana Pool</button>
       <details class="tool-dd"><summary class="btn">Upload TCGplayer pull sheet</summary>

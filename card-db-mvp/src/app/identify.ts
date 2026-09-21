@@ -165,10 +165,11 @@ export function parseInput(raw: string): Parsed {
     }
   }
 
-  // number: "#119", "020/189", "4/102", "SV049", or a standalone integer
+  // number: "#119", "020/189", "4/102", "SV049", One Piece "OP11-117" / "EB02-005" / "ST01-001", or a standalone integer
   let number: string | null = null;
   const nm =
     s.match(/#\s*([a-z]{0,3}\d+[a-z]?(?:\/\d+)?)/i) ||
+    s.match(/\b([a-z]{1,3}\d{1,2}-\d{3})\b/i) ||
     s.match(/\b(\d{1,4}\/\d{1,4})\b/) ||
     s.match(/\b([a-z]{1,3}\d{1,4})\b/i) ||
     s.match(/\b(\d{1,4})\b/);

@@ -20,15 +20,10 @@ import { query, one } from "../pg.ts";
 import { randomBytes } from "node:crypto";
 import { currentSellerId } from "./session-context.ts";
 import { getListing, getInventoryItem, getSeller, updateSeller, type Listing } from "./store.ts";
+import { ebayConfig } from "./ebay-config.ts";
 
-const ENV = () => ({
-  clientId: process.env.EBAY_CLIENT_ID ?? "",
-  clientSecret: process.env.EBAY_CLIENT_SECRET ?? "",
-  ruName: process.env.EBAY_RU_NAME ?? "",
-  env: (process.env.EBAY_ENV ?? "production").toLowerCase(),
-  marketplace: process.env.EBAY_MARKETPLACE ?? "EBAY_US",
-  mock: process.env.EBAY_MOCK === "1",
-});
+// Keys come from the owner console (meta table) or the env — see ebay-config.ts.
+const ENV = () => ebayConfig();
 const API_HOST = () => (ENV().env === "sandbox" ? "https://api.sandbox.ebay.com" : "https://api.ebay.com");
 const AUTH_HOST = () => (ENV().env === "sandbox" ? "https://auth.sandbox.ebay.com" : "https://auth.ebay.com");
 

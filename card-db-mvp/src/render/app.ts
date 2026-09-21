@@ -26,6 +26,7 @@ import {
 import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL, isPro } from "../app/billing.ts";
 import { maxUploadFiles, MAX_UPLOAD_FILES_PRO, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_FILES, UPLOAD_MAX_EDGE } from "../upload.ts";
 import { ebayLink, ebaySearchUrl, ebaySoldUrl, tcgplayerProductUrl } from "../affiliate.ts";
+import { ebayConfigured } from "../ebay.ts";
 import { getGames } from "../pg.ts";
 import type { Game } from "../db.ts";
 
@@ -252,9 +253,9 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
   </div>`;
 
   const steps: Array<[boolean, string, string, string]> = [
-    [seller.display_name !== DEFAULT_SHOP_NAME || seller.sku_prefix !== "CARD", "Name your shop and set a SKU prefix", "Every card you add gets a unique SKU like CARD-000001.", "/app/settings#s-shop"],
-    [!!seller.title_structure, "Save a title structure", "Drag the blocks into the order you want; titles auto-fit eBay's 80 characters.", "/app/settings#s-titles"],
-    [policiesDone, "Fill in your eBay business policies", "Shipping, return and payment policy names must match your eBay account exactly or the upload fails.", "/app/settings#s-ebay"],
+    [seller.display_name !== DEFAULT_SHOP_NAME || seller.sku_prefix !== "CARD", "Name your shop and set a SKU prefix", "Every card you add gets a unique SKU like CARD-000001.", "/app/settings/shop"],
+    [!!seller.title_structure, "Save a title structure", "Drag the blocks into the order you want; titles auto-fit eBay's 80 characters.", "/app/settings/titles"],
+    [policiesDone, "Fill in your eBay business policies", "Shipping, return and payment policy names must match your eBay account exactly or the upload fails.", "/app/settings/ebay"],
     [counts.batches > 0, "Scan or paste your first batch", "Every match shows a confidence score; anything uncertain waits in review.", "/app/scan"],
     [stats.count > 0, "Add reviewed cards to inventory", "Approve a batch to assign SKUs and record the prices you chose.", counts.batches ? "/app/batches" : "/app/scan"],
     [counts.listings > 0, "Create a listing draft or export a CSV", "Drafts export to an eBay File Exchange CSV with your policies filled in.", stats.count ? "/app/inventory" : "/app/scan"],
@@ -275,7 +276,7 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
   const help = `<div class="ws-panel help-panel">
     <div class="ws-panel-head"><h2>How it works</h2></div>
     <details><summary>How are cards identified?</summary><p>Photos go through the configured recognizer and pasted lines are parsed for name, number, set, finish, condition, language and quantity. Both resolve against the catalog and get a confidence score: <b>90%+ auto-matches</b>, anything lower waits in review with alternatives and a manual search. Use <b>Advanced Matching Options</b> on the scan page to prioritize or exclude sets and keywords when you know what a binder holds.</p></details>
-    <details><summary>How are prices chosen?</summary><p>Each card resolves a price from your rule (Market, Market ± %, or Fixed). If you've listed the same printing before, that previous price is remembered and — depending on your <a href="/app/settings#s-pricing">automatic pricing preference</a> — used first. A floor stops automatic prices dropping below a minimum. You can always type an exact price.</p></details>
+    <details><summary>How are prices chosen?</summary><p>Each card resolves a price from your rule (Market, Market ± %, or Fixed). If you've listed the same printing before, that previous price is remembered and — depending on your <a href="/app/settings/pricing">automatic pricing preference</a> — used first. A floor stops automatic prices dropping below a minimum. You can always type an exact price.</p></details>
     <details><summary>What if a card isn't in the catalog?</summary><p>It lands in review as "No match". Search manually for the closest printing, or skip it. The public catalog grows by set sync; tell us which set is missing.</p></details>
     <details><summary>How do listings reach eBay?</summary><p>Listing drafts carry your title, item specifics, description template, price and policies. Export them as an eBay File Exchange CSV, or connect eBay for direct publishing (next integration). Policy names are validated before export so the CSV isn't rejected.</p></details>
     <details><summary>Where are my previous batches?</summary><p><a href="/app/batches">Batches</a> keeps every scan with matched / review / failed counts and the value that reached inventory. Reopen any batch to finish reviewing it.</p></details>
@@ -387,7 +388,7 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
     <div class="stat"><div class="k">Inventory value</div><div class="v mono">${money(stats.value_cents)}</div><div class="s">your prices × quantity · ${stats.units} unit${stats.units === 1 ? "" : "s"}</div></div>
     <div class="stat"><div class="k">Market value</div><div class="v mono">${money(stats.market_cents)}</div><div class="s">catalog market price × quantity</div></div>
     <div class="stat"><div class="k">Cards in stock</div><div class="v mono">${stats.count}</div><div class="s">${stats.listed} listed · next SKU <span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span></div></div>
-    <div class="stat"><div class="k">Default pricing</div><div class="v" style="font-size:1.3rem">${esc(ruleLabel({ mode: seller.price_mode, pct: seller.price_pct, fixed_cents: seller.price_fixed_cents }))}</div><div class="s"><a href="/app/settings#s-pricing">Change defaults →</a></div></div>
+    <div class="stat"><div class="k">Default pricing</div><div class="v" style="font-size:1.3rem">${esc(ruleLabel({ mode: seller.price_mode, pct: seller.price_pct, fixed_cents: seller.price_fixed_cents }))}</div><div class="s"><a href="/app/settings/pricing">Change defaults →</a></div></div>
   </div>`;
 
   const statusTabs = ["all", "in_stock", "listed", "sold"]
@@ -731,7 +732,7 @@ export async function renderScan(
         <p><b>Photos</b> are stored and dropped straight into the review queue, one item per image. The recognizer reads each card (or we take a first guess from the filename, e.g. <span class="mono">charizard-4-102.jpg</span>); anything we can't place waits in the queue where you <b>search and confirm</b> it. Approved cards keep their photo as the listing image.</p>
         <p><b>Pasted lines</b> are parsed for name, number, set, finish, condition, language and quantity, then matched against the catalog — <b>${Math.round(0.9 * 100)}%+</b> auto-matches, the rest route to review.</p>
         <p><b>Know what's in the binder?</b> Open <b>Advanced matching options</b> and prioritize its sets — same-name cards from other sets stop stealing matches. Exclude sets or keywords you never sell.</p>
-        <p><b>Prices</b> follow your rule, or the price you last listed the same printing at (<a href="/app/settings#s-pricing">automatic pricing</a>).</p>
+        <p><b>Prices</b> follow your rule, or the price you last listed the same printing at (<a href="/app/settings/pricing">automatic pricing</a>).</p>
         <div class="seam-note"><span class="i">◆</span><div><b>Reading the card from the pixels is the remaining seam.</b> A vision model (photo → identity, front/back, auto-crop) and graded-slab OCR/QR + cert lookup drop in behind the same review queue and identify contract — upload, storage, and review already work end-to-end.</div></div>
         ${
           batches.length
@@ -842,8 +843,13 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
   if (vf) {
     const q = [vf.card_name, vf.number ?? "", vf.set_name, vf.finish === "normal" ? "" : vf.finish_label].filter(Boolean).join(" ");
     const tcg = tcgplayerProductUrl(vf.tcgplayer_id);
+    // With a keyset, "eBay listed" opens CardUploader's popup (live listings
+    // with prices, in place); without one it is a plain link-out.
+    const listed = ebayConfigured()
+      ? `<button type="button" class="ri-ebay-btn" data-card="${vf.card_id}" data-v="${esc(vf.finish)}" data-q="${esc(q)}" title="Live eBay listings for this card, with prices">eBay listed ▾</button>`
+      : `<a href="${esc(ebaySearchUrl(q, "review-listed"))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>`;
     links = `<div class="ri-links">
-      <a href="${esc(ebaySearchUrl(q, "review-listed"))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
+      ${listed}
       <a href="${esc(ebaySoldUrl(q, "review-sold"))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings">eBay sold ↗</a>
       ${tcg ? `<a href="${esc(tcg)}" target="_blank" rel="noopener nofollow" title="TCGplayer product page (market price source)">TCGplayer ↗</a>` : ""}
     </div>`;
@@ -1086,7 +1092,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
         <label class="fld"><span>eBay category</span><input type="text" name="category" value="${esc(preview.category)}" class="mono"></label>
         <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${seller.best_offer ? " checked" : ""}> <span>Accept Best Offers <small>fixed price only; your default is set in Configuration → eBay</small></span></label>
         <label class="fld"><span>Description</span><textarea name="description" rows="7">${esc(preview.description)}</textarea></label>
-        <div class="policy-note">Business policies applied from <a href="/app/settings#s-ebay">settings</a>: shipping <b>${esc(seller.ebay_shipping_policy || "—")}</b>, returns <b>${esc(seller.ebay_return_policy || "—")}</b>, payment <b>${esc(seller.ebay_payment_policy || "—")}</b>, location <b>${esc(seller.item_location || "—")}</b>.</div>
+        <div class="policy-note">Business policies applied from <a href="/app/settings/ebay">settings</a>: shipping <b>${esc(seller.ebay_shipping_policy || "—")}</b>, returns <b>${esc(seller.ebay_return_policy || "—")}</b>, payment <b>${esc(seller.ebay_payment_policy || "—")}</b>, location <b>${esc(seller.item_location || "—")}</b>.</div>
         <div class="list-actions">
           <button class="btn primary" name="do" value="draft" type="submit">Save listing draft</button>
           ${ebayConn ? `<button class="btn primary" name="do" value="publish" type="submit">Save &amp; publish to eBay →</button>` : ""}
@@ -1136,7 +1142,7 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
         <td class="act">${
           ebayConn
             ? `<form method="post" action="/app/listings/${l.id}/publish" class="inline"><button class="btn sm${l.status === "published" ? "" : " primary"}" type="submit" title="${l.status === "published" ? "Push current title, price and quantity to the live listing" : "Run pre-flight and create the eBay listing"}">${l.status === "published" ? "Revise" : "Publish"}</button></form>${l.status === "published" ? `<form method="post" action="/app/listings/${l.id}/end" class="inline" onsubmit="return confirm('End this eBay listing?')"><button class="btn sm ghost" type="submit">End</button></form>` : ""}`
-            : `<a class="btn sm" href="/app/settings#s-ebay" title="Connect eBay to publish directly">Connect eBay</a>`
+            : `<a class="btn sm" href="/app/settings/ebay" title="Connect eBay to publish directly">Connect eBay</a>`
         }</td>
       </tr>`
         )
@@ -1176,7 +1182,7 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
            ${
              ebayConn
                ? `<p class="hint" style="margin-top:12px"><b>Publish</b> creates the live eBay listing through the Inventory API (pre-flight first); <b>Revise</b> pushes title, price and quantity to a live listing; <b>End</b> withdraws it. Select rows to publish in bulk or <b>schedule &amp; space out</b> — one listing every N minutes from a start time. Shipping a non-eBay order syncs quantity to eBay automatically.</p>`
-               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings#s-ebay"><b>Connect eBay</b></a> to publish, revise and end listings from here and pull orders. Drafts export as a File Exchange CSV meanwhile; scheduling still works and publishes once connected.</div></div>`
+               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings/ebay"><b>Connect eBay</b></a> to publish, revise and end listings from here and pull orders. Drafts export as a File Exchange CSV meanwhile; scheduling still works and publishes once connected.</div></div>`
            }`
         : `<div class="ws-empty"><h3>No listings yet</h3><p>Open a card in your <a href="/app/inventory">inventory</a> and build a listing.</p></div>`
     }
@@ -1188,162 +1194,146 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
 
 // ---- Settings -------------------------------------------------------------
 
-export async function renderSettings(msg?: string): Promise<{ html: string; title: string; description: string }> {
+// ---- Configuration ---------------------------------------------------------
+// CardUploader-style: a hub of tiles, one short page per section. Every page
+// saves only its own fields (POST /app/settings/<key>), so a seller can fix
+// their SKU prefix without scrolling past the title editor. Old anchors like
+// /app/settings/ebay still land on the right page (a tiny redirect script).
+
+export type SettingsSection = { key: string; group: string; title: string; blurb: string };
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  { key: "shop", group: "Card settings", title: "Shop & SKUs", blurb: "Shop name, SKU prefix, how many digits, and the next number." },
+  { key: "pricing", group: "Card settings", title: "Pricing & condition", blurb: "Default rule, condition and language, automatic pricing, and the price floor." },
+  { key: "matching", group: "Card settings", title: "Matching", blurb: "Sets and keywords to prioritize or exclude when cards are identified." },
+  { key: "titles", group: "Card settings", title: "Titles", blurb: "The block-by-block eBay title structure, auto-fitted to 80 characters." },
+  { key: "descriptions", group: "Card settings", title: "Descriptions", blurb: "Up to three listing description templates with {variables}." },
+  { key: "ebay", group: "Platform settings", title: "eBay", blurb: "Account link, business policies, store category, Best Offer." },
+  { key: "shopify", group: "Platform settings", title: "Shopify", blurb: "Vendor, location, weight and tags for the product CSV." },
+  { key: "whatnot", group: "Platform settings", title: "Whatnot", blurb: "Category, shipping profile and offers for the bulk-listing CSV." },
+  { key: "tcgplayer", group: "Platform settings", title: "TCGplayer", blurb: "My Store columns for the inventory CSV." },
+  { key: "manapool", group: "Platform settings", title: "Mana Pool", blurb: "Notes that ride along on exports until the API link exists." },
+  { key: "privacy", group: "Account", title: "Privacy", blurb: "Whether your confirmed matches may help improve identification." },
+];
+export const settingsSection = (key: string): SettingsSection | undefined => SETTINGS_SECTIONS.find((s) => s.key === key);
+
+export async function renderSettings(msg?: string, sectionKey?: string): Promise<{ html: string; title: string; description: string }> {
   const [s, sets, sampleFields] = await Promise.all([getSeller(), getAllSets(), sampleTitleFields()]);
   const structure = parseStructure(s.title_structure) ?? DEFAULT_STRUCTURE;
-  const initialJson = serializeStructure(structure);
-  const initialPreview = renderStructuredTitle(sampleFields, structure);
   const pro = isPro(s.plan_tier);
   const autoPref = parseAutoPricePref(s.auto_price_pref);
   const prefs = parseMatchingPrefs(s.matching_prefs);
   const matchVals = prefsToForm(prefs, sets);
   const tpls = parseDescriptionTemplates(s.description_templates);
-  const sampleTitle = sellerTitle(sampleFields, s);
-  const SAMPLE_PRICE = 1250;
-  const tplItems = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => tpls.items[i] ?? { name: `Description ${i + 1}`, body: i === 0 && !tpls.items.length ? DEFAULT_DESCRIPTION_TEMPLATE : "" });
-  const activeBody = tplItems[tpls.active]?.body || DEFAULT_DESCRIPTION_TEMPLATE;
-  const descPreview = fillDescriptionTemplate(activeBody, sampleFields, SAMPLE_PRICE, sampleTitle);
-
   const ch = parseChannelPrefs(s.channel_prefs);
   const conn = await getConnection();
-  const pol = policiesOf(conn);
-  const ids = policyIdsOf(conn);
-  const loc = locationOf(conn);
-  const policySelect = (k: "fulfillment" | "payment" | "return", label: string) =>
-    `<label class="fld"><span>${label} policy</span>${
-      pol[k].length
-        ? `<select name="policy_${k}">${opt("", "— choose —", ids[k])}${pol[k].map((p) => opt(p.id, `${p.name}`, ids[k])).join("")}</select>`
-        : `<input value="${esc(ids[k])}" name="policy_${k}" placeholder="sync policies first" ${conn ? "" : "disabled"}>`
-    }</label>`;
-  const ebayCard = !ebaySellConfigured()
-    ? `<div class="ebay-card off"><div><b>eBay isn't configured on this server.</b><div class="hint">Add <span class="mono">EBAY_CLIENT_ID</span>, <span class="mono">EBAY_CLIENT_SECRET</span> and <span class="mono">EBAY_RU_NAME</span> to <span class="mono">.env</span> (see .env.example), or <span class="mono">EBAY_MOCK=1</span> to try the flow. Until then, listings export as a File Exchange CSV and policy <em>names</em> below drive the file.</div></div></div>`
-    : conn
-    ? `<div class="ebay-card on">
-        <div><span class="plan-dot">Connected</span> <b>${esc(conn.ebay_user ?? "eBay account")}</b> <span class="hint">· ${esc(conn.marketplace)}${ebayIsMock() ? " · mock mode" : ""} · since ${esc(conn.connected_at.slice(0, 10))}${conn.last_policy_sync ? ` · policies synced ${esc(conn.last_policy_sync.slice(0, 10))}` : " · policies not synced yet"}</span></div>
-        <div class="ebay-actions"><form method="post" action="/app/ebay/sync-policies" class="inline"><button class="btn sm" type="submit">Sync policies from eBay</button></form><form method="post" action="/app/ebay/disconnect" class="inline" onsubmit="return confirm('Disconnect eBay? Published listings stay live on eBay; you just lose direct publish/orders here.')"><button class="btn sm ghost" type="submit">Disconnect</button></form></div>
-      </div>`
-    : `<div class="ebay-card"><div><b>Not connected.</b><div class="hint">Connect to publish and revise listings directly, pull orders, and keep quantities in sync. You sign in on eBay's own page; no password is entered here.</div></div><a class="btn primary" href="/app/ebay/connect">Connect eBay account →</a></div>`;
-  const ebayLive = conn
-    ? `<h3 class="set-sub">Business policies <small class="hint">chosen by ID — the pre-flight rejects a listing whose policy no longer exists, before eBay does</small></h3>
-      <div class="fld-row">${policySelect("fulfillment", "Shipping")}${policySelect("payment", "Payment")}${policySelect("return", "Return")}</div>
-      <h3 class="set-sub">Ship-from location <small class="hint">eBay requires one per seller; created on save</small></h3>
+  const nextSku = `${s.sku_prefix}-${String(s.sku_next).padStart(s.sku_pad, "0")}`;
+  const policiesNamed = !!(s.ebay_shipping_policy && s.ebay_return_policy && s.ebay_payment_policy);
+
+  // ---- the hub ----
+  if (!sectionKey) {
+    const meta: Record<string, string> = {
+      shop: `${esc(s.display_name)} · next SKU <span class="mono">${esc(nextSku)}</span>`,
+      pricing: `${esc(ruleLabel({ mode: s.price_mode, pct: s.price_pct, fixed_cents: s.price_fixed_cents }))} · ${esc(s.default_condition)} · floor ${s.price_floor_cents ? money(s.price_floor_cents) : "$0.99"}`,
+      matching: isEmptyPrefs(prefs) ? "Nothing set — every set considered equally" : esc(describePrefs(prefs, sets)),
+      titles: s.title_structure ? `${structure.blocks.length} blocks${structure.optimize ? " · auto-fit on" : ""}` : "Default structure",
+      descriptions: tpls.items.length ? `${tpls.items.length} template${tpls.items.length === 1 ? "" : "s"} · active: ${esc(tpls.items[tpls.active]?.name ?? "")}` : "Built-in description",
+      ebay: !ebaySellConfigured()
+        ? `Not configured on this server · ${policiesNamed ? "policy names set" : "policy names missing"}`
+        : conn
+        ? `Connected as ${esc(conn.ebay_user ?? "eBay account")}${conn.last_policy_sync ? " · policies synced" : " · policies not synced"}`
+        : `Not connected · ${policiesNamed ? "policy names set" : "policy names missing"}`,
+      shopify: ch.shopify_vendor ? `Vendor ${esc(ch.shopify_vendor)}` : "Defaults",
+      whatnot: `${esc(ch.whatnot_category)} · offers ${ch.whatnot_offerable ? "on" : "off"}`,
+      tcgplayer: ch.tcg_my_store ? `My Store on · ×${esc(ch.tcg_store_multiplier)}` : "My Store columns off",
+      manapool: ch.manapool_note ? esc(ch.manapool_note) : "No notes",
+      privacy: s.training_opt_in ? "Opted in to improving identification" : "Not sharing matches (default)",
+    };
+    const attention = new Set<string>([...(s.display_name === DEFAULT_SHOP_NAME ? ["shop"] : []), ...(!policiesNamed && !conn ? ["ebay"] : [])]);
+    const groups = [...new Set(SETTINGS_SECTIONS.map((x) => x.group))];
+    const tiles = groups
+      .map(
+        (g) => `<h2 class="cfg-group">${esc(g)}</h2>
+      <div class="cfg-grid">${SETTINGS_SECTIONS.filter((x) => x.group === g)
+        .map(
+          (x) => `<a class="cfg-card${attention.has(x.key) ? " attn" : ""}" href="/app/settings/${x.key}">
+            <span class="cfg-title">${esc(x.title)}${attention.has(x.key) ? `<span class="cfg-dot" title="Needs your attention"></span>` : ""}</span>
+            <span class="cfg-blurb">${esc(x.blurb)}</span>
+            <span class="cfg-meta">${meta[x.key] ?? ""}</span>
+            <span class="cfg-arrow" aria-hidden="true">→</span>
+          </a>`
+        )
+        .join("")}${
+          g === "Account"
+            ? `<a class="cfg-card" href="/pricing${pro ? "" : "?upgrade=1"}">
+            <span class="cfg-title">Your plan</span>
+            <span class="cfg-blurb">${pro ? `Pro · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : "Free — the pricing tool, card search and sales lookup."}</span>
+            <span class="cfg-meta"><span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span> ${pro ? "Billing management is coming soon" : "Pro adds scanning, inventory and listings"}</span>
+            <span class="cfg-arrow" aria-hidden="true">→</span>
+          </a>`
+            : ""
+        }</div>`
+      )
+      .join("");
+    // legacy anchors (#s-ebay, #s-shop …) → their pages
+    const hashJs = `<script>(function(){var m=(location.hash||'').match(/^#s-([a-z]+)$/);if(!m)return;var k=m[1]==='desc'?'descriptions':m[1];if(k==='plan')return;if(${JSON.stringify(SETTINGS_SECTIONS.map((x) => x.key))}.indexOf(k)>=0)location.replace('/app/settings/'+k);})();</script>`;
+    const html = `<div class="wrap ws">
+      ${wsHead("settings", "Configuration", "Set once, reuse on every scan and listing. Each card below opens one short page.", "", { navMode: "open" })}
+      ${flash(msg)}
+      ${hashJs}
+      ${tiles}
+      ${APP_JS}
+    </div>`;
+    return { html, title: "Configuration — Seller workspace | CardIndex", description: "Seller workspace configuration." };
+  }
+
+  // ---- one section ----
+  const sec = settingsSection(sectionKey);
+  if (!sec) return renderSettings(msg);
+  let body = "";
+  let extraJs = "";
+
+  if (sec.key === "shop") {
+    body = `<div class="fld-row">
+        <label class="fld"><span>Shop name</span><input name="display_name" value="${esc(s.display_name)}"></label>
+        <label class="fld"><span>SKU prefix</span><input name="sku_prefix" value="${esc(s.sku_prefix)}" maxlength="12" class="mono"></label>
+        <label class="fld"><span>SKU digits</span><input type="number" name="sku_pad" min="3" max="9" value="${s.sku_pad}" class="mono"></label>
+        <label class="fld"><span>Next SKU number</span><input type="number" name="sku_next" min="1" value="${s.sku_next}" class="mono"></label>
+      </div>
+      <p class="hint">The next card you add gets <b class="mono">${esc(nextSku)}</b>. The upload page can also number a batch from any start, or give every card the bare prefix as a box label.</p>`;
+  } else if (sec.key === "pricing") {
+    body = `<div class="fld-row">
+        <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(s.price_mode, s.price_pct))}</select></label>
+        <label class="fld"><span>Fixed price ($) <small>used when the rule is Fixed</small></span><input name="price_fixed" value="${dollars(s.price_fixed_cents)}" class="mono" inputmode="decimal"></label>
+        <label class="fld"><span>Default condition</span><select name="default_condition">${conditionOptions(s.default_condition)}</select></label>
+        <label class="fld"><span>Default language</span><select name="default_language">${languageOptions(s.default_language)}</select></label>
+      </div>
+      <h3 class="set-sub">Automatic pricing</h3>
+      <p class="hint">How a freshly identified card gets its first price. The price you last listed each printing at (per condition) is remembered; choose whether that memory beats the rule.</p>
+      <div class="radio-list">${AUTO_PRICE_PREFS.map(
+        (p) => `<label class="radio-row"><input type="radio" name="auto_price_pref" value="${p.key}"${p.key === autoPref ? " checked" : ""}><span><b>${esc(p.label)}</b><small>${esc(p.hint)}</small></span></label>`
+      ).join("")}</div>
       <div class="fld-row">
-        <label class="fld"><span>Postal code *</span><input name="loc_postal" value="${esc(loc.postalCode)}" class="mono" required></label>
-        <label class="fld"><span>Country</span><input name="loc_country" value="${esc(loc.country)}" maxlength="2" class="mono"></label>
-        <label class="fld"><span>City</span><input name="loc_city" value="${esc(loc.city)}"></label>
-        <label class="fld"><span>State / province</span><input name="loc_state" value="${esc(loc.stateOrProvince)}"></label>
-      </div>
-      ${conn.location_key ? `<p class="hint">Location <span class="mono">${esc(conn.location_key)}</span> is on file.</p>` : `<p class="hint warn">No ship-from location yet — save the form to create it.</p>`}`
-    : "";
-  const sectionNav = `<nav class="set-tabs" aria-label="Settings sections">
-    <a href="#s-shop">Shop &amp; SKUs</a><a href="#s-pricing">Pricing</a><a href="#s-matching">Matching</a><a href="#s-titles">Titles</a><a href="#s-desc">Descriptions</a><a href="#s-ebay">eBay</a><a href="#s-shopify">Shopify</a><a href="#s-whatnot">Whatnot</a><a href="#s-tcgplayer">TCGplayer</a><a href="#s-manapool">Mana Pool</a>
-  </nav>`;
-  const channelSections = `
-      <div class="set-section" id="s-shopify">
-        <h2>Shopify</h2>
-        <p class="hint">Applied to the Shopify product-import CSV (one product per card, one variant). Store linking with two-way inventory sync is the next integration.</p>
-        <div class="fld-row">
-          <label class="fld"><span>Vendor</span><input name="shopify_vendor" value="${esc(ch.shopify_vendor)}" placeholder="${esc(s.display_name)}"></label>
-          <label class="fld"><span>Inventory location</span><input name="shopify_location" value="${esc(ch.shopify_location)}" placeholder="e.g. Shop floor"></label>
-          <label class="fld"><span>Variant grams</span><input name="shopify_grams" value="${esc(ch.shopify_grams)}" class="mono"></label>
-          <label class="fld"><span>Base tags</span><input name="shopify_tags" value="${esc(ch.shopify_tags)}" placeholder="trading cards"></label>
-        </div>
-      </div>
-      <div class="set-section" id="s-whatnot">
-        <h2>Whatnot</h2>
-        <p class="hint">Applied to the Whatnot bulk-listing CSV.</p>
-        <div class="fld-row">
-          <label class="fld"><span>Category</span><input name="whatnot_category" value="${esc(ch.whatnot_category)}"></label>
-          <label class="fld"><span>Shipping profile</span><input name="whatnot_shipping_profile" value="${esc(ch.whatnot_shipping_profile)}" placeholder="exact profile name from Whatnot"></label>
-          <label class="fld ckbox"><input type="checkbox" name="whatnot_offerable" value="1"${ch.whatnot_offerable ? " checked" : ""}> <span>Accept offers</span></label>
-        </div>
-      </div>
-      <div class="set-section" id="s-tcgplayer">
-        <h2>TCGplayer</h2>
-        <p class="hint">Applied to the TCGplayer inventory CSV (ungraded only — TCGplayer doesn't list slabs). Rows are keyed by TCGplayer product id when the catalog has one.</p>
-        <label class="fld ckbox"><input type="checkbox" name="tcg_my_store" value="1"${ch.tcg_my_store ? " checked" : ""}> <span><b>My Store channel (Pro Seller)</b> — populate My Store Price and Reserve Quantity columns</span></label>
-        <div class="fld-row">
-          <label class="fld"><span>My Store price multiplier <small>× your price</small></span><input name="tcg_store_multiplier" value="${esc(ch.tcg_store_multiplier)}" class="mono" inputmode="decimal"></label>
-          <label class="fld"><span>My Store reserve quantity</span><input name="tcg_reserve_qty" value="${esc(ch.tcg_reserve_qty)}" class="mono" inputmode="numeric"></label>
-        </div>
-      </div>
-      <div class="set-section" id="s-manapool">
-        <h2>Mana Pool</h2>
-        <p class="hint">Mana Pool sells Magic singles keyed by TCGplayer SKU. Live listing and order sync needs a Mana Pool API connection — the next integration after eBay. Notes you keep here ride along on exports.</p>
-        <label class="fld"><span>Notes</span><input name="manapool_note" value="${esc(ch.manapool_note)}" placeholder="e.g. store slug, pricing policy"></label>
-        <div class="seam-note"><span class="i">◆</span><div><b>Connect Mana Pool</b> (API key) → fetch orders, auto mark-shipped when picked, quantity sync on Listed / Sold.</div></div>
+        <label class="fld"><span>Never price below ($) <small>floor for automatic prices · blank = eBay's $0.99 minimum</small></span><input name="price_floor" value="${dollars(s.price_floor_cents)}" class="mono" placeholder="0.99" inputmode="decimal"></label>
       </div>`;
-  const planPanel = `<div class="ws-panel plan-panel" id="s-plan">
-    <div>
-      <div class="eyebrow">Your plan</div>
-      <div class="plan-line">
-        <b>${pro ? "Pro" : "Free"}</b>${pro ? ` · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : ""}
-        <span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span>
+  } else if (sec.key === "matching") {
+    body = `${setDatalist(sets)}
+      <p class="hint">Applied to every scan unless you change it on the upload page. ${isEmptyPrefs(prefs) ? "Nothing set — the matcher considers every set equally." : `Currently: <b>${esc(describePrefs(prefs, sets))}</b>.`}</p>
+      <div class="fld-row">
+        <label class="fld"><span>Prioritize sets <small>comma-separated set names</small></span><input type="text" name="prioritize_sets" list="setlist" value="${esc(matchVals.prioritize_sets)}" placeholder="e.g. Base Set, Jungle" autocomplete="off"></label>
+        <label class="fld"><span>Exclude sets</span><input type="text" name="exclude_sets" list="setlist" value="${esc(matchVals.exclude_sets)}" placeholder="e.g. Vivid Voltage" autocomplete="off"></label>
       </div>
-      <p class="hint">${
-        pro
-          ? "Thanks for subscribing. Online billing management is coming soon."
-          : "Free includes the pricing tool, card search and sales lookup. Pro adds scanning, inventory and listings."
-      } <a href="/pricing${pro ? "" : "?upgrade=1"}">${pro ? "View plans" : "Upgrade to Pro"}</a></p>
-    </div>
-  </div>`;
-
-  const html = `<div class="wrap ws">
-    ${wsHead("settings", "Settings", "Set once, reuse on every scan and listing — SKU scheme, pricing, matching, titles, descriptions, and eBay preferences.", "", { navMode: "open" })}
-    ${flash(msg)}
-    ${planPanel}
-    ${sectionNav}
-    ${setDatalist(sets)}
-    <form class="ws-panel settings-form" method="post" action="/app/settings">
-      <div class="set-section" id="s-shop">
-        <h2>Shop &amp; SKUs</h2>
-        <div class="fld-row">
-          <label class="fld"><span>Shop name</span><input name="display_name" value="${esc(s.display_name)}"></label>
-          <label class="fld"><span>SKU prefix</span><input name="sku_prefix" value="${esc(s.sku_prefix)}" maxlength="12"></label>
-          <label class="fld"><span>SKU digits</span><input type="number" name="sku_pad" min="3" max="9" value="${s.sku_pad}" class="mono"></label>
-          <label class="fld"><span>Next SKU number</span><input type="number" name="sku_next" min="1" value="${s.sku_next}" class="mono"></label>
-        </div>
-        <p class="hint">Next SKU: <b class="mono">${esc(s.sku_prefix)}-${String(s.sku_next).padStart(s.sku_pad, "0")}</b></p>
-      </div>
-
-      <div class="set-section" id="s-pricing">
-        <h2>Default pricing &amp; condition</h2>
-        <div class="fld-row">
-          <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(s.price_mode, s.price_pct))}</select></label>
-          <label class="fld"><span>Fixed price ($, if rule = Fixed)</span><input name="price_fixed" value="${dollars(s.price_fixed_cents)}" class="mono"></label>
-          <label class="fld"><span>Default condition</span><select name="default_condition">${conditionOptions(s.default_condition)}</select></label>
-          <label class="fld"><span>Default language</span><select name="default_language">${languageOptions(s.default_language)}</select></label>
-        </div>
-        <h3 class="set-sub">Automatic pricing</h3>
-        <p class="hint">How a freshly identified card gets its first price. We remember what you listed each printing at (per condition); choose whether that memory beats the rule.</p>
-        <div class="radio-list">${AUTO_PRICE_PREFS.map(
-          (p) => `<label class="radio-row"><input type="radio" name="auto_price_pref" value="${p.key}"${p.key === autoPref ? " checked" : ""}><span><b>${esc(p.label)}</b><small>${esc(p.hint)}</small></span></label>`
-        ).join("")}</div>
-        <div class="fld-row">
-          <label class="fld"><span>Never price below ($) <small>floor for automatic prices · blank = eBay's $0.99 minimum</small></span><input name="price_floor" value="${dollars(s.price_floor_cents)}" class="mono" placeholder="0.99" inputmode="decimal"></label>
-        </div>
-      </div>
-
-      <div class="set-section" id="s-matching">
-        <h2>Default matching options</h2>
-        <p class="hint">Applied to every scan unless you change them on the scan page. ${isEmptyPrefs(prefs) ? "Nothing set — the matcher considers every set equally." : `Currently: <b>${esc(describePrefs(prefs, sets))}</b>.`}</p>
-        <div class="fld-row">
-          <label class="fld"><span>Prioritize sets <small>comma-separated set names</small></span><input type="text" name="prioritize_sets" list="setlist" value="${esc(matchVals.prioritize_sets)}" placeholder="e.g. Base Set, Jungle" autocomplete="off"></label>
-          <label class="fld"><span>Exclude sets</span><input type="text" name="exclude_sets" list="setlist" value="${esc(matchVals.exclude_sets)}" placeholder="e.g. Vivid Voltage" autocomplete="off"></label>
-        </div>
-        <div class="fld-row">
-          <label class="fld"><span>Prioritize keywords</span><input type="text" name="prioritize_terms" value="${esc(matchVals.prioritize_terms)}" placeholder="e.g. holo, japanese"></label>
-          <label class="fld"><span>Exclude keywords</span><input type="text" name="exclude_terms" value="${esc(matchVals.exclude_terms)}" placeholder="e.g. promo"></label>
-        </div>
-      </div>
-
-      <div class="set-section title-editor" id="s-titles" data-max="${TITLE_MAX}">
+      <div class="fld-row">
+        <label class="fld"><span>Prioritize keywords</span><input type="text" name="prioritize_terms" value="${esc(matchVals.prioritize_terms)}" placeholder="e.g. holo, japanese"></label>
+        <label class="fld"><span>Exclude keywords</span><input type="text" name="exclude_terms" value="${esc(matchVals.exclude_terms)}" placeholder="e.g. promo"></label>
+      </div>`;
+  } else if (sec.key === "titles") {
+    const initialJson = serializeStructure(structure);
+    const initialPreview = renderStructuredTitle(sampleFields, structure);
+    body = `<div class="title-editor" id="s-titles" data-max="${TITLE_MAX}">
         <div class="te-top">
-          <h2>Title structure editor</h2>
           <label class="te-opt"><input type="checkbox" id="te-optimize"${structure.optimize ? " checked" : ""}> <span>Title optimization <small>auto-trim to ${TITLE_MAX} chars</small></span></label>
         </div>
-        <p class="hint">Click a block to add it, drag blocks to reorder, and toggle <b>CAPS</b> per block. The preview updates live against a sample card — <b>the same builder writes your review-queue titles and eBay CSV</b>, so nothing ever lists over ${TITLE_MAX} characters.</p>
-
+        <p class="hint">Click a block to add it, drag blocks to reorder, and toggle <b>CAPS</b> per block. The preview updates live against a sample card — the same builder writes your review-queue titles and eBay CSV, so nothing ever lists over ${TITLE_MAX} characters.</p>
         <div class="te-avail-wrap">
           <div class="te-lbl">Building blocks</div>
           <div class="te-avail" id="te-avail"></div>
@@ -1352,24 +1342,26 @@ export async function renderSettings(msg?: string): Promise<{ html: string; titl
             <button type="button" class="btn sm" id="te-custom-add">+ Add text</button>
           </div>
         </div>
-
         <div class="te-struct-wrap">
           <div class="te-lbl">Title structure <span class="te-hint2">drag to reorder</span></div>
           <div class="te-struct" id="te-struct"></div>
         </div>
-
         <div class="te-preview">
           <div class="te-preview-top"><span class="te-lbl">Preview</span><span class="te-count" id="te-count">${initialPreview.length}/${TITLE_MAX}</span></div>
           <div class="te-preview-text" id="te-ptext">${esc(initialPreview.title || "—")}</div>
           <div class="te-warn" id="te-warn"${initialPreview.over ? "" : " hidden"}>⚠ Over ${TITLE_MAX} characters — eBay rejects longer titles. Turn on optimization or remove a block.</div>
         </div>
-
         <input type="hidden" name="title_structure" id="te-json" value="${esc(initialJson)}">
       </div>
-      <script>window.__TITLE__=${JSON.stringify({ tokens: TITLE_TOKENS.map((t) => ({ k: t.k, label: t.label })), structure, max: TITLE_MAX })};</script>
-
-      <div class="set-section desc-editor" id="s-desc">
-        <h2>Description templates</h2>
+      <script>window.__TITLE__=${JSON.stringify({ tokens: TITLE_TOKENS.map((t) => ({ k: t.k, label: t.label })), structure, max: TITLE_MAX })};</script>`;
+    extraJs = TITLE_EDITOR_JS;
+  } else if (sec.key === "descriptions") {
+    const sampleTitle = sellerTitle(sampleFields, s);
+    const SAMPLE_PRICE = 1250;
+    const tplItems = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => tpls.items[i] ?? { name: `Description ${i + 1}`, body: i === 0 && !tpls.items.length ? DEFAULT_DESCRIPTION_TEMPLATE : "" });
+    const activeBody = tplItems[tpls.active]?.body || DEFAULT_DESCRIPTION_TEMPLATE;
+    const descPreview = fillDescriptionTemplate(activeBody, sampleFields, SAMPLE_PRICE, sampleTitle);
+    body = `<div class="desc-editor" id="s-desc">
         <p class="hint">Up to ${DESCRIPTION_TEMPLATE_MAX} templates; the <b>active</b> one is used when generating listings and CSV exports. Click a variable to insert it at the cursor. Lines whose variable is empty for a card (e.g. <span class="mono">Grade: {grade}</span> on an ungraded card) are dropped automatically.</p>
         <div class="desc-tabs" role="tablist">${tplItems
           .map((t, i) => `<button type="button" class="desc-tab${i === tpls.active ? " on" : ""}" data-i="${i}" role="tab">${esc(t.name || `Description ${i + 1}`)}</button>`)
@@ -1394,34 +1386,92 @@ export async function renderSettings(msg?: string): Promise<{ html: string; titl
           <pre class="desc-preview" id="desc-preview">${esc(descPreview)}</pre>
         </div>
       </div>
-      <script>window.__DESC__=${JSON.stringify({ active: tpls.active, defaultBody: DEFAULT_DESCRIPTION_TEMPLATE, sampleTitle })};</script>
-
-      <div class="set-section" id="s-ebay">
-        <h2>eBay</h2>
-        ${ebayCard}
-        ${ebayLive}
-        <h3 class="set-sub">Listing preferences ${conn ? `<small class="hint">policy names below are filled from your selections and used by the CSV export</small>` : `<small class="hint">names must match your eBay business policies exactly for the CSV upload to work</small>`}</h3>
+      <script>window.__DESC__=${JSON.stringify({ active: tpls.active, defaultBody: DEFAULT_DESCRIPTION_TEMPLATE, sampleTitle })};</script>`;
+    extraJs = DESC_EDITOR_JS;
+  } else if (sec.key === "ebay") {
+    const pol = policiesOf(conn);
+    const ids = policyIdsOf(conn);
+    const loc = locationOf(conn);
+    const policySelect = (k: "fulfillment" | "payment" | "return", label: string) =>
+      `<label class="fld"><span>${label} policy</span>${
+        pol[k].length
+          ? `<select name="policy_${k}">${opt("", "— choose —", ids[k])}${pol[k].map((p) => opt(p.id, `${p.name}`, ids[k])).join("")}</select>`
+          : `<input value="${esc(ids[k])}" name="policy_${k}" placeholder="sync policies first" ${conn ? "" : "disabled"}>`
+      }</label>`;
+    const ebayCard = !ebaySellConfigured()
+      ? `<div class="ebay-card off"><div><b>eBay isn't configured on this server.</b><div class="hint">Add <span class="mono">EBAY_CLIENT_ID</span>, <span class="mono">EBAY_CLIENT_SECRET</span> and <span class="mono">EBAY_RU_NAME</span> to <span class="mono">.env</span> (see .env.example), or <span class="mono">EBAY_MOCK=1</span> to try the flow. Until then, listings export as a File Exchange CSV and the policy <em>names</em> below drive the file.</div></div></div>`
+      : conn
+      ? `<div class="ebay-card on">
+          <div><span class="plan-dot">Connected</span> <b>${esc(conn.ebay_user ?? "eBay account")}</b> <span class="hint">· ${esc(conn.marketplace)}${ebayIsMock() ? " · mock mode" : ""} · since ${esc(conn.connected_at.slice(0, 10))}${conn.last_policy_sync ? ` · policies synced ${esc(conn.last_policy_sync.slice(0, 10))}` : " · policies not synced yet"}</span></div>
+          <div class="ebay-actions"><form method="post" action="/app/ebay/sync-policies" class="inline"><button class="btn sm" type="submit">Sync policies from eBay</button></form><form method="post" action="/app/ebay/disconnect" class="inline" onsubmit="return confirm('Disconnect eBay? Published listings stay live on eBay; you just lose direct publish/orders here.')"><button class="btn sm ghost" type="submit">Disconnect</button></form></div>
+        </div>`
+      : `<div class="ebay-card"><div><b>Not connected.</b><div class="hint">Connect to publish and revise listings directly, pull orders, and keep quantities in sync. You sign in on eBay's own page; no password is entered here.</div></div><a class="btn primary" href="/app/ebay/connect">Connect eBay account →</a></div>`;
+    const ebayLive = conn
+      ? `<h3 class="set-sub">Business policies <small class="hint">chosen by ID — the pre-flight rejects a listing whose policy no longer exists, before eBay does</small></h3>
+        <div class="fld-row">${policySelect("fulfillment", "Shipping")}${policySelect("payment", "Payment")}${policySelect("return", "Return")}</div>
+        <h3 class="set-sub">Ship-from location <small class="hint">eBay requires one per seller; created on save</small></h3>
         <div class="fld-row">
-          <label class="fld"><span>Store category <small>your eBay Store category id — goes in the CSV's StoreCategory column</small></span><input name="ebay_store_category" value="${esc(s.ebay_store_category ?? "")}" class="mono" inputmode="numeric"></label>
-          <label class="fld"><span>Item location</span><input name="item_location" value="${esc(s.item_location ?? "")}" placeholder="City, ST, United States"></label>
+          <label class="fld"><span>Postal code *</span><input name="loc_postal" value="${esc(loc.postalCode)}" class="mono" required></label>
+          <label class="fld"><span>Country</span><input name="loc_country" value="${esc(loc.country)}" maxlength="2" class="mono"></label>
+          <label class="fld"><span>City</span><input name="loc_city" value="${esc(loc.city)}"></label>
+          <label class="fld"><span>State / province</span><input name="loc_state" value="${esc(loc.stateOrProvince)}"></label>
         </div>
-        <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${s.best_offer ? " checked" : ""}> <span>Accept Best Offers on new fixed-price listings <small>off = buyers pay the listed price; you can flip it per listing or in bulk on the Listings page</small></span></label>
-        <div class="fld-row">
-          <label class="fld"><span>Shipping policy</span><input name="ebay_shipping_policy" value="${esc(s.ebay_shipping_policy ?? "")}"></label>
-          <label class="fld"><span>Return policy</span><input name="ebay_return_policy" value="${esc(s.ebay_return_policy ?? "")}"></label>
-          <label class="fld"><span>Payment policy</span><input name="ebay_payment_policy" value="${esc(s.ebay_payment_policy ?? "")}"></label>
-        </div>
-        <label class="ckbox"><input type="checkbox" name="training_opt_in" value="1" ${s.training_opt_in ? "checked" : ""}> <span>Opt in to improving identification from my confirmed matches <small>(off by default — the opposite of a perpetual training licence)</small></span></label>
+        ${conn.location_key ? `<p class="hint">Location <span class="mono">${esc(conn.location_key)}</span> is on file.</p>` : `<p class="hint warn">No ship-from location yet — save to create it.</p>`}`
+      : "";
+    body = `${ebayCard}${ebayLive}
+      <h3 class="set-sub">Listing defaults</h3>
+      <div class="fld-row">
+        <label class="fld"><span>Store category <small>your eBay Store category id — the CSV's StoreCategory column</small></span><input name="ebay_store_category" value="${esc(s.ebay_store_category ?? "")}" class="mono" inputmode="numeric"></label>
+        <label class="fld"><span>Item location</span><input name="item_location" value="${esc(s.item_location ?? "")}" placeholder="City, ST, United States"></label>
       </div>
+      <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${s.best_offer ? " checked" : ""}> <span>Accept Best Offers on new fixed-price listings <small>off = buyers pay the listed price; flip it per listing or in bulk on the Listings page</small></span></label>
+      <h3 class="set-sub">Policy names for the CSV ${conn ? `<small class="hint">filled from your selections above</small>` : `<small class="hint">must match your eBay business policies exactly or the upload fails</small>`}</h3>
+      <div class="fld-row">
+        <label class="fld"><span>Shipping policy</span><input name="ebay_shipping_policy" value="${esc(s.ebay_shipping_policy ?? "")}"></label>
+        <label class="fld"><span>Return policy</span><input name="ebay_return_policy" value="${esc(s.ebay_return_policy ?? "")}"></label>
+        <label class="fld"><span>Payment policy</span><input name="ebay_payment_policy" value="${esc(s.ebay_payment_policy ?? "")}"></label>
+      </div>`;
+  } else if (sec.key === "shopify") {
+    body = `<p class="hint">Applied to the Shopify product-import CSV (one product per card, one variant). Store linking with two-way inventory sync is the next integration.</p>
+      <div class="fld-row">
+        <label class="fld"><span>Vendor</span><input name="shopify_vendor" value="${esc(ch.shopify_vendor)}" placeholder="${esc(s.display_name)}"></label>
+        <label class="fld"><span>Inventory location</span><input name="shopify_location" value="${esc(ch.shopify_location)}" placeholder="e.g. Shop floor"></label>
+        <label class="fld"><span>Variant grams</span><input name="shopify_grams" value="${esc(ch.shopify_grams)}" class="mono"></label>
+        <label class="fld"><span>Base tags</span><input name="shopify_tags" value="${esc(ch.shopify_tags)}" placeholder="trading cards"></label>
+      </div>`;
+  } else if (sec.key === "whatnot") {
+    body = `<p class="hint">Applied to the Whatnot bulk-listing CSV.</p>
+      <div class="fld-row">
+        <label class="fld"><span>Category</span><input name="whatnot_category" value="${esc(ch.whatnot_category)}"></label>
+        <label class="fld"><span>Shipping profile</span><input name="whatnot_shipping_profile" value="${esc(ch.whatnot_shipping_profile)}" placeholder="exact profile name from Whatnot"></label>
+        <label class="fld ckbox"><input type="checkbox" name="whatnot_offerable" value="1"${ch.whatnot_offerable ? " checked" : ""}> <span>Accept offers</span></label>
+      </div>`;
+  } else if (sec.key === "tcgplayer") {
+    body = `<p class="hint">Applied to the TCGplayer inventory CSV (ungraded only — TCGplayer doesn't list slabs). Rows are keyed by TCGplayer product id when the catalog has one.</p>
+      <label class="fld ckbox"><input type="checkbox" name="tcg_my_store" value="1"${ch.tcg_my_store ? " checked" : ""}> <span><b>My Store channel (Pro Seller)</b> — populate My Store Price and Reserve Quantity columns</span></label>
+      <div class="fld-row">
+        <label class="fld"><span>My Store price multiplier <small>× your price</small></span><input name="tcg_store_multiplier" value="${esc(ch.tcg_store_multiplier)}" class="mono" inputmode="decimal"></label>
+        <label class="fld"><span>My Store reserve quantity</span><input name="tcg_reserve_qty" value="${esc(ch.tcg_reserve_qty)}" class="mono" inputmode="numeric"></label>
+      </div>`;
+  } else if (sec.key === "manapool") {
+    body = `<p class="hint">Mana Pool sells Magic singles keyed by TCGplayer SKU. Live listing and order sync needs a Mana Pool API connection — the next integration after eBay. Notes you keep here ride along on exports.</p>
+      <label class="fld"><span>Notes</span><input name="manapool_note" value="${esc(ch.manapool_note)}" placeholder="e.g. store slug, pricing policy"></label>
+      <div class="seam-note"><span class="i">◆</span><div><b>Connect Mana Pool</b> (API key) → fetch orders, auto mark-shipped when picked, quantity sync on Listed / Sold.</div></div>`;
+  } else if (sec.key === "privacy") {
+    body = `<label class="ckbox"><input type="checkbox" name="training_opt_in" value="1" ${s.training_opt_in ? "checked" : ""}> <span>Opt in to improving identification from my confirmed matches <small>(off by default — the opposite of a perpetual training licence)</small></span></label>`;
+  }
 
-      ${channelSections}
-
-      <button class="btn primary" type="submit">Save settings</button>
+  const html = `<div class="wrap ws">
+    ${wsHead("settings", sec.title, esc(sec.blurb), `<a class="btn" href="/app/settings">← All settings</a>`, { navMode: "open" })}
+    ${flash(msg)}
+    <nav class="cfg-crumbs" aria-label="Configuration"><a href="/app/settings">Configuration</a> <span>›</span> <span>${esc(sec.group)}</span> <span>›</span> <b>${esc(sec.title)}</b></nav>
+    <form class="ws-panel settings-form" method="post" action="/app/settings/${sec.key}">
+      ${body}
+      <div class="cfg-actions"><button class="btn primary" type="submit">Save ${esc(sec.title.toLowerCase())}</button><a class="btn ghost" href="/app/settings">Cancel</a></div>
     </form>
-    ${APP_JS}${TITLE_EDITOR_JS}${DESC_EDITOR_JS}
+    ${APP_JS}${extraJs}
   </div>`;
-
-  return { html, title: "Settings — Seller workspace | CardIndex", description: "Seller workspace settings." };
+  return { html, title: `${sec.title} — Configuration | CardIndex`, description: sec.blurb };
 }
 
 // ---- Description template editor (settings) -------------------------------
@@ -1929,6 +1979,48 @@ export const APP_JS = `<script>(function(){
     });
     render();
   }
+
+  // ---- "eBay listed" popup on review rows ----
+  // CardUploader's eBay Listings panel: live listings for the matched card
+  // (title, price + shipping, condition, seller) from /api/ebay/listed, each
+  // row an affiliate-tagged link; an editable search re-queries; "Open on
+  // eBay" is the tagged search link. One popup at a time, under the row.
+  document.querySelectorAll('.ri-ebay-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var row=btn.closest('.review-item'), open=row.querySelector('.ebay-pop');
+      document.querySelectorAll('.ebay-pop').forEach(function(p){if(p!==open)p.remove();});
+      if(open){open.remove();return;}
+      var pop=document.createElement('div');pop.className='ebay-pop';
+      pop.innerHTML='<div class="ebay-pop-head"><b>eBay listings</b><span class="ebay-pop-n"></span><a class="btn sm ebay-open" target="_blank" rel="noopener nofollow" hidden>Open on eBay ↗</a><button type="button" class="btn sm ghost ebay-close" title="Close">✕</button></div><div class="ebay-pop-body"><p class="hint">Loading live listings…</p></div>';
+      btn.closest('.ri-mid').appendChild(pop);
+      pop.querySelector('.ebay-close').addEventListener('click',function(){pop.remove();});
+      function money(c,cur){return c==null?'—':((cur==='USD'||!cur)?'$':cur+' ')+(c/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
+      function load(){
+        var body=pop.querySelector('.ebay-pop-body');
+        fetch('/api/ebay/listed?card='+encodeURIComponent(btn.dataset.card)+'&v='+encodeURIComponent(btn.dataset.v)+'&limit=25').then(function(r){return r.json();}).then(function(j){
+          var open=pop.querySelector('.ebay-open');if(j.search_url){open.href=j.search_url;open.hidden=false;}
+          if(j.error){body.innerHTML='';var e=document.createElement('p');e.className='hint warn';e.textContent='⚠ '+j.error;body.appendChild(e);return;}
+          var items=j.items||[];pop.querySelector('.ebay-pop-n').textContent=items.length?'('+items.length+')':'';
+          if(!items.length){body.innerHTML='<p class="hint">No live listings found right now.</p>';return;}
+          var list=document.createElement('div');list.className='ebay-pop-list';
+          items.forEach(function(it){
+            var a=document.createElement('a');a.className='ebay-item';if(it.url){a.href=it.url;a.target='_blank';a.rel='noopener nofollow';}
+            if(it.image){var im=document.createElement('img');im.src=it.image;im.alt='';im.loading='lazy';a.appendChild(im);}else{var ph=document.createElement('span');ph.className='ebay-noimg';a.appendChild(ph);}
+            var t=document.createElement('span');t.className='ebay-t';t.textContent=it.title;a.appendChild(t);
+            var m=document.createElement('span');m.className='ebay-m';m.textContent=[it.condition,it.buying,it.seller,it.country].filter(Boolean).join(' · ');a.appendChild(m);
+            var p=document.createElement('span');p.className='ebay-p';p.textContent=money(it.price_cents,it.currency);
+            if(it.shipping_cents!=null){var sm=document.createElement('small');sm.textContent=it.shipping_cents?'+'+money(it.shipping_cents,it.currency)+' ship':'free ship';p.appendChild(sm);}
+            a.appendChild(p);list.appendChild(a);
+          });
+          var lo=null,hi=null;items.forEach(function(it){if(it.price_cents==null)return;if(lo==null||it.price_cents<lo)lo=it.price_cents;if(hi==null||it.price_cents>hi)hi=it.price_cents;});
+          body.innerHTML='';
+          if(lo!=null){var s=document.createElement('p');s.className='hint ebay-range';s.textContent='Listed from '+money(lo)+' to '+money(hi)+' · affiliate links';body.appendChild(s);}
+          body.appendChild(list);
+        }).catch(function(){body.innerHTML='<p class="hint warn">⚠ Could not reach the server.</p>';});
+      }
+      load();
+    });
+  });
 
   // ---- Card Comparison & Search (review page) ----
   // CardUploader's modal: your photo beside the matched catalog card with its

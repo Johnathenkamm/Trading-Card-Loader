@@ -38,7 +38,7 @@ function accountControls(): string {
     // a Free / Pro pill plus the one plan action that applies.
     const pro = acct.plan_tier === "pro";
     const plan = pro
-      ? `<a class="hdr-plan pro" href="/app/settings#s-plan" title="Your plan and billing">Pro</a>`
+      ? `<a class="hdr-plan pro" href="/app/settings" title="Your plan and billing">Pro</a>`
       : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free — upgrade to Pro to scan, build inventory and list">Upgrade</a>`;
     return `<div class="hdr-acct">
       ${owner}
