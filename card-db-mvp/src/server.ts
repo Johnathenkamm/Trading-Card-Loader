@@ -101,6 +101,7 @@ import {
 import { catalogStats, catalogImportProgress, startCatalogImport, CATALOG_GAMES } from "./app/catalog-import.ts";
 import { loadEbayConfig, saveEbayConfig, clearEbayConfig } from "./app/ebay-config.ts";
 import { ebayAdminStatus, runEbayTest, ebayFormToPatch, listEbayConnections } from "./app/ebay-admin.ts";
+import { ensureDeletionSchema, DELETION_PATH, deletionEndpointUrl, challengeResponse, verifyNotification, parseNotice, applyDeletion } from "./app/ebay-deletion.ts";
 import { renderAdminEbay } from "./render/admin.ts";
 import { buildHashIndex } from "./app/hashindex.ts";
 
@@ -144,6 +145,7 @@ try {
   await ensureFeedbackSchema();
   await ensureEbaySchema();
   await ensureSalesSchema();
+  await ensureDeletionSchema();
   // eBay keyset: console-saved values (meta table) over the env — see app/ebay-config.ts.
   await loadEbayConfig();
 } catch (err) {
@@ -1261,6 +1263,31 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       );
     }
 
+    // ---- eBay Marketplace Account Deletion notifications (app/ebay-deletion.ts) ----
+    if (path === DELETION_PATH) {
+      if (method === "GET") {
+        const code = url.searchParams.get("challenge_code");
+        if (!code) return send(res, 400, JSON.stringify({ error: "challenge_code required" }), "application/json");
+        return send(res, 200, JSON.stringify({ challengeResponse: challengeResponse(code, deletionEndpointUrl(req)) }), "application/json");
+      }
+      if (method === "POST") {
+        const raw = await readBody(req);
+        const sig = req.headers["x-ebay-signature"];
+        const check = await verifyNotification(raw, Array.isArray(sig) ? sig[0] : sig).catch((err: unknown) => ({ ok: false as const, reason: err instanceof Error ? err.message : String(err) }));
+        if (!check.ok) {
+          console.warn(`  eBay account deletion: rejected notification (${check.reason})`);
+          return send(res, 412, "", "text/plain");
+        }
+        const notice = parseNotice(raw);
+        if (!notice) return send(res, 400, "", "text/plain");
+        await applyDeletion(notice);
+        res.writeHead(204);
+        return res.end();
+      }
+      res.writeHead(405, { Allow: "GET, POST" });
+      return res.end();
+    }
+
     // ---- auth (login / signup / logout / password reset) ----
     if (path === "/login" || path === "/signup" || path === "/logout") {
       return await handleAuth(req, res, url, path, method);
@@ -1857,7 +1884,7 @@ async function handleAdmin(
     return sendPage(res, renderAdminCatalog(await catalogStats(), catalogImportProgress(), msg), "/admin/catalog");
   }
   if (path === "/admin/ebay") {
-    const [st, conns] = await Promise.all([ebayAdminStatus(url.origin), listEbayConnections()]);
+    const [st, conns] = await Promise.all([ebayAdminStatus(url.origin, deletionEndpointUrl(req)), listEbayConnections()]);
     return sendPage(res, renderAdminEbay(st, conns, msg), "/admin/ebay");
   }
   if (path === "/admin/activity") {

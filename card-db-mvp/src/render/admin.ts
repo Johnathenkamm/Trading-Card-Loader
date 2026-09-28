@@ -701,12 +701,21 @@ export function renderAdminEbay(s: EbayAdminStatus, conns: EbayConnRow[], msg?: 
     }
   </div>`;
 
+  const d = s.deletion;
+  const deletion = `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Account deletion notifications</h2><span class="eyebrow">required before eBay enables a Production keyset</span></div>
+    <p class="hint">On <a href="https://developer.ebay.com/my/keys" target="_blank" rel="noopener">developer.ebay.com → Application Keys</a>, open <b>Notifications</b> next to the Production keyset and pick <b>Marketplace Account Deletion</b>, enter an alert email, paste these two values and click <b>Save</b>. eBay checks the endpoint on the spot. Then click <b>Send Test Notification</b>. It should show up in the count below.</p>
+    <label class="fld"><span>Notification endpoint URL</span><input readonly value="${esc(d.endpoint)}" class="mono" onclick="this.select()"></label>
+    <label class="fld"><span>Verification token</span><input readonly value="${esc(d.token)}" class="mono" onclick="this.select()"></label>
+    <p class="hint">${d.received ? `${d.received.toLocaleString()} notification${d.received === 1 ? "" : "s"} received, the last ${esc(ago(d.lastAt))} · ${d.removed} connected seller${d.removed === 1 ? "" : "s"} removed.` : "No notifications received yet."} When a deletion names a connected seller, their eBay link (username, tokens, policies, address) is deleted and they have to connect again.${d.endpoint.startsWith("https://") ? "" : ` <b>eBay only accepts an https:// endpoint.</b> Open this page on the live site, or set APP_BASE_URL.`}</p>
+  </div>`;
+
   const html = `<div class="wrap ws">
     ${adminHead("ebay", "eBay", "Live listings and prices from eBay, the seller account link, and the affiliate tagging — configured here, no redeploy needed.")}
     ${flash(msg)}
     ${stats}
     <div class="home-grid">
-      <div>${keys}${test}${testResult}</div>
+      <div>${keys}${deletion}${test}${testResult}</div>
       <div>${where}${connTable}</div>
     </div>
     ${APP_JS}

@@ -9,6 +9,7 @@ import { ebayConfigured, ebayBrowseHealth, searchListed, type EbayBrowseHealth, 
 import { ebaySellConfigured } from "./ebay-sell.ts";
 import { epnCampaignId } from "../affiliate.ts";
 import { HARVEST_SOURCE } from "./soldharvest.ts";
+import { deletionStats, deletionVerificationToken } from "./ebay-deletion.ts";
 
 export type EbayTest = { at: string; query: string; ok: boolean; ms: number; count: number; error: string | null; items: EbayListing[]; fresh: boolean };
 
@@ -24,16 +25,18 @@ export type EbayAdminStatus = {
   harvestedSales: number;
   lastTest: EbayTest | null;
   callbackUrl: string;
+  deletion: { endpoint: string; token: string; received: number; lastAt: string | null; removed: number };
 };
 
 let lastTest: EbayTest | null = null;
 
-export async function ebayAdminStatus(origin: string): Promise<EbayAdminStatus> {
+export async function ebayAdminStatus(origin: string, deletionEndpoint: string): Promise<EbayAdminStatus> {
   const c = ebayConfig();
-  const [conn, pub, sold] = await Promise.all([
+  const [conn, pub, sold, del] = await Promise.all([
     one<{ n: number }>("SELECT COUNT(*)::int n FROM ebay_connections").catch(() => ({ n: 0 })),
     one<{ n: number }>("SELECT COUNT(*)::int n FROM listings WHERE status='published' AND external_ref IS NOT NULL").catch(() => ({ n: 0 })),
     one<{ n: number }>("SELECT COUNT(*)::int n FROM sold_sales WHERE source=$1", [HARVEST_SOURCE]).catch(() => ({ n: 0 })),
+    deletionStats(),
   ]);
   const base = (process.env.APP_BASE_URL ?? origin).replace(/\/+$/, "");
   return {
@@ -57,6 +60,7 @@ export async function ebayAdminStatus(origin: string): Promise<EbayAdminStatus> 
     harvestedSales: sold?.n ?? 0,
     lastTest,
     callbackUrl: `${base}/app/ebay/callback`,
+    deletion: { endpoint: deletionEndpoint, token: deletionVerificationToken(), ...del },
   };
 }
 

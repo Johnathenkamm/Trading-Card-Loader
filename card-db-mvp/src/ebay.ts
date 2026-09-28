@@ -58,6 +58,11 @@ export function ebayConfigured(): boolean {
 // ---- application token (client-credentials), cached until expiry ----------
 let tokenCache: { token: string; expiresAt: number } | null = null;
 
+/** Also used by app/ebay-deletion.ts to fetch notification signing keys. */
+export async function ebayAppToken(): Promise<string> {
+  return appToken();
+}
+
 async function appToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token;
   const e = ENV();

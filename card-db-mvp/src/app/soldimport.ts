@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { query, one } from "../pg.ts";
 import { identify } from "./identify.ts";
+import { stripIdentity } from "./ebay-deletion.ts";
 
 export type FeedRow = Record<string, string | number | null | undefined>;
 
@@ -270,7 +271,8 @@ export async function importSoldFeed(
       condition: condition ?? null,
       canon_confidence: attach ? Number(confidence.toFixed(3)) : null,
       is_demo: isDemo,
-      raw: JSON.stringify(row),
+      // eBay member names never enter the archive (account-deletion compliance).
+      raw: JSON.stringify(stripIdentity(row)),
     };
     const params = [
       vals.source, vals.marketplace, vals.external_id, vals.title, vals.price_cents,

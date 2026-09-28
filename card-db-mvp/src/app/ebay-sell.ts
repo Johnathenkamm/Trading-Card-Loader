@@ -261,8 +261,9 @@ export async function completeConnect(code: string, state: string): Promise<Ebay
   await updateSeller({ ebay_connected: 1 });
   // best-effort username
   try {
-    const me = e.mock ? { username: "mock_seller" } : await api<{ username: string }>("GET", "/commerce/identity/v1/user/");
-    await query("UPDATE ebay_connections SET ebay_user=$1 WHERE seller_id=$2", [me.username ?? null, sid]);
+    const me = e.mock ? { username: "mock_seller", userId: "mock-user-id" } : await api<{ username: string; userId?: string }>("GET", "/commerce/identity/v1/user/");
+    // The user id is what account-deletion notices match on (usernames can change).
+    await query("UPDATE ebay_connections SET ebay_user=$1, ebay_user_id=$2 WHERE seller_id=$3", [me.username ?? null, me.userId ?? null, sid]);
   } catch {
     /* identity scope may be missing on older keysets — not fatal */
   }
