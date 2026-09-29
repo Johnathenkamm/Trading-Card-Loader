@@ -55,7 +55,7 @@ import {
 import {
   ensureEbaySchema, ebaySellConfigured, beginConnect, completeConnect, disconnect as ebayDisconnect, syncPolicies, setPolicyIds, ensureLocation,
   getConnection, publishListing, endListing, syncQuantityForInventory, fetchOpenOrders, markShippedOnEbay, touchOrderSync, EbayError,
-  startScheduler, runScheduledPublishes,
+  startScheduler, runScheduledPublishes, ebayIsMock,
 } from "./app/ebay-sell.ts";
 import { scheduleListing, setListingsBestOffer, setListingsStatus, inventoryForBatch, type BatchSetup } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
@@ -2230,9 +2230,13 @@ async function handleAppAuthed(
   if (path === "/app/ebay/callback") {
     const code = url.searchParams.get("code") ?? "";
     const state = url.searchParams.get("state") ?? "";
-    if (!code || !state) return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay sign-in was cancelled or returned no code.") + "#s-ebay");
+    if (!code || !state) {
+      console.warn(`  ebay connect: seller #${currentSellerId()} came back without a code (${url.searchParams.get("error") ?? "cancelled"})`);
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay sign-in was cancelled or returned no code.") + "#s-ebay");
+    }
     try {
       const c = await completeConnect(code, state);
+      console.log(`  ebay connect: seller #${currentSellerId()} connected${ebayIsMock() ? " (mock mode)" : ""}`);
       let extra = "";
       try {
         const p = await syncPolicies();
@@ -2249,6 +2253,7 @@ async function handleAppAuthed(
       extra += " Your paid eBay sales are being added to the sold-price archive now.";
       return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Connected eBay account ${c.ebay_user ?? ""}.${extra}`) + "#s-ebay");
     } catch (err) {
+      console.error(`  ebay connect: seller #${currentSellerId()} failed: ${err instanceof Error ? err.message : String(err)}`);
       return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connection failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
     }
   }
