@@ -61,7 +61,7 @@ import { scheduleListing, setListingsBestOffer, setListingsStatus, inventoryForB
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
 import { startSoldSampleOnBoot, importSoldFeed, parseFeedText, readFeedFile, soldArchiveSummary, deleteSoldSource, SAMPLE_FEED, SAMPLE_SOURCE } from "./app/soldimport.ts";
-import { startSoldHarvestOnBoot, harvestSoldSalesFor } from "./app/soldharvest.ts";
+import { startSoldHarvestOnBoot, harvestSoldSalesFor, removeUnflaggedMockSales } from "./app/soldharvest.ts";
 import {
   itemsFromRows, itemFromBlankListing, ebayCsv, tcgplayerCsv, whatnotCsv, shopifyCsv, parseChannelPrefs, channelPrefsFromForm,
 } from "./app/exporters.ts";
@@ -147,6 +147,7 @@ try {
   await ensureEbaySchema();
   await ensureSalesSchema();
   await ensureDeletionSchema();
+  await removeUnflaggedMockSales();
   // eBay keyset: console-saved values (meta table) over the env — see app/ebay-config.ts.
   await loadEbayConfig();
 } catch (err) {

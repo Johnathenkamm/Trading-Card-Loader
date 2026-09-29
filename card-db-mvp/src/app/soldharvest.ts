@@ -19,7 +19,7 @@
 // price, date, SKU and listing id land in the (public) archive.
 
 import { query, one } from "../pg.ts";
-import { ebaySellConfigured, fetchCompletedOrderLines, getConnection, EbayError, type EbaySoldLine } from "./ebay-sell.ts";
+import { ebaySellConfigured, ebayIsMock, fetchCompletedOrderLines, getConnection, EbayError, type EbaySoldLine } from "./ebay-sell.ts";
 import { importSoldFeed, type FeedRow, type SoldImportStats } from "./soldimport.ts";
 
 export const HARVEST_SOURCE = "ebay-orders";
@@ -73,7 +73,8 @@ export async function harvestSoldSalesFor(sellerId: number, log: (l: string) => 
   }
 
   const feed = lines.map((l) => lineToRow(l, l.sku ? bySku.get(l.sku) : undefined)).filter((r): r is FeedRow => r !== null);
-  const stats = await importSoldFeed(feed, { source: HARVEST_SOURCE, log });
+  // Mock-mode lines are canned: flag them demo so the public lookup never shows them.
+  const stats = await importSoldFeed(feed, { source: HARVEST_SOURCE, log, demo: ebayIsMock() });
   await query("UPDATE ebay_connections SET last_sold_harvest=now() WHERE seller_id=$1", [sellerId]);
   return stats;
 }
@@ -130,6 +131,19 @@ export function startSoldHarvestOnBoot(runAs: <T>(sellerId: number, fn: () => Pr
   harvestTimer = setInterval(tick, every);
   harvestTimer.unref?.();
   setTimeout(tick, 20_000).unref?.();
+}
+
+/**
+ * Boot housekeeping: canned mock-mode sales (external_id "MOCK-…") archived
+ * before they were flagged demo would show on the public lookup as real.
+ */
+export async function removeUnflaggedMockSales(): Promise<number> {
+  const r = await query<{ id: number }>(
+    "DELETE FROM sold_sales WHERE source=$1 AND external_id LIKE 'MOCK-%' AND NOT is_demo RETURNING id",
+    [HARVEST_SOURCE]
+  );
+  if (r.length) console.log(`  sold archive: removed ${r.length} mock-mode sale${r.length === 1 ? "" : "s"}`);
+  return r.length;
 }
 
 /** Latest harvest time across sellers, for status lines. */
