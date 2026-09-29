@@ -2239,6 +2239,13 @@ async function handleAppAuthed(
       } catch {
         extra = " Now sync your business policies and add a postal code.";
       }
+      // First sold-sales harvest right away instead of at the next 6-hour tick.
+      // Not awaited: a 2-year backfill can take a while, and the redirect shouldn't wait.
+      const sid = currentSellerId();
+      void runWithSeller(sid, () => harvestSoldSalesFor(sid))
+        .then((h) => h && console.log(`  sold harvest (on connect): seller #${sid}, ${h.inserted} new sale${h.inserted === 1 ? "" : "s"} archived`))
+        .catch((err) => console.error(`  sold harvest (on connect): seller #${sid} ${err instanceof Error ? err.message : String(err)}`));
+      extra += " Your paid eBay sales are being added to the sold-price archive now.";
       return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Connected eBay account ${c.ebay_user ?? ""}.${extra}`) + "#s-ebay");
     } catch (err) {
       return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connection failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
