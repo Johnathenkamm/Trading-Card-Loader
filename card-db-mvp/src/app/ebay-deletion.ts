@@ -21,7 +21,8 @@
 //        Verified → delete that user's data, answer 204. Bad signature → 412.
 //
 // What a deletion removes: the matching `ebay_connections` row (username, user
-// id, tokens, policies, ship-from address) and the seller's "connected" flag.
+// id, tokens, policies, ship-from address) and the seller's "connected" flag,
+// plus the buyer username + ship-to on any pulled eBay order they bought.
 // The sold-sales archive never holds eBay identities: the harvest keeps only
 // title/price/date/SKU, and soldimport.ts strips seller/buyer fields out of the
 // raw feed rows (existing rows are scrubbed once at boot, below).
@@ -202,6 +203,14 @@ export async function applyDeletion(n: DeletionNotice): Promise<{ duplicate: boo
       )
     : [];
   for (const g of gone) await query("UPDATE sellers SET ebay_connected=false WHERE id=$1", [g.seller_id]);
+  // The member may also be a BUYER on a seller's pulled eBay orders: clear the
+  // username and ship-to (name, city, state, ZIP) but keep the order itself.
+  if (n.username) {
+    await query(
+      "UPDATE orders SET buyer=NULL, ship_to=NULL WHERE platform='ebay' AND buyer IS NOT NULL AND lower(buyer)=lower($1)",
+      [n.username]
+    ).catch(() => undefined); // orders table absent on a bare database
+  }
   await query(
     `INSERT INTO ebay_deletion_log (notification_id, event_date, connections_removed) VALUES ($1, $2, $3)
      ON CONFLICT (notification_id) DO UPDATE SET connections_removed = ebay_deletion_log.connections_removed + EXCLUDED.connections_removed`,

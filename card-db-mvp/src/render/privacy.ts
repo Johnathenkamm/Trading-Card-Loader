@@ -39,7 +39,8 @@ export function renderPrivacy(): Page {
       <li>access tokens that let the site list, revise and end listings, read your business policies, read your orders and mark them shipped, on your behalf;</li>
       <li>the business policies and ship-from location you choose.</li>
     </ul>
-    <p>From your <b>paid eBay orders</b> we keep only the card title, sale price, sale date, listing number and your SKU. These become sold-price comparisons that other visitors can see. We do <b>not</b> store buyer names, usernames, addresses or contact details.</p>
+    <p>When you fetch your <b>open eBay orders</b> so you can ship them, we store each order’s items, the buyer’s eBay username, and the ship-to name, city, state and ZIP code. Only you (and site support, when helping you) can see them in your Orders page.</p>
+    <p>From your <b>paid eBay orders</b> we also take the card title, sale price, sale date, listing number and your SKU. These become sold-price comparisons that other visitors can see. The public sold-price archive never includes buyer names, usernames, addresses or contact details.</p>
 
     <h2>How we use it</h2>
     <ul>
@@ -66,7 +67,7 @@ export function renderPrivacy(): Page {
     </ul>
 
     <h2>eBay account deletion</h2>
-    <p>We subscribe to eBay’s Marketplace Account Deletion notifications. When eBay tells us a member has closed or deleted their account, we delete all eBay data we hold for that member.</p>
+    <p>We subscribe to eBay’s Marketplace Account Deletion notifications. When eBay tells us a member has closed or deleted their account, we delete the eBay data we hold for that member: their account connection if they were a seller here, and their username and shipping details on any orders they bought.</p>
 
     <h2>Your choices and rights</h2>
     <ul>
