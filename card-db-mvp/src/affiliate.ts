@@ -26,6 +26,7 @@ export function epnCampaignId(): string | null {
 }
 
 import { epnCampaignSetting } from "./app/ebay-config.ts";
+import { ebayCategory } from "./app/listing.ts";
 
 export function affiliateConfigured(): boolean {
   return epnCampaignId() != null || !!(process.env.TCGPLAYER_AFFILIATE_QS ?? "").trim();
@@ -59,14 +60,56 @@ export function ebayLink(url: string, customid = "cardindex"): string {
   return u.toString();
 }
 
-/** eBay's live-listings search for a card, tagged. */
-export function ebaySearchUrl(query: string, customid = "ebay-listed"): string {
-  return ebayLink("https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(query), customid);
+/**
+ * eBay search terms for a card: its name plus the collector number, nothing
+ * else — the query CardUploader sends ("Fish-Man Island OP11-117"). Adding the
+ * set name and finish (as we used to) matches far fewer listing titles, which
+ * is why "eBay sold" so often came back empty. Parenthesised catalog suffixes
+ * are cleaned up because eBay reads "(a, b)" as an OR group: "(060)" repeats
+ * the collector number and is dropped; "(Alternate Art)" keeps its words.
+ */
+export function ebayCardQuery(name: string, number?: string | null): string {
+  const n = (name ?? "")
+    .replace(/\(\s*\d+\s*\)/g, " ")
+    .replace(/[()"*,]/g, " ")
+    .replace(/(^|\s)-+/g, " ") // a leading "-" would exclude the word
+    .replace(/\s+/g, " ")
+    .trim();
+  return [n, (number ?? "").trim()].filter(Boolean).join(" ");
 }
 
-/** eBay's completed + sold filter for a card, tagged. */
-export function ebaySoldUrl(query: string, customid = "ebay-sold"): string {
-  return ebayLink("https://www.ebay.com/sch/i.html?_nkw=" + encodeURIComponent(query) + "&LH_Sold=1&LH_Complete=1", customid);
+/** eBay leaf category for a game's singles (CCG Individual Cards, or MTG Individual Cards). */
+export function ebayCategoryFor(gameSlug: string | null | undefined): string | null {
+  return gameSlug ? ebayCategory(gameSlug) : null;
+}
+
+function ebaySearchBase(category: string | null | undefined): string {
+  const c = (category ?? "").replace(/\D/g, "");
+  return c ? `https://www.ebay.com/sch/${c}/i.html?_dcat=${c}&` : "https://www.ebay.com/sch/i.html?";
+}
+
+/** eBay's live-listings search for a card, scoped to the game's category when known, tagged. */
+export function ebaySearchUrl(query: string, customid = "ebay-listed", category?: string | null): string {
+  return ebayLink(ebaySearchBase(category) + "_nkw=" + encodeURIComponent(query), customid);
+}
+
+/** eBay's completed + sold filter for a card, scoped to the game's category when known, tagged. */
+export function ebaySoldUrl(query: string, customid = "ebay-sold", category?: string | null): string {
+  return ebayLink(ebaySearchBase(category) + "_nkw=" + encodeURIComponent(query) + "&LH_Sold=1&LH_Complete=1", customid);
+}
+
+/**
+ * The disclosure the eBay Partner Network requires wherever tagged links
+ * appear (CardUploader shows the same line on its results page). Empty when
+ * nothing is tagged, so untagged deployments show no claim they don't make.
+ */
+export function affiliateDisclosure(): string {
+  const ebay = epnCampaignId() != null;
+  const tcg = !!(process.env.TCGPLAYER_AFFILIATE_QS ?? "").trim();
+  if (!ebay && !tcg) return "";
+  const who = ebay && tcg ? "an eBay Partner and a TCGplayer affiliate" : ebay ? "an eBay Partner" : "a TCGplayer affiliate";
+  const links = ebay && tcg ? "eBay or TCGplayer links" : ebay ? "eBay links" : "TCGplayer links";
+  return `<p class="aff-note">As ${who}, we may be compensated if you buy through ${links} on this page.</p>`;
 }
 
 /** Append the TCGplayer (Impact) affiliate query string when one is configured. */
@@ -84,8 +127,24 @@ export function tcgplayerLink(url: string): string {
   return u.toString();
 }
 
-/** TCGplayer product page for a catalog product id, tagged. */
-export function tcgplayerProductUrl(productId: string | number | null | undefined): string | null {
+const TCG_CONDITION: Record<string, string> = { NM: "Near Mint", LP: "Lightly Played", MP: "Moderately Played", HP: "Heavily Played", DMG: "Damaged" };
+const TCG_LANGUAGE: Record<string, string> = { EN: "English", JP: "Japanese", DE: "German", FR: "French", IT: "Italian", ES: "Spanish", PT: "Portuguese", KR: "Korean", ZH: "Chinese (S)" };
+
+/**
+ * TCGplayer product page for a catalog product id, tagged. With a condition
+ * and language it opens pre-filtered to them (`Condition=Near+Mint&Language=
+ * English`, as CardUploader links), so the listings shown are comparable to
+ * the card in hand.
+ */
+export function tcgplayerProductUrl(
+  productId: string | number | null | undefined,
+  opts: { condition?: string | null; language?: string | null } = {}
+): string | null {
   if (productId == null || productId === "") return null;
-  return tcgplayerLink(`https://www.tcgplayer.com/product/${encodeURIComponent(String(productId))}`);
+  const u = new URL(`https://www.tcgplayer.com/product/${encodeURIComponent(String(productId))}`);
+  const cond = opts.condition ? TCG_CONDITION[opts.condition.toUpperCase()] : undefined;
+  const lang = opts.language ? TCG_LANGUAGE[opts.language.toUpperCase()] : undefined;
+  if (cond) u.searchParams.set("Condition", cond);
+  if (lang) u.searchParams.set("Language", lang);
+  return tcgplayerLink(u.toString());
 }

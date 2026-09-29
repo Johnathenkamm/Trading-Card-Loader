@@ -95,12 +95,13 @@ function buyingLabel(options: string[] | undefined, bids: number | undefined): s
 }
 
 /** Live eBay listings for a query. Returns [] when nothing matches. `limit` is clamped to eBay's 200. */
-export async function searchListed(query: string, limit = 10, opts: { fresh?: boolean } = {}): Promise<EbayListing[]> {
+export async function searchListed(query: string, limit = 10, opts: { fresh?: boolean; categoryId?: string | null } = {}): Promise<EbayListing[]> {
   const e = ENV();
   limit = Math.max(1, Math.min(200, Math.floor(limit)));
   if (e.mock) return mockListings(query, limit);
+  const category = (opts.categoryId ?? "").replace(/\D/g, "");
 
-  const key = `${e.marketplace}|${limit}|${query.toLowerCase()}`;
+  const key = `${e.marketplace}|${limit}|${category}|${query.toLowerCase()}`;
   const hit = cache.get(key);
   if (!opts.fresh && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.items;
 
@@ -114,6 +115,8 @@ export async function searchListed(query: string, limit = 10, opts: { fresh?: bo
       // default is FIXED_PRICE only — ask for auctions and best-offer too
       filter: "buyingOptions:{FIXED_PRICE|AUCTION|BEST_OFFER}",
     });
+    // singles only (CCG / MTG Individual Cards) — keeps boxes, lots and supplies out
+    if (category) params.set("category_ids", category);
     const res = await fetch(`${API_HOST()}/buy/browse/v1/item_summary/search?${params}`, {
       headers: {
         Authorization: `Bearer ${token}`,

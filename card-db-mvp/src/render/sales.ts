@@ -6,6 +6,7 @@ import { esc, money, fmtDate } from "../util.ts";
 import { breadcrumb, sourceChip, demoNote } from "./components.ts";
 import { soldListingLink, type SalesParams, type SalesResult, type SalesRow } from "../sales.ts";
 import type { SoldSale } from "../db.ts";
+import { affiliateDisclosure } from "../affiliate.ts";
 
 function qs(params: Record<string, string | undefined>): string {
   const u = new URLSearchParams();
@@ -140,7 +141,8 @@ export function renderSales(
       <div class="fgroup"><span class="fl">Sort</span>${sortBar}</div>
     </div>
     ${sampleNote}
-    ${table}`;
+    ${table}
+    ${affiliateDisclosure()}`;
 
   const html = opts.embedded
     ? `<div class="sales-head sales-head-embedded">${searchForm}</div>${body}`

@@ -306,13 +306,29 @@ a live database.
   shows the **hand-off panel**: the file is on your computer, so open eBay →
   Seller Hub → Reports → Uploads, *Upload template* → `.csv` → *Create new
   listings*, wait for *Completed*, then mark the rows as listed here.
+- **Research link-outs** (`src/affiliate.ts`) — eBay searches use the card's
+  **name + collector number only** ("Fish-Man Island OP11-117"), scoped to the
+  game's singles category (183454 CCG Individual Cards, 38292 for Magic), the
+  way CardUploader queries; set name and finish made eBay's sold search come
+  back empty. The eBay Listed popup's query is editable. TCGplayer links open
+  pre-filtered to the card's condition and language.
+- **Review page extras** — batch totals (total cards · your price · TCGplayer
+  market), a live eBay title counter ("66/80"), and unnamed batches named
+  after their first SKU + game + language ("PKJ-000243 - One Piece English").
+  Export files are named to match
+  (`pkj-000243-one-piece-english_ebay_ungraded_fixed-price_2026-09-28_1432.csv`)
+  so eBay's upload list maps back to boxes. Inventory opens with a one-line
+  summary: products · cards · price · market.
 - **Affiliate links** (`src/affiliate.ts`) — the owner is an eBay Partner
   Network affiliate. With `EBAY_EPN_CAMPID` set, every outbound eBay link
   (card-page *eBay listed* / *eBay sold*, the Live-on-eBay panel rows, review
   link-outs, archived sold listings, the seller's own live listings) carries
   `mkevt=1&mkcid=1&mkrid=…&campid=<id>&toolid=10001&customid=<surface>`;
   `TCGPLAYER_AFFILIATE_QS` does the same for TCGplayer links (Impact).
-  Without the env vars the links are plain.
+  Without the env vars the links are plain. Wherever tagged links appear
+  (review page, card pages, sold-price lookup) the site shows the disclosure
+  the Partner Network requires ("As an eBay Partner, we may be compensated…");
+  it disappears when nothing is tagged.
 - **Configuration** (`/app/settings`) — laid out like CardUploader's
   Configuration: a hub of tiles grouped into *Card settings* (Shop & SKUs,
   Pricing & condition, Matching, Titles, Descriptions), *Platform settings*

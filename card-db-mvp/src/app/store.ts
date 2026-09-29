@@ -449,7 +449,8 @@ export async function addItemFromIdentify(
   opts: { imageUrl?: string | null; backImageUrl?: string | null; grade?: string | null; grader?: string | null; cert?: string | null; sku?: string | null } = {}
 ): Promise<number> {
   const best = result.best;
-  const condition = seller.default_condition;
+  // a condition typed on the line ("… LP") beats the batch default
+  const condition = result.parsed.condition || seller.default_condition;
   const language = best?.language || seller.default_language;
   const rule = sellerRule(seller);
   // A parsed grade ("psa 10 charizard") counts unless the caller pinned one.
@@ -774,7 +775,16 @@ export async function updateInventory(id: number, patch: Record<string, unknown>
   );
 }
 
-export type InventoryStats = { count: number; units: number; value_cents: number; market_cents: number; listed: number };
+export type InventoryStats = {
+  count: number;
+  units: number;
+  value_cents: number;
+  market_cents: number;
+  listed: number;
+  /** not-yet-sold inventory rows ("products") and copies ("cards") — CardUploader's header counts */
+  stock_products: number;
+  stock_cards: number;
+};
 
 /**
  * Inventory totals. `value_cents` = your prices × qty; `market_cents` = latest
@@ -786,7 +796,9 @@ export async function inventoryStats(): Promise<InventoryStats> {
     `SELECT COUNT(*)::int AS count, COALESCE(SUM(inv.quantity),0)::int AS units,
             COALESCE(SUM(CASE WHEN inv.status<>'sold' THEN inv.quantity * COALESCE(inv.price_cents,0) ELSE 0 END),0)::bigint AS value_cents,
             COALESCE(SUM(CASE WHEN inv.status<>'sold' THEN inv.quantity * COALESCE(m.price_cents,0) ELSE 0 END),0)::bigint AS market_cents,
-            COALESCE(SUM(CASE WHEN inv.status='listed' THEN 1 ELSE 0 END),0)::int AS listed
+            COALESCE(SUM(CASE WHEN inv.status='listed' THEN 1 ELSE 0 END),0)::int AS listed,
+            COALESCE(SUM(CASE WHEN inv.status<>'sold' AND inv.quantity>0 THEN 1 ELSE 0 END),0)::int AS stock_products,
+            COALESCE(SUM(CASE WHEN inv.status<>'sold' THEN inv.quantity ELSE 0 END),0)::int AS stock_cards
      FROM inventory inv
      LEFT JOIN LATERAL (
        SELECT price_cents FROM price_points

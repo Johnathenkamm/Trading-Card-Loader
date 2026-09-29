@@ -846,6 +846,30 @@ h1, h2, h3 { font-family: "Bricolage Grotesque", "IBM Plex Sans", sans-serif; fo
 .ebay-item .ebay-p { grid-area: p; text-align: right; font-family: "IBM Plex Mono", monospace; font-weight: 700; color: var(--up, #3ddc97); }
 .ebay-item .ebay-p small { display: block; font-weight: 500; color: var(--muted); font-size: 0.72rem; }
 
+/* affiliate disclosure (required by the eBay Partner Network wherever tagged links show) */
+.aff-note { margin: 8px 0 12px; font-size: 0.78rem; color: var(--muted); }
+
+/* review page: batch totals (CardUploader's Total Cards · Price · TCGP Price) */
+.batch-totals { display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; margin: 10px 0 4px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.batch-totals div { display: flex; flex-direction: column; gap: 2px; }
+.batch-totals span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.batch-totals b { font-size: 1.1rem; }
+.batch-totals small { font-size: 0.72rem; color: var(--muted); }
+.mono.up, b.up { color: var(--up, #3ddc97); }
+
+/* live eBay title counter */
+.title-fld .t-count { font-family: "IBM Plex Mono", monospace; color: var(--muted); }
+.title-fld .t-count.near { color: var(--warn, #e0b04a); }
+
+/* inventory one-line summary (products · cards · price · market) */
+.inv-summary { margin: -6px 0 14px; font-size: 0.92rem; color: var(--muted); }
+.inv-summary b { color: var(--text); font-size: 1rem; }
+.inv-summary b.up { color: var(--up, #3ddc97); }
+
+/* editable search inside the eBay listings popup */
+.ebay-pop-q { display: flex; gap: 6px; padding: 8px 10px 0; }
+.ebay-pop-q input { flex: 1; min-width: 0; }
+
 /* owner console: catalog import log */
 .import-log { margin: 10px 0 0; padding: 10px 12px; max-height: 320px; overflow: auto; font: 0.78rem/1.45 "IBM Plex Mono", monospace; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; white-space: pre-wrap; }
 

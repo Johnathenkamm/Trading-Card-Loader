@@ -30,7 +30,7 @@ import {
 } from "./components.ts";
 import type { SearchParams, SearchResult, FacetOption } from "../search.ts";
 import { ebayConfigured } from "../ebay.ts";
-import { ebaySearchUrl, ebaySoldUrl, tcgplayerLink } from "../affiliate.ts";
+import { ebaySearchUrl, ebaySoldUrl, tcgplayerLink, ebayCardQuery, ebayCategoryFor, affiliateDisclosure } from "../affiliate.ts";
 import { tcgConfigured } from "../tcgplayer.ts";
 
 const ORIGIN = ""; // relative canonicals keep it host-agnostic for the demo
@@ -413,10 +413,10 @@ export async function renderCard(
   // LH_Sold+LH_Complete opens eBay's completed-sales filter pre-searched.
   // Both link-outs carry the owner's affiliate campaign when one is configured
   // (src/affiliate.ts), so research clicks that turn into purchases pay out.
-  const ebayQuery = [card.name, card.number ?? "", card.set_name ?? "", selected.finish === "normal" ? "" : selected.finish_label]
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  // Name + collector number only, in the game's singles category — the query
+  // CardUploader uses; set name + finish made eBay's sold search come back empty.
+  const ebayQuery = ebayCardQuery(card.name, card.number);
+  const ebayCat = ebayCategoryFor(card.game_slug);
 
   const html = `<div class="wrap">
     ${breadcrumb([
@@ -481,9 +481,10 @@ export async function renderCard(
           <a class="btn" href="/app/listing-creator?game=${encodeURIComponent(card.game_slug ?? "")}&amp;set=${encodeURIComponent(card.set_slug ?? "")}" title="Build a listing from the catalog stock image — no scan needed">List on eBay</a>
           ${card.tcgplayer_url ? `<a class="btn" href="${esc(tcgplayerLink(card.tcgplayer_url))}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
           <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card in Sales Lookup">Sold prices</a>
-          <a class="btn" href="${esc(ebaySearchUrl(ebayQuery, "card-page-listed"))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
-          <a class="btn" href="${esc(ebaySoldUrl(ebayQuery, "card-page-sold"))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings for this card">eBay sold ↗</a>
+          <a class="btn" href="${esc(ebaySearchUrl(ebayQuery, "card-page-listed", ebayCat))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
+          <a class="btn" href="${esc(ebaySoldUrl(ebayQuery, "card-page-sold", ebayCat))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings for this card">eBay sold ↗</a>
         </div>
+        ${affiliateDisclosure()}
 
         ${
           useArchive

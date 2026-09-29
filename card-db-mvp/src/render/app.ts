@@ -25,7 +25,7 @@ import {
 } from "../app/title.ts";
 import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL, isPro } from "../app/billing.ts";
 import { maxUploadFiles, MAX_UPLOAD_FILES_PRO, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_FILES, UPLOAD_MAX_EDGE } from "../upload.ts";
-import { ebayLink, ebaySearchUrl, ebaySoldUrl, tcgplayerProductUrl } from "../affiliate.ts";
+import { ebayLink, ebaySearchUrl, ebaySoldUrl, tcgplayerProductUrl, ebayCardQuery, ebayCategoryFor, affiliateDisclosure } from "../affiliate.ts";
 import { ebayConfigured } from "../ebay.ts";
 import { getGames } from "../pg.ts";
 import type { Game } from "../db.ts";
@@ -489,8 +489,9 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
     : "";
 
   const html = `<div class="wrap ws">
-    ${wsHead("inventory", "Inventory", `Your confirmed stock. Every card carries a unique SKU and a price you can push to a marketplace.`, `<a class="btn primary" href="/app/scan">+ Scan cards</a>`)}
+    ${wsHead("inventory", "Inventory", `Your confirmed stock. Every card carries a SKU and a price you can push to a marketplace.`, `<a class="btn primary" href="/app/scan">+ Scan cards</a>`)}
     ${flash(msg)}
+    <p class="inv-summary" aria-label="Inventory totals"><b class="mono">${stats.stock_products.toLocaleString()}</b> product${stats.stock_products === 1 ? "" : "s"} · <b class="mono">${stats.stock_cards.toLocaleString()}</b> card${stats.stock_cards === 1 ? "" : "s"} · Price <b class="mono up">${money(stats.value_cents)}</b> · Market <b class="mono">${money(stats.market_cents)}</b></p>
     ${statCards}
     ${table}
     ${recent}
@@ -660,7 +661,7 @@ export async function renderScan(
           })}
           <div class="fld-row">
             ${databaseField}
-            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Binder page 4" : "e.g. Binder A"}"></label>
+            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Binder page 4" : `blank = ${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")} - game`}"></label>
             <label class="fld"><span>${priceMode ? "Condition" : "Default condition"}</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
             ${languageField}
           </div>
@@ -681,7 +682,7 @@ export async function renderScan(
           </label>
           <div class="fld-row">
             ${databaseField}
-            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Trade binder" : "e.g. Box break 8/25"}"></label>
+            <label class="fld"><span>${priceMode ? "Label" : "Batch label"}</span><input type="text" name="label" placeholder="${priceMode ? "e.g. Trade binder" : `blank = ${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")} - game`}"></label>
             <label class="fld"><span>Condition</span><select name="condition">${conditionOptions(seller.default_condition)}</select></label>
             ${priceMode ? "" : `<label class="fld"><span>Language</span><select name="language">${languageOptions(seller.default_language)}</select></label>`}
           </div>
@@ -841,16 +842,19 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
   // research link-outs, tagged with the owner's affiliate campaign.
   let links = "";
   if (vf) {
-    const q = [vf.card_name, vf.number ?? "", vf.set_name, vf.finish === "normal" ? "" : vf.finish_label].filter(Boolean).join(" ");
-    const tcg = tcgplayerProductUrl(vf.tcgplayer_id);
+    // name + collector number, scoped to the game's singles category (see affiliate.ts)
+    const q = ebayCardQuery(vf.card_name, vf.number);
+    const cat = ebayCategoryFor(vf.game_slug);
+    // TCGplayer opens filtered to this card's condition and language
+    const tcg = tcgplayerProductUrl(vf.tcgplayer_id, { condition: item.condition, language: item.language });
     // With a keyset, "eBay listed" opens CardUploader's popup (live listings
     // with prices, in place); without one it is a plain link-out.
     const listed = ebayConfigured()
       ? `<button type="button" class="ri-ebay-btn" data-card="${vf.card_id}" data-v="${esc(vf.finish)}" data-q="${esc(q)}" title="Live eBay listings for this card, with prices">eBay listed ▾</button>`
-      : `<a href="${esc(ebaySearchUrl(q, "review-listed"))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>`;
+      : `<a href="${esc(ebaySearchUrl(q, "review-listed", cat))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>`;
     links = `<div class="ri-links">
       ${listed}
-      <a href="${esc(ebaySoldUrl(q, "review-sold"))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings">eBay sold ↗</a>
+      <a href="${esc(ebaySoldUrl(q, "review-sold", cat))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings">eBay sold ↗</a>
       ${tcg ? `<a href="${esc(tcg)}" target="_blank" rel="noopener nofollow" title="TCGplayer product page (market price source)">TCGplayer ↗</a>` : ""}
     </div>`;
   }
@@ -926,7 +930,7 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
         <label>Price<div class="price-in"><span>$</span><input type="text" name="price" value="${dollars(item.price_cents)}" class="mono" inputmode="decimal"></div></label>
         <label>SKU<input type="text" name="sku" value="${esc(item.sku ?? "")}" placeholder="auto" class="mono"></label>
       </div>
-      <label class="title-fld">Title <small>${EBAY_TITLE_MAX} char max · auto</small>
+      <label class="title-fld">Title <small class="t-count${title.length > EBAY_TITLE_MAX - 5 ? " near" : ""}" title="eBay allows ${EBAY_TITLE_MAX} characters">${title.length}/${EBAY_TITLE_MAX}</small>
         <input type="text" name="title" value="${esc(title)}" maxlength="${EBAY_TITLE_MAX}">
       </label>
       <div class="price-hint">${priceHint}</div>
@@ -981,6 +985,21 @@ export async function renderReview(batchId: number, filterTab: string | undefine
 
   const commitReady = all.filter((i) => i.matched_variant_id && (i.status === "matched" || i.status === "approved")).length;
   const seller = await getSeller();
+
+  // CardUploader's batch header: Total Cards · Price · TCGP Price — the seller's
+  // asking total next to the TCGplayer market total for the same cards (skipped
+  // and unmatched rows left out; quantities counted).
+  const live = all.filter((i) => i.status !== "skipped" && i.status !== "failed");
+  const totalCards = live.reduce((n, i) => n + (i.quantity || 1), 0);
+  const totalPrice = live.reduce((n, i) => n + (i.price_cents ?? 0) * (i.quantity || 1), 0);
+  const marketEach = await Promise.all(live.map((i) => (i.matched_variant_id ? marketCentsAt(i.matched_variant_id, i.grade) : Promise.resolve(null))));
+  const totalMarket = live.reduce((n, i, k) => n + (marketEach[k] ?? 0) * (i.quantity || 1), 0);
+  const unpriced = live.filter((i) => i.price_cents == null).length;
+  const totals = `<div class="batch-totals">
+      <div><span>Total cards</span><b class="mono">${totalCards}</b></div>
+      <div><span>Your price</span><b class="mono up">${money(totalPrice)}</b>${unpriced ? `<small>${unpriced} without a price</small>` : ""}</div>
+      <div><span>TCGplayer market</span><b class="mono">${money(totalMarket)}</b></div>
+    </div>`;
   // CardUploader's Bulk Edit: one price for the whole batch, and "Edit SKU
   // prefix" to number the cards in order (done after Manage Duplicates there).
   const batchTools = `<details class="batch-tools ws-panel">
@@ -1019,6 +1038,8 @@ export async function renderReview(batchId: number, filterTab: string | undefine
         <span class="bad">✖ ${failed} failed</span>
       </div>
     </div>
+    ${totals}
+    ${affiliateDisclosure()}
 
     <div class="review-toolbar">
       <div class="tabs">${tabs
@@ -1076,7 +1097,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
 
       <form class="ws-panel list-form" method="post" action="/app/list/${inv.id}">
         <div class="ws-panel-head"><h2>Listing details</h2></div>
-        <label class="title-fld">Title <small>${EBAY_TITLE_MAX} max</small>
+        <label class="title-fld">Title <small class="t-count${preview.title.length > EBAY_TITLE_MAX - 5 ? " near" : ""}" title="eBay allows ${EBAY_TITLE_MAX} characters">${preview.title.length}/${EBAY_TITLE_MAX}</small>
           <input type="text" name="title" value="${esc(preview.title)}" maxlength="${EBAY_TITLE_MAX}">
         </label>
         <div class="fld-row">
@@ -1980,6 +2001,15 @@ export const APP_JS = `<script>(function(){
     render();
   }
 
+  // ---- live eBay title counter ("74/80" on CardUploader's rows) ----
+  document.querySelectorAll('.title-fld').forEach(function(lbl){
+    var inp=lbl.querySelector('input[name=title]'), c=lbl.querySelector('.t-count');
+    if(!inp||!c)return;
+    var max=parseInt(inp.getAttribute('maxlength'),10)||80;
+    function upd(){var n=inp.value.length;c.textContent=n+'/'+max;c.classList.toggle('near',n>max-5);}
+    inp.addEventListener('input',upd);
+  });
+
   // ---- "eBay listed" popup on review rows ----
   // CardUploader's eBay Listings panel: live listings for the matched card
   // (title, price + shipping, condition, seller) from /api/ebay/listed, each
@@ -1991,13 +2021,17 @@ export const APP_JS = `<script>(function(){
       document.querySelectorAll('.ebay-pop').forEach(function(p){if(p!==open)p.remove();});
       if(open){open.remove();return;}
       var pop=document.createElement('div');pop.className='ebay-pop';
-      pop.innerHTML='<div class="ebay-pop-head"><b>eBay listings</b><span class="ebay-pop-n"></span><a class="btn sm ebay-open" target="_blank" rel="noopener nofollow" hidden>Open on eBay ↗</a><button type="button" class="btn sm ghost ebay-close" title="Close">✕</button></div><div class="ebay-pop-body"><p class="hint">Loading live listings…</p></div>';
+      pop.innerHTML='<div class="ebay-pop-head"><b>eBay listings</b><span class="ebay-pop-n"></span><a class="btn sm ebay-open" target="_blank" rel="noopener nofollow" hidden>Open on eBay ↗</a><button type="button" class="btn sm ghost ebay-close" title="Close">✕</button></div><form class="ebay-pop-q"><input type="search" aria-label="eBay search" autocomplete="off"><button class="btn sm" type="submit">Search</button></form><div class="ebay-pop-body"><p class="hint">Loading live listings…</p></div>';
       btn.closest('.ri-mid').appendChild(pop);
       pop.querySelector('.ebay-close').addEventListener('click',function(){pop.remove();});
+      // CardUploader's popup lets the seller edit the search (e.g. add "PSA 10")
+      var qin=pop.querySelector('.ebay-pop-q input');qin.value=btn.dataset.q||'';
+      pop.querySelector('.ebay-pop-q').addEventListener('submit',function(e){e.preventDefault();pop.querySelector('.ebay-pop-body').innerHTML='<p class="hint">Searching…</p>';load(qin.value);});
       function money(c,cur){return c==null?'—':((cur==='USD'||!cur)?'$':cur+' ')+(c/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});}
-      function load(){
+      function load(q){
         var body=pop.querySelector('.ebay-pop-body');
-        fetch('/api/ebay/listed?card='+encodeURIComponent(btn.dataset.card)+'&v='+encodeURIComponent(btn.dataset.v)+'&limit=25').then(function(r){return r.json();}).then(function(j){
+        fetch('/api/ebay/listed?card='+encodeURIComponent(btn.dataset.card)+'&v='+encodeURIComponent(btn.dataset.v)+'&limit=25'+(q?'&q='+encodeURIComponent(q):'')).then(function(r){return r.json();}).then(function(j){
+          if(j.query&&!q)qin.value=j.query;
           var open=pop.querySelector('.ebay-open');if(j.search_url){open.href=j.search_url;open.hidden=false;}
           if(j.error){body.innerHTML='';var e=document.createElement('p');e.className='hint warn';e.textContent='⚠ '+j.error;body.appendChild(e);return;}
           var items=j.items||[];pop.querySelector('.ebay-pop-n').textContent=items.length?'('+items.length+')':'';

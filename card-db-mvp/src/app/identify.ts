@@ -201,6 +201,35 @@ function numericPart(n: string | null): number | null {
   return numberSort(n);
 }
 
+/** "004/102" → "4/102", "ST01-005" → "st1-5": case- and leading-zero-insensitive form. */
+function normNumber(n: string): string {
+  return n
+    .toLowerCase()
+    .replace(/\d+/g, (d) => String(parseInt(d, 10)))
+    .replace(/[^a-z0-9/-]/g, "");
+}
+const numberIsQualified = (norm: string) => norm.includes("/") || /[a-z]/.test(norm);
+
+/**
+ * How well a typed collector number fits a card's: 1 = the same number;
+ * 0 = a different card index; in between when the index agrees but a set
+ * prefix or card count the user typed does not ("ST01-005" vs "ST29-005",
+ * "4/102" vs "4/130" — with the full catalogs those are different cards).
+ * A bare index ("4") agrees with any "4/…". null when either side is missing.
+ */
+function numberMatch(want: string | null, have: string | null): number | null {
+  if (!want || !have) return null;
+  const w = normNumber(want);
+  const h = normNumber(have);
+  if (w === h) return 1;
+  const wn = numericPart(want);
+  const hn = numericPart(have);
+  if (wn == null || hn == null || wn !== hn) return 0;
+  if (!numberIsQualified(w)) return 1; // "4" vs "4/102": nothing typed that could disagree
+  if (!numberIsQualified(h)) return 0.8; // card stores a bare index
+  return 0.35; // same index, different set prefix or card count
+}
+
 type Row = {
   id: number;
   name: string;
@@ -230,6 +259,18 @@ async function fetchRows(parsed: Parsed): Promise<Row[]> {
       toPg(`${select} WHERE ${where}${setCond} LIMIT 80`),
       [...terms.map((t) => `%${t}%`), ...setParams]
     );
+    // Popular names have hundreds of printings (Monkey.D.Luffy, Pikachu), so the
+    // 80-row cap can miss the one the typed number points at: always add the
+    // name hits that share the number's index.
+    const ns = parsed.number ? numericPart(parsed.number) : null;
+    if (rows.length && ns != null) {
+      const byNumber = await query<Row>(
+        toPg(`${select} WHERE ${where} AND c.number_sort=?${setCond} LIMIT 80`),
+        [...terms.map((t) => `%${t}%`), ns, ...setParams]
+      );
+      const seen = new Set(rows.map((r) => r.id));
+      for (const r of byNumber) if (!seen.has(r.id)) rows.push(r);
+    }
     if (rows.length) return rows;
   }
 
@@ -295,10 +336,9 @@ function scoreRow(parsed: Parsed, row: Row): number {
   // number component
   let numberScore = 0.4; // neutral when unknown
   if (parsed.number) {
-    const want = numericPart(parsed.number);
-    const have = numericPart(row.number);
-    if (want != null && have != null) numberScore = want === have ? 1 : 0;
-    else if (want != null && have == null) numberScore = 0.2;
+    const m = numberMatch(parsed.number, row.number);
+    if (m != null) numberScore = m;
+    else if (numericPart(parsed.number) != null && row.number == null) numberScore = 0.2;
   }
 
   let wText = 0.75,
@@ -332,7 +372,12 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
   // Set awareness: if the input speaks a set name ("charizard base set holo"),
   // consume its tokens and hard-filter candidates to that set — precision and
   // confidence both rise because set words stop reading as unmatched noise.
-  if (parsed.nameTerms.length) {
+  // A set-prefixed collector number ("EB02-005", "OP11-117", "ST01-001") names
+  // its set already, so words that merely look like a set name ("Fake Straw
+  // Hat Crew" vs the set "Starter Deck 1: Straw Hat Crew") are card-name words.
+  const numberNamesSet = !!parsed.number && /^[a-z]{1,4}\d{1,3}-\d{1,4}$/i.test(parsed.number);
+  const originalTerms = parsed.nameTerms;
+  if (parsed.nameTerms.length && !numberNamesSet) {
     const sets = (await query("SELECT slug, name FROM sets")) as Array<{ slug: string; name: string }>;
     const m = matchSet(parsed.nameTerms, sets);
     if (m && m.terms.length) {
@@ -343,7 +388,17 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
     }
   }
 
-  const fetched = await fetchRows(parsed);
+  let fetched = await fetchRows(parsed);
+  // The set guess was wrong if no card in it carries the typed number: drop it.
+  if (parsed.setSlug && parsed.number) {
+    const hasNumber = fetched.some((r) => (numberMatch(parsed.number, r.number) ?? 0) >= 0.8);
+    if (!hasNumber) {
+      parsed.setSlug = undefined;
+      parsed.setLabel = undefined;
+      parsed.nameTerms = originalTerms;
+      fetched = await fetchRows(parsed);
+    }
+  }
 
   // Advanced Matching Options: drop excluded sets/keywords, boost prioritized ones.
   const exSets = new Set(opts.excludeSets ?? []);
@@ -404,12 +459,8 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
     const margin = best.score - second.score;
     confidence = best.score * (0.8 + 0.2 * Math.min(1, margin / 0.12));
   }
-  if (parsed.number) {
-    const want = numericPart(parsed.number);
-    const have = numericPart(best.number);
-    if (want != null && have != null && want === have && best.score >= 0.6) {
-      confidence = Math.max(confidence, 0.92);
-    }
+  if (parsed.number && (numberMatch(parsed.number, best.number) ?? 0) >= 0.8 && best.score >= 0.6) {
+    confidence = Math.max(confidence, 0.92);
   }
   // a spoken set that matches the candidate corroborates like a number does
   if (parsed.setSlug && best.set_slug === parsed.setSlug && best.score >= 0.6) {

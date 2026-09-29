@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, extname, sep } from "node:path";
 import { getGameBySlug, getSetBySlug, getCard, getVariants, latestMarket, pool } from "./pg.ts";
 import { ebayConfigured, searchListed } from "./ebay.ts";
-import { ebaySearchUrl } from "./affiliate.ts";
+import { ebaySearchUrl, ebayCardQuery, ebayCategoryFor } from "./affiliate.ts";
 import { tcgConfigured, conditionPrices } from "./tcgplayer.ts";
 import { page } from "./render/layout.ts";
 import {
@@ -18,7 +18,7 @@ import {
 import { search, suggest, type SearchParams } from "./search.ts";
 import { searchSales, ensureSalesSchema, type SalesParams } from "./sales.ts";
 import { renderSales } from "./render/sales.ts";
-import { money } from "./util.ts";
+import { money, slugify } from "./util.ts";
 
 // ---- seller-workspace wiring ----------------------------------------------
 import { identify, type IdentifyOptions } from "./app/identify.ts";
@@ -363,6 +363,26 @@ const startPriceView = (f: Record<string, string>): Partial<Seller> => {
   return c != null && c > 0 ? { price_mode: "fixed", price_pct: 0, price_fixed_cents: c } : {};
 };
 
+const LANGUAGE_NAME: Record<string, string> = { EN: "English", JP: "Japanese", DE: "German", FR: "French", IT: "Italian", ES: "Spanish", PT: "Portuguese", KR: "Korean", ZH: "Chinese" };
+
+/**
+ * A batch left unnamed on the upload page is named the way the client names
+ * every CardUploader batch: first SKU + database + language, e.g.
+ * "PKJ-000243 - One Piece English". Their SKU prefix is a physical box
+ * location, so the name says where the cards live. Price checks keep their
+ * own naming (null here). Call after any SKU-prefix change was saved.
+ */
+async function defaultBatchLabel(f: Record<string, string>, kind: string, setup: BatchSetup): Promise<string | null> {
+  if (kind !== "scan") return null;
+  const s = await getSeller();
+  const first = setup.sku_increment === false ? s.sku_prefix : formatSku(s.sku_prefix, s.sku_next, s.sku_pad);
+  const slug = (f.game ?? "").trim().toLowerCase();
+  const game = slug && slug !== "all" ? (await getGameBySlug(slug))?.name?.replace(/\s+Card Game$/i, "") ?? null : null;
+  const lang = LANGUAGE_NAME[(f.language || s.default_language || "EN").toUpperCase()] ?? null;
+  const what = [game, game ? lang : null].filter(Boolean).join(" ");
+  return what ? `${first} - ${what}` : first;
+}
+
 /** Matching options for a batch: the saved/typed Advanced Matching prefs plus the batch's game ("Database" select). */
 const identifyOpts = (p: MatchingPrefs, game?: string): IdentifyOptions => {
   const g = (game ?? "").trim().toLowerCase();
@@ -413,7 +433,7 @@ async function handleScan(f: Record<string, string>, kind = "scan"): Promise<str
 
   if (!lines.length) return scanPageFor(kind) + "&msg=" + encodeURIComponent("Paste at least one card line.");
 
-  const batchId = await createBatch("paste", f.label?.trim() || null, kind, setup);
+  const batchId = await createBatch("paste", f.label?.trim() || (await defaultBatchLabel(f, kind, setup)), kind, setup);
   for (const line of lines) {
     const result = await identify(line, matching);
     await addItemFromIdentify(batchId, line, result, seller, { sku: fixedSku(setup, seller) });
@@ -607,7 +627,8 @@ const uploadImages = (files: UploadedFile[]): UploadedFile[] => files.filter((f)
 /** Open a photo batch (chunked upload step 1). Persists any "save as default" choices. */
 async function startScanUpload(fields: Record<string, string>, kind: string): Promise<number> {
   await uploadSettings(fields, true);
-  return createBatch("upload", fields.label?.trim() || null, kind, batchSetupFrom(fields));
+  const setup = batchSetupFrom(fields);
+  return createBatch("upload", fields.label?.trim() || (await defaultBatchLabel(fields, kind, setup)), kind, setup);
 }
 
 /**
@@ -1186,6 +1207,24 @@ function serveUpload(res: ServerResponse, path: string): void {
  * File export for any channel. `ids` = inventory rows, `listings` = blank
  * listing ids, `all=1` = every inventory row plus every blank listing draft.
  */
+/**
+ * Export file names that say what is inside, the way CardUploader names them
+ * ("pkj-01-pokemon-english_ebay_ungraded_fixed-price_2026-08-08_2240.csv").
+ * The client's eBay Seller Hub upload list is a column of these names, and
+ * since their SKU prefix doubles as a box location, the name ties each
+ * upload's results back to a physical box. Time is UTC (the server's clock).
+ */
+function exportFileName(
+  fmt: string,
+  o: { batchLabel: string | null; skuPrefix: string; all: boolean; format: "fixed" | "auction"; graded: boolean }
+): string {
+  const who = slugify(o.batchLabel || (o.all ? `${o.skuPrefix} all inventory` : `${o.skuPrefix} selection`)) || "cards";
+  const kind = o.graded ? "graded" : "ungraded";
+  const what = fmt === "ebay" ? `ebay_${kind}_${o.format === "auction" ? "auction" : "fixed-price"}` : `${fmt}_${kind}`;
+  const d = new Date().toISOString();
+  return `${who}_${what}_${d.slice(0, 10)}_${d.slice(11, 13)}${d.slice(14, 16)}.csv`;
+}
+
 async function exportCsv(res: ServerResponse, url: URL, fmt: string): Promise<void> {
   const base = await getSeller();
   const all = url.searchParams.get("all") === "1";
@@ -1222,7 +1261,7 @@ async function exportCsv(res: ServerResponse, url: URL, fmt: string): Promise<vo
   if (blanks.length) await markListingsExported(blanks.map((l) => l.id));
   res.writeHead(200, {
     "content-type": "text/csv; charset=utf-8",
-    "content-disposition": `attachment; filename="${fmt}-listings.csv"`,
+    "content-disposition": `attachment; filename="${exportFileName(fmt, { batchLabel: batch?.label ?? null, skuPrefix: base.sku_prefix, all, format, graded: items.length > 0 && items.every((i) => !!i.grade) })}"`,
     "cache-control": "no-cache",
   });
   res.end(csv);
@@ -1343,17 +1382,15 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       if (!ebayConfigured()) return j(200, { configured: false, items: [] });
       const card = await getCard(Number(url.searchParams.get("card")));
       if (!card) return j(404, { configured: true, error: "unknown card" });
-      const variants = await getVariants(card.id);
-      const vf = url.searchParams.get("v");
-      const sel = variants.find((v) => v.finish === vf) ?? variants.find((v) => v.is_default) ?? variants[0];
-      const query = [card.name, card.number ?? "", card.set_name ?? "", sel && sel.finish !== "normal" ? sel.finish_label : ""]
-        .filter(Boolean)
-        .join(" ")
-        .trim();
+      // name + collector number, singles category only (CardUploader's query);
+      // the popup can send its own edited query as `q`
+      const custom = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
+      const query = custom || ebayCardQuery(card.name, card.number);
+      const category = ebayCategoryFor((card as { game_slug?: string }).game_slug);
       const limit = Math.max(1, Math.min(50, intOr(url.searchParams.get("limit"), 10)));
       try {
-        const items = await searchListed(query, limit);
-        return j(200, { configured: true, query, items, search_url: ebaySearchUrl(query, "live-panel-search") });
+        const items = await searchListed(query, limit, { categoryId: category });
+        return j(200, { configured: true, query, items, search_url: ebaySearchUrl(query, "live-panel-search", category) });
       } catch (err) {
         console.error("ebay listed:", err);
         return j(200, { configured: true, query, error: "eBay request failed — try again shortly" });
