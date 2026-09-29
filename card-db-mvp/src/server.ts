@@ -101,6 +101,7 @@ import {
 import { catalogStats, catalogImportProgress, startCatalogImport, CATALOG_GAMES } from "./app/catalog-import.ts";
 import { loadEbayConfig, saveEbayConfig, clearEbayConfig } from "./app/ebay-config.ts";
 import { ebayAdminStatus, runEbayTest, ebayFormToPatch, listEbayConnections } from "./app/ebay-admin.ts";
+import { renderPrivacy } from "./render/privacy.ts";
 import { ensureDeletionSchema, DELETION_PATH, deletionEndpointUrl, challengeResponse, verifyNotification, parseNotice, applyDeletion } from "./app/ebay-deletion.ts";
 import { renderAdminEbay } from "./render/admin.ts";
 import { buildHashIndex } from "./app/hashindex.ts";
@@ -1262,6 +1263,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         "application/xml"
       );
     }
+
+    if (path === "/privacy") return sendPage(res, renderPrivacy(), "/privacy");
 
     // ---- eBay Marketplace Account Deletion notifications (app/ebay-deletion.ts) ----
     if (path === DELETION_PATH) {

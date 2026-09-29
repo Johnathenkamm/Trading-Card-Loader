@@ -144,7 +144,7 @@ function footer(): string {
   </div>
   <div class="wrap legal">
     <span>Catalog &amp; market prices from the Pokémon TCG API &amp; Scryfall. Grade values, price history &amp; sold comps are demo data.</span>
-    <span>Phase 1 MVP — not affiliated with any marketplace.</span>
+    <span>Phase 1 MVP — not affiliated with any marketplace. · <a href="/privacy">Privacy</a></span>
   </div>
 </footer>`;
 }
