@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS card_image_hashes (
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
+-- Catalog images the host doesn't have: answered 403/404/410 twice and nothing
+-- else (TCGplayer has no picture for many Mirror Holofoil / Poke Ball Pattern /
+-- deck products).
+-- The index builder skips these until image_url changes or checked_at is 30
+-- days old; `npm run hash:catalog -- --retry-missing` tries them now.
+CREATE TABLE IF NOT EXISTS card_image_missing (
+  card_id     bigint PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+  image_url   text NOT NULL,                -- the URL that failed (a new URL is tried again)
+  status      integer NOT NULL,             -- the HTTP status every attempt got
+  checked_at  timestamptz NOT NULL DEFAULT now()
+);
+
 -- Catalog gap reports (the "report a missing/wrong card" loop).
 CREATE TABLE IF NOT EXISTS catalog_issue_reports (
   id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -171,6 +171,34 @@ function footer(): string {
 // Dark is the default look; the toggle can switch to light and persists the choice.
 const THEME_INIT = `(function(){try{var t=localStorage.getItem('ci-theme')||'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();`;
 
+// Images that fail to load show a "No image" card instead of the broken-image
+// icon. Mostly these are catalog card images: TCGplayer answers 403 for
+// products that have no picture. Error events don't bubble, so the listener
+// captures them on document; it runs in <head>, before any <img> exists, and
+// also covers images that scripts add later. The sweep after parsing catches
+// any image that had already failed before a listener could see it (complete,
+// but no pixels).
+const MISSING_IMG =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="63" height="88" viewBox="0 0 126 176">` +
+      `<rect x="2" y="2" width="122" height="172" rx="10" fill="#7c879c" fill-opacity=".1" stroke="#7c879c" stroke-opacity=".6" stroke-width="1.5" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>` +
+      `<g fill="none" stroke="#7c879c" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><rect x="41" y="56" width="44" height="36" rx="5"/><path d="M45 88l12-13 9 9 6-6 9 10"/><circle cx="73" cy="66" r="3.5"/></g>` +
+      `<text x="63" y="116" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" font-weight="600" fill="#7c879c">No image</text></svg>`
+  );
+const IMG_FALLBACK_JS = `(function(){
+  var PH=${JSON.stringify(MISSING_IMG)};
+  function missing(img){
+    if(img.classList.contains('img-missing'))return;
+    img.classList.add('img-missing');
+    img.removeAttribute('srcset');
+    img.src=PH;
+  }
+  document.addEventListener('error',function(e){var t=e.target;if(t&&t.tagName==='IMG')missing(t);},true);
+  function sweep(){for(var i=0,a=document.images;i<a.length;i++){var im=a[i];if(im.complete&&!im.naturalWidth&&im.getAttribute('src'))missing(im);}}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',sweep);else sweep();
+})();`;
+
 const CLIENT_JS = `
 (function(){
   // theme toggle
@@ -248,6 +276,7 @@ ${o.ogImage ? `<meta property="og:image" content="${esc(o.ogImage)}">` : ""}
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
 <script>${THEME_INIT}</script>
+<script>${IMG_FALLBACK_JS}</script>
 ${ld}
 </head>
 <body>

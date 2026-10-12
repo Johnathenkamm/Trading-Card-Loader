@@ -15,6 +15,7 @@ import type { Seller } from "../app/store.ts";
 import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow } from "../app/admin.ts";
 import type { SoldArchiveSummary } from "../app/soldimport.ts";
 import type { CatalogGameStats, ImportProgress } from "../app/catalog-import.ts";
+import { RECHECK_MISSING_AFTER_DAYS } from "../app/hashindex.ts";
 import { EBAY_MARKETPLACES, type EbayAdminStatus } from "../app/ebay-admin.ts";
 
 type Page = { html: string; title: string; description: string };
@@ -549,6 +550,14 @@ export function renderAdminSold(s: SoldArchiveSummary, msg?: string, sampleOnBoo
 // button here: the import runs inside the server (src/app/catalog-import.ts)
 // and this page shows its progress; the photo-ID index follows automatically.
 
+// Cards whose image the host refuses (TCGplayer has no picture for them) can't
+// be in the photo-ID index, so they explain a percentage stuck below 100.
+function missingNote(missing: number): string {
+  if (!missing) return "";
+  const why = `TCGplayer has no picture for these cards (common for Mirror Holofoil, Poke Ball Pattern and deck products), so they can't be matched from a photo. They're checked again every ${RECHECK_MISSING_AFTER_DAYS} days, or now with “retry missing images”.`;
+  return `<div class="sub" title="${esc(why)}">${missing.toLocaleString()} have no image</div>`;
+}
+
 export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress, msg?: string): Page {
   const pct = p.groupsTotal ? Math.round((p.groupsDone / p.groupsTotal) * 100) : 0;
   const rows = stats
@@ -557,7 +566,8 @@ export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress,
         <td><b>${esc(g.name)}</b><div class="sub mono">${esc(g.slug)}</div></td>
         <td class="mono">${g.sets.toLocaleString()}</td>
         <td class="mono">${g.cards.toLocaleString()}</td>
-        <td class="mono">${g.cards ? `${g.hashed.toLocaleString()} <span class="sub">(${Math.round((g.hashed / g.cards) * 100)}%)</span>` : "—"}</td>        <td class="sub" title="${esc(g.lastImport ?? "")}">${g.lastImport ? ago(g.lastImport) : g.inCatalog ? "added at setup" : "not imported"}</td>
+        <td class="mono">${g.cards ? `${g.hashed.toLocaleString()} <span class="sub">(${Math.round((g.hashed / g.cards) * 100)}%)</span>${missingNote(g.missing)}` : "—"}</td>
+        <td class="sub" title="${esc(g.lastImport ?? "")}">${g.lastImport ? ago(g.lastImport) : g.inCatalog ? "added at setup" : "not imported"}</td>
         <td class="act">${
           g.importable
             ? `<form method="post" action="/admin/catalog/import" class="inline"><input type="hidden" name="game" value="${esc(g.slug)}"><button class="btn sm${g.inCatalog ? "" : " primary"}" type="submit" ${p.running ? "disabled" : ""}>${g.inCatalog ? "Import new sets" : "Import"}</button><label class="ckbox sm" title="Re-import every set, not just new ones"><input type="checkbox" name="force" value="1"> force</label></form>`
@@ -586,7 +596,7 @@ export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress,
     ${adminHead("catalog", "Catalog", "Every game, set and card the site knows. Card data and market prices: TCGplayer, updated daily.")}
     ${flash(msg)}
     <div class="ws-panel">
-      <div class="ws-panel-head"><h2>Games</h2><form method="post" action="/admin/catalog/hash" class="inline"><button class="btn sm" type="submit" ${p.running ? "disabled" : ""} title="Prepare every card image that isn't in the photo-ID index yet for photo matching">Rebuild photo-ID index</button></form></div>
+      <div class="ws-panel-head"><h2>Games</h2><form method="post" action="/admin/catalog/hash" class="inline"><button class="btn sm" type="submit" ${p.running ? "disabled" : ""} title="Prepare every card image that isn't in the photo-ID index yet for photo matching">Rebuild photo-ID index</button><label class="ckbox sm" title="Also try again the card images that had no picture last time"><input type="checkbox" name="retry" value="1"> retry missing images</label></form></div>
       <div class="tablewrap"><table class="inv-table"><thead><tr><th>Game</th><th>Sets</th><th>Cards</th><th>Photo-ID index</th><th>Last import</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     </div>
     ${status}

@@ -1302,3 +1302,7 @@ form.inline { display: inline; margin: 0; }
 .dz-what b { color: var(--ink); }
 .mode-lock p { color: var(--muted); }
 .mode-lock .scan-submit { gap: 10px; flex-wrap: wrap; }
+
+/* An image that failed to load: layout.ts swaps in a dashed "No image" card.
+   Show all of it, without the shadows meant for real card art. */
+img.img-missing { object-fit: contain !important; filter: none !important; box-shadow: none !important; }

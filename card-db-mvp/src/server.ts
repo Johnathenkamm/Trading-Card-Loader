@@ -1848,7 +1848,7 @@ async function handleAdmin(
     }
     if (path === "/admin/catalog/hash") {
       if (catalogImportProgress().running) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Wait for the running import; it builds the index when it finishes."));
-      buildHashIndex({ log: (l) => console.log("  " + l) }).catch((err) => console.error("photo-ID index:", err));
+      buildHashIndex({ retryMissing: f.retry === "1", log: (l) => console.log("  " + l) }).catch((err) => console.error("photo-ID index:", err));
       return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Rebuilding the photo-ID index in the background. The counts on this page update as it goes."));
     }
 

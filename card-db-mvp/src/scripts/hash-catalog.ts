@@ -3,13 +3,15 @@
 // src/app/hashindex.ts (the server also runs it at boot when the index is
 // behind the catalog); this script is the manual / forced entry point.
 //
-// Run:  npm run hash:catalog          (hash new/changed cards)
-//       npm run hash:catalog -- --force   (rehash everything)
+// Run:  npm run hash:catalog                      (hash new/changed cards)
+//       npm run hash:catalog -- --retry-missing   (also retry images the host had no picture for)
+//       npm run hash:catalog -- --force           (rehash everything)
 
 import { close } from "../pg.ts";
 import { buildHashIndex } from "../app/hashindex.ts";
 
-buildHashIndex({ force: process.argv.includes("--force"), log: (l) => console.log(l) })
+const args = process.argv.slice(2);
+buildHashIndex({ force: args.includes("--force"), retryMissing: args.includes("--retry-missing"), log: (l) => console.log(l) })
   .then(() => close())
   .catch(async (err) => {
     console.error("hash:catalog failed:", err);

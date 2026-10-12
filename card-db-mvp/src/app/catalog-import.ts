@@ -24,7 +24,7 @@
 
 import { query, one } from "../pg.ts";
 import { slugify, numberSort, sleep } from "../util.ts";
-import { buildHashIndex } from "./hashindex.ts";
+import { buildHashIndex, ensureHashIndexSchema } from "./hashindex.ts";
 
 const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 
@@ -337,7 +337,7 @@ export async function importGame(slug: string, opts: ImportOptions = {}): Promis
       progress.current = "photo-ID index";
       note("Building the photo-ID index for the new cards…", log);
       const h = await buildHashIndex({ log: (l) => note("  " + l, log) });
-      note(`Photo-ID index: ${h.hashed}/${h.cards} cards covered (${h.failed} failed).`, log);
+      note(`Photo-ID index: ${h.hashed}/${h.cards} cards covered (${h.failed} failed, ${h.missing} with no image at the source).`, log);
     }
   } catch (err: any) {
     progress.error = err?.message ?? String(err);
@@ -356,26 +356,31 @@ export function startCatalogImport(slug: string, opts: ImportOptions = {}): void
   importGame(slug, { ...opts, log: opts.log ?? ((l) => console.log("  " + l)) }).catch((err) => console.error("catalog import:", err));
 }
 
-export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; lastImport: string | null; inCatalog: boolean; importable: boolean };
+// `missing`: cards whose current image the host doesn't have (it answers
+// 403/404, see hashindex.ts), so the photo-ID index can't cover them.
+export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; missing: number; lastImport: string | null; inCatalog: boolean; importable: boolean };
 
 /** Per-game counts for the owner console. Games without a row yet are listed as importable. */
 export async function catalogStats(): Promise<CatalogGameStats[]> {
   await ensureCatalogSchema();
+  await ensureHashIndexSchema();
   const rows = (await query(
     `SELECT g.slug, g.name,
             (SELECT COUNT(*)::int FROM sets s WHERE s.game_id=g.id) AS sets,
             (SELECT COUNT(*)::int FROM cards c JOIN sets s ON s.id=c.set_id WHERE s.game_id=g.id) AS cards,
-            (SELECT COUNT(*)::int FROM card_image_hashes h JOIN cards c ON c.id=h.card_id JOIN sets s ON s.id=c.set_id WHERE s.game_id=g.id) AS hashed
+            (SELECT COUNT(*)::int FROM card_image_hashes h JOIN cards c ON c.id=h.card_id JOIN sets s ON s.id=c.set_id WHERE s.game_id=g.id) AS hashed,
+            (SELECT COUNT(*)::int FROM card_image_missing m JOIN cards c ON c.id=m.card_id JOIN sets s ON s.id=c.set_id
+              WHERE s.game_id=g.id AND m.image_url = COALESCE(c.image_small, c.image_large)) AS missing
      FROM games g ORDER BY g.sort, g.name`
   ).catch(async () => query(
     `SELECT g.slug, g.name,
             (SELECT COUNT(*)::int FROM sets s WHERE s.game_id=g.id) AS sets,
-            (SELECT COUNT(*)::int FROM cards c JOIN sets s ON s.id=c.set_id WHERE s.game_id=g.id) AS cards, 0 AS hashed
+            (SELECT COUNT(*)::int FROM cards c JOIN sets s ON s.id=c.set_id WHERE s.game_id=g.id) AS cards, 0 AS hashed, 0 AS missing
      FROM games g ORDER BY g.sort, g.name`
-  ))) as Array<{ slug: string; name: string; sets: number; cards: number; hashed: number }>;
+  ))) as Array<{ slug: string; name: string; sets: number; cards: number; hashed: number; missing: number }>;
   const meta = (await query("SELECT key, value FROM meta WHERE key LIKE 'catalog_import_%'")) as Array<{ key: string; value: string }>;
   const last = new Map(meta.map((m) => [m.key.replace("catalog_import_", ""), m.value]));
   const out: CatalogGameStats[] = rows.map((r) => ({ ...r, lastImport: last.get(r.slug) ?? null, inCatalog: true, importable: !!CATALOG_GAMES[r.slug] }));
-  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, lastImport: null, inCatalog: false, importable: true });
+  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, missing: 0, lastImport: null, inCatalog: false, importable: true });
   return out;
 }

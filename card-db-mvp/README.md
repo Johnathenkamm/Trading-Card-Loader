@@ -66,8 +66,13 @@ npm run check:sold-links [-- --force | --limit=N]
                       # row; Sales Lookup and card pages hide the link on 404/410 so no one
                       # lands on a dead listing (demo rows and malformed/eBay-search URLs
                       # are never linked, regardless). Re-run weekly alongside import:sold.
-npm run hash:catalog  # build the photo-ID index: perceptual-hash every catalog reference
+npm run hash:catalog [-- --retry-missing | --force]
+                      # build the photo-ID index: perceptual-hash every catalog reference
                       # image (re-run after adding sets; only new/changed cards fetch).
+                      # Images the host answers 403/404 twice and nothing else (TCGplayer has
+                      # no picture for many Mirror Holofoil / Poke Ball Pattern / deck
+                      # products) are recorded in card_image_missing and skipped until their
+                      # URL changes or 30 days pass; --retry-missing tries them again now.
                       # Powers VISION_PROVIDER=hash — real photo identification, no API.
 ```
 
@@ -412,7 +417,9 @@ a live database.
   **Catalog** (`/admin/catalog`) shows every game with its set / card /
   photo-index counts and imports or refreshes a game from TCGCSV in the
   background with live progress (`src/app/catalog-import.ts`), plus a
-  "Rebuild photo-ID index" button.
+  "Rebuild photo-ID index" button. Cards whose image TCGplayer doesn't have
+  are counted under each game's photo-index figure; tick "retry missing
+  images" before rebuilding to re-check them.
   **Sold prices** (`/admin/sold`) imports a sold-sales feed file (.csv/.json,
   same columns and canonicalization as `npm run import:sold`), loads the demo
   sample, removes everything imported under one source, and summarizes the
