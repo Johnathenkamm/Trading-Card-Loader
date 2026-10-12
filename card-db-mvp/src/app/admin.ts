@@ -21,6 +21,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { query, one } from "../pg.ts";
 import { normalizeEmail } from "./auth.ts";
+import { platformLabel } from "../render/components.ts";
 
 export const ADMIN_COOKIE = "cardindex_admin";
 export const ACT_AS_COOKIE = "cardindex_actas";
@@ -195,24 +196,24 @@ const PAGE_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^\/app$/, () => "Dashboard"],
   [/^\/app\/inventory\/automatic$/, () => "Automatic inventory"],
   [/^\/app\/inventory$/, () => "Inventory"],
-  [/^\/app\/batches$/, () => "Batches"],
-  [/^\/app\/scan$/, () => "Scan / add cards"],
+  [/^\/app\/batches$/, () => "Previous batches"],
+  [/^\/app\/scan$/, () => "Add cards"],
   [/^\/app\/graded$/, () => "Graded cards"],
   [/^\/app\/listing-creator$/, () => "Listing creator"],
   [/^\/app\/blank-listing$/, () => "Blank listing"],
   [/^\/app\/listings$/, () => "Listings"],
-  [/^\/app\/pricing-tool$/, () => "Pricing tool"],
-  [/^\/app\/pricing\/(\d+)$/, (m) => `Pricing results #${m[1]}`],
+  [/^\/app\/pricing-tool$/, () => "Ungraded pricing tool"],
+  [/^\/app\/pricing\/(\d+)$/, (m) => `Pricing batch #${m[1]}`],
   [/^\/app\/card-search$/, () => "Card search"],
   [/^\/app\/orders\/picklist$/, () => "Picklist"],
   [/^\/app\/orders$/, () => "Orders"],
   [/^\/app\/inbox$/, () => "Inbox"],
-  [/^\/app\/settings$/, () => "Settings"],
+  [/^\/app\/settings$/, () => "Configuration"],
   [/^\/app\/review\/(\d+)$/, (m) => `Review queue · batch #${m[1]}`],
   [/^\/app\/list\/(\d+)$/, (m) => `Listing builder · inventory #${m[1]}`],
-  [/^\/app\/export\/(\w+)\.csv$/, (m) => `Exported ${m[1]} CSV`],
-  [/^\/app\/ebay\/connect$/, () => "Started eBay connect"],
-  [/^\/app\/ebay\/callback$/, () => "Returned from eBay OAuth"],
+  [/^\/app\/export\/(\w+)\.csv$/, (m) => `Exported ${platformLabel(m[1])} CSV`],
+  [/^\/app\/ebay\/connect$/, () => "Started connecting eBay"],
+  [/^\/app\/ebay\/callback$/, () => "Returned from eBay sign-in"],
 ];
 
 const ACTION_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
@@ -229,7 +230,7 @@ const ACTION_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^\/app\/review\/(\d+)\/item\/(\d+)$/, (m) => `Edited a review item · batch #${m[1]}`],
   [/^\/app\/list\/(\d+)$/, (m) => `Created a listing · inventory #${m[1]}`],
   [/^\/app\/listings\/bulk$/, () => "Listings bulk action"],
-  [/^\/app\/listings\/(\d+)\/(publish|end)$/, (m) => `${m[2] === "publish" ? "Published" : "Ended"} listing #${m[1]}`],
+  [/^\/app\/listings\/(\d+)\/(publish|end)$/, (m) => (m[2] === "publish" ? `Sent listing #${m[1]} to eBay` : `Ended listing #${m[1]}`)],
   [/^\/app\/inventory\/bulk$/, () => "Inventory bulk update"],
   [/^\/app\/inventory\/automatic\/(\d+)$/, (m) => `Updated live listing #${m[1]}`],
   [/^\/app\/orders\/import$/, () => "Imported a pull sheet"],
@@ -237,7 +238,7 @@ const ACTION_LABELS: Array<[RegExp, (m: RegExpMatchArray) => string]> = [
   [/^\/app\/orders\/(\d+)\/(pick|ship|delete)$/, (m) => `${m[2] === "pick" ? "Picked" : m[2] === "ship" ? "Shipped" : "Deleted"} order #${m[1]}`],
   [/^\/app\/orders$/, () => "Created an order"],
   [/^\/app\/inbox$/, () => "Sent feedback"],
-  [/^\/app\/settings$/, () => "Saved settings"],
+  [/^\/app\/settings$/, () => "Saved Configuration"],
   [/^\/app\/ebay\/disconnect$/, () => "Disconnected eBay"],
   [/^\/app\/ebay\/sync-policies$/, () => "Synced eBay policies"],
 ];

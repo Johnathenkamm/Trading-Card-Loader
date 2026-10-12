@@ -6,7 +6,8 @@ import { getGameBySlug, getSetBySlug, getCard, getVariants, latestMarket, pool }
 import { ebayConfigured, searchListed } from "./ebay.ts";
 import { ebaySearchUrl, ebayCardQuery, ebayCategoryFor } from "./affiliate.ts";
 import { tcgConfigured, conditionPrices } from "./tcgplayer.ts";
-import { page } from "./render/layout.ts";
+import { page, SITE } from "./render/layout.ts";
+import { plural } from "./render/components.ts";
 import {
   renderHome,
   renderBrowse,
@@ -55,7 +56,7 @@ import {
 import {
   ensureEbaySchema, ebaySellConfigured, beginConnect, completeConnect, disconnect as ebayDisconnect, syncPolicies, setPolicyIds, ensureLocation,
   getConnection, publishListing, endListing, syncQuantityForInventory, fetchOpenOrders, markShippedOnEbay, touchOrderSync, EbayError,
-  startScheduler, runScheduledPublishes, ebayIsMock,
+  startScheduler, runScheduledPublishes, ebayIsMock, ebayReason, ebayErrorText, EBAY_RETRY,
 } from "./app/ebay-sell.ts";
 import { scheduleListing, setListingsBestOffer, setListingsStatus, inventoryForBatch, type BatchSetup } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
@@ -258,10 +259,10 @@ function clientIp(req: IncomingMessage): string {
 
 function notFound(res: ServerResponse) {
   const html = page({
-    title: "Not found — CardIndex",
+    title: `Not found | ${SITE}`,
     description: "Page not found.",
     canonical: "/",
-    body: `<div class="wrap"><div class="empty"><h1>404</h1><p>That page doesn’t exist. <a href="/">Go home</a> or <a href="/search">search</a>.</p></div></div>`,
+    body: `<div class="wrap"><div class="empty"><h1>Page not found</h1><p>That page doesn’t exist. <a href="/">Go home</a> or <a href="/search">search</a>.</p></div></div>`,
   });
   send(res, 404, html);
 }
@@ -369,7 +370,7 @@ const LANGUAGE_NAME: Record<string, string> = { EN: "English", JP: "Japanese", D
  * A batch left unnamed on the upload page is named the way the client names
  * every CardUploader batch: first SKU + database + language, e.g.
  * "PKJ-000243 - One Piece English". Their SKU prefix is a physical box
- * location, so the name says where the cards live. Price checks keep their
+ * location, so the name says where the cards live. Pricing batches keep their
  * own naming (null here). Call after any SKU-prefix change was saved.
  */
 async function defaultBatchLabel(f: Record<string, string>, kind: string, setup: BatchSetup): Promise<string | null> {
@@ -858,14 +859,14 @@ async function handleInventoryBulk(f: Record<string, string>): Promise<string> {
       });
       n++;
     }
-    return "/app/listings?msg=" + encodeURIComponent(`Created ${n} listing draft(s).`);
+    return "/app/listings?msg=" + encodeURIComponent(`Created ${plural(n, "listing draft")}.`);
   }
 
   // "Mark as listed": the seller uploaded the exported CSV at eBay themselves.
   if (doAction === "mark-listed" || doAction === "mark-in-stock") {
     const status = doAction === "mark-listed" ? "listed" : "in_stock";
     for (const id of ids) await updateInventory(id, { status });
-    return "/app/inventory?msg=" + encodeURIComponent(`${ids.length} card${ids.length === 1 ? "" : "s"} marked ${status === "listed" ? "listed" : "in stock"}.`);
+    return "/app/inventory?msg=" + encodeURIComponent(`${plural(ids.length, "card")} marked ${status === "listed" ? "listed" : "not listed"}.`);
   }
 
   // apply condition and/or pricing rule
@@ -883,7 +884,7 @@ async function handleInventoryBulk(f: Record<string, string>): Promise<string> {
     }
     await updateInventory(id, patch);
   }
-  return "/app/inventory?msg=" + encodeURIComponent(`Updated ${ids.length} card(s).`);
+  return "/app/inventory?msg=" + encodeURIComponent(`Updated ${plural(ids.length, "card")}.`);
 }
 
 /**
@@ -895,7 +896,7 @@ async function handleInventoryBulk(f: Record<string, string>): Promise<string> {
 async function handleReviewBulk(batchId: number, f: Record<string, string>): Promise<string> {
   const back = (note: string) => `/app/review/${batchId}?msg=` + encodeURIComponent(note);
   const items = (await getItems(batchId)).filter((i) => i.status !== "skipped" && i.status !== "failed").sort((a, b) => a.id - b.id);
-  if (!items.length) return back("Nothing to apply to — every card in this batch is skipped or failed.");
+  if (!items.length) return back("Nothing to apply to — every card in this batch is skipped or has no match.");
 
   if (f.do === "price-all") {
     const cents = toCents(f.price);
@@ -923,7 +924,7 @@ async function handleReviewBulk(batchId: number, f: Record<string, string>): Pro
     return back(
       count
         ? `Numbered ${count} card${count === 1 ? "" : "s"} ${formatSku(prefix, first, seller.sku_pad)} → ${formatSku(prefix, n - 1, seller.sku_pad)}; the next card you add gets ${formatSku(prefix, n, seller.sku_pad)}.`
-        : "No cards to number (duplicates merge into their twin)."
+        : "No cards to number (duplicates are combined with their twin)."
     );
   }
   return back("Nothing to do.");
@@ -960,15 +961,14 @@ async function handleCreateListing(invId: number, f: Record<string, string>): Pr
   return "/app/listings?msg=" + encodeURIComponent(`Listing draft created for ${inv.card_name}.`);
 }
 
-/** Publish (or revise) a listing on eBay and land on the listings page with the outcome. */
+/** List (or revise) a listing on eBay and land on the listings page with the outcome. */
 async function publishAndRedirect(listingId: number, label: string): Promise<string> {
   try {
     const r = await publishListing(listingId);
-    return "/app/listings?msg=" + encodeURIComponent(`${r.revised ? "Revised" : "Published"} on eBay: ${label} → item ${r.listingId}.`);
+    return "/app/listings?msg=" + encodeURIComponent(`${r.revised ? "Revised" : "Listed"} on eBay: ${label} (eBay item ${r.listingId}).`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     if (!(err instanceof EbayError)) console.error("ebay publish:", err);
-    return "/app/listings?msg=" + encodeURIComponent(`eBay rejected "${label}": ${msg}`);
+    return "/app/listings?msg=" + encodeURIComponent(`Couldn't send ${label} to eBay. ${ebayErrorText(err)}`);
   }
 }
 
@@ -982,7 +982,10 @@ async function handleListingsBulk(f: Record<string, string>, sellerId: number): 
   const back = (msg: string) => "/app/listings?msg=" + encodeURIComponent(msg);
   if (f.do === "run-due") {
     const r = await runScheduledPublishes((sid, fn) => runWithSeller(sid, fn), sellerId);
-    return back(`Ran the scheduler: ${r.published} published, ${r.failed} failed${r.parked ? `, ${r.parked} parked as drafts` : ""}.`);
+    // Due listings only run for sellers connected to eBay, so "nothing due" needs a connection to be true.
+    if (!r.published && !r.failed)
+      return back((await getConnection()) ? "No scheduled listings are due yet." : "Connect eBay first (Configuration → eBay). Scheduled listings go live only while eBay is connected.");
+    return back(`Listed ${plural(r.published, "listing")} on eBay${r.failed ? `; ${r.failed} failed` : ""}${r.parked ? `; ${r.parked} moved back to drafts` : ""}.`);
   }
   if (!ids.length) return back("Select at least one listing.");
   if (f.do === "schedule") {
@@ -998,15 +1001,15 @@ async function handleListingsBulk(f: Record<string, string>, sellerId: number): 
     // Echo times in the user's own zone (tz_offset), not the server's.
     const off = Number.isFinite(Number(f.tz_offset)) && f.tz_offset !== "" ? Number(f.tz_offset) : new Date().getTimezoneOffset();
     const wall = (d: Date) => new Date(d.getTime() - off * 60_000).toISOString().slice(0, 16).replace("T", " ");
-    return back(`Scheduled ${n} listing${n === 1 ? "" : "s"} from ${wall(start)}${n > 1 ? ` to ${wall(last)}, ${gapMin} min apart` : ""} (your local time).`);
+    return back(`Scheduled ${plural(n, "listing")} from ${wall(start)}${n > 1 ? ` to ${wall(last)}, ${plural(gapMin, "minute")} apart` : ""} (your local time).`);
   }
   if (f.do === "unschedule") {
     for (const id of ids) await scheduleListing(id, null);
-    return back(`${ids.length} listing${ids.length === 1 ? "" : "s"} back to draft.`);
+    return back(`${plural(ids.length, "listing")} moved back to drafts.`);
   }
   if (f.do === "offers-on" || f.do === "offers-off") {
     await setListingsBestOffer(ids, f.do === "offers-on");
-    return back(`Best Offer ${f.do === "offers-on" ? "enabled" : "disabled"} on ${ids.length} listing${ids.length === 1 ? "" : "s"}.`);
+    return back(`${f.do === "offers-on" ? "Allowed offers (Best Offer)" : "Turned off offers"} on ${plural(ids.length, "listing")}.`);
   }
   if (f.do === "mark-listed") {
     await setListingsStatus(ids, "exported");
@@ -1024,18 +1027,23 @@ async function handleListingsBulk(f: Record<string, string>, sellerId: number): 
     }
     return back(`Ended ${n} of ${ids.length} listing${ids.length === 1 ? "" : "s"}.`);
   }
-  // publish now
+  // list now
   let ok = 0;
+  let refused = false; // eBay itself turned one down (not just our own checks)
   const errors: string[] = [];
   for (const id of ids) {
     try {
       await publishListing(id);
       ok++;
     } catch (err) {
-      errors.push(`#${id}: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof EbayError && err.status > 0) refused = true;
+      errors.push(`#${id}: ${ebayReason(err).replace(/[.\s]+$/, "")}`);
     }
   }
-  return back(`Published ${ok} of ${ids.length}.${errors.length ? " " + errors.slice(0, 3).join(" · ") + (errors.length > 3 ? ` (+${errors.length - 3} more — see the rows)` : "") : ""}`);
+  const why = errors.length
+    ? " " + errors.slice(0, 3).join(" · ") + (errors.length > 3 ? ` (+${errors.length - 3} more — see the rows)` : "") + "." + (refused ? ` ${EBAY_RETRY}` : "")
+    : "";
+  return back(`Listed ${ok} of ${plural(ids.length, "listing")} on eBay.${why}`);
 }
 
 /** Pull open eBay orders into the orders table (skipping ones already imported). */
@@ -1054,15 +1062,14 @@ async function fetchEbayOrders(): Promise<string> {
     let archived = "";
     try {
       const h = await harvestSoldSalesFor(currentSellerId());
-      if (h) archived = ` ${h.inserted} sale${h.inserted === 1 ? "" : "s"} added to the sold archive.`;
+      if (h) archived = ` ${plural(h.inserted, "sale")} added to Sales lookup.`;
     } catch (err) {
       if (!(err instanceof EbayError)) console.error("sold harvest:", err);
     }
     return "/app/orders?platform=ebay&msg=" + encodeURIComponent(`Fetched ${open.length} open eBay order${open.length === 1 ? "" : "s"} — ${added} new.${archived}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     if (!(err instanceof EbayError)) console.error("ebay orders:", err);
-    return "/app/orders?msg=" + encodeURIComponent(`Couldn't fetch eBay orders: ${msg}`);
+    return "/app/orders?msg=" + encodeURIComponent(`Couldn't fetch eBay orders. ${ebayErrorText(err)}`);
   }
 }
 
@@ -1083,7 +1090,7 @@ async function afterShip(orderId: number): Promise<string> {
     for (const it of o.items) if (it.inventory_id != null) n += await syncQuantityForInventory(it.inventory_id);
     return n ? ` Quantity synced to ${n} live eBay listing${n === 1 ? "" : "s"}.` : "";
   } catch (err) {
-    return ` (eBay sync failed: ${err instanceof Error ? err.message : String(err)})`;
+    return ` Couldn't update eBay. ${ebayErrorText(err)}`;
   }
 }
 
@@ -1135,7 +1142,7 @@ async function handleSettings(f: Record<string, string>, section: string): Promi
     case "descriptions": {
       // up to N (name, body) pairs + which one is active
       const items = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => ({
-        name: (f[`desc_name_${i}`] ?? "").trim().slice(0, 40) || `Description ${i + 1}`,
+        name: (f[`desc_name_${i}`] ?? "").trim().slice(0, 40) || `Template ${i + 1}`,
         body: (f[`desc_body_${i}`] ?? "").replace(/\r\n/g, "\n").slice(0, 8000),
       }));
       const activeRaw = intOr(f.desc_active, 0);
@@ -1179,7 +1186,7 @@ async function handleSettings(f: Record<string, string>, section: string): Promi
       try {
         await ensureLocation({ postalCode: f.loc_postal.trim(), country: (f.loc_country ?? "US").trim(), city: (f.loc_city ?? "").trim(), stateOrProvince: (f.loc_state ?? "").trim() });
       } catch (err) {
-        note = ` eBay location wasn't saved: ${err instanceof Error ? err.message : String(err)}`;
+        note = ` The ship-from location wasn't saved. ${ebayErrorText(err)}`;
       }
     }
   }
@@ -1347,7 +1354,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const items = await getItemsPublic(b.id);
       const token = m[1];
       return runWithSeller(b.seller_id, async () =>
-        sendPage(res, await renderPricingResults(b, items, { isPublic: true, shareUrl: null, shopName: acct?.display_name ?? "a CardIndex seller" }), `/p/${token}`)
+        sendPage(res, await renderPricingResults(b, items, { isPublic: true, shareUrl: null, shopName: acct?.display_name ?? `a ${SITE} seller` }), `/p/${token}`)
       );
     }
 
@@ -1385,8 +1392,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       // name + collector number, singles category only (CardUploader's query);
       // the popup can send its own edited query as `q`
       const custom = (url.searchParams.get("q") ?? "").trim().slice(0, 120);
-      const query = custom || ebayCardQuery(card.name, card.number);
-      const category = ebayCategoryFor((card as { game_slug?: string }).game_slug);
+      const gameSlug = (card as { game_slug?: string }).game_slug;
+      const query = custom || ebayCardQuery(card.name, card.number, gameSlug);
+      const category = ebayCategoryFor(gameSlug);
       const limit = Math.max(1, Math.min(50, intOr(url.searchParams.get("limit"), 10)));
       try {
         const items = await searchListed(query, limit, { categoryId: category });
@@ -1406,7 +1414,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       const card = await getCard(Number(url.searchParams.get("card")));
       if (!card) return j(404, { configured: true, error: "unknown card" });
       if (!card.tcgplayer_product_id)
-        return j(200, { configured: true, groups: [], error: "No TCGplayer product linked for this card yet (run sync:tcgcsv)." });
+        return j(200, { configured: true, groups: [], error: "TCGplayer condition prices aren't available for this card yet." });
       const variants = await getVariants(card.id);
       const vf = url.searchParams.get("v");
       const sel = variants.find((v) => v.finish === vf) ?? variants.find((v) => v.is_default) ?? variants[0];
@@ -1493,10 +1501,10 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       res,
       500,
       page({
-        title: "Error — CardIndex",
+        title: `Error | ${SITE}`,
         description: "Something went wrong.",
         canonical: "/",
-        body: `<div class="wrap"><div class="empty"><h1>500</h1><p>Something went wrong rendering this page.</p></div></div>`,
+        body: `<div class="wrap"><div class="empty"><h1>Something went wrong</h1><p>This page didn’t load. Try again in a moment, or <a href="/">go home</a>.</p></div></div>`,
       })
     );
   }
@@ -1516,7 +1524,7 @@ async function handleAuth(
 
   if (path === "/logout") {
     if (method === "POST") {
-      if (acct?.id != null) await logActivity({ sellerId: acct.id, kind: "logout", method, path, detail: "Logged out" });
+      if (acct?.id != null) await logActivity({ sellerId: acct.id, kind: "logout", method, path, detail: "Signed out" });
       await destroySession(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
       return redirectWithCookie(res, "/", clearSessionCookie());
     }
@@ -1547,7 +1555,7 @@ async function handleAuth(
         const acct = await getAccount(sellerId);
         const landing =
           next === "/app"
-            ? "/app?msg=" + encodeURIComponent(`Welcome, ${acct?.display_name ?? (displayName || "there")}! Your workspace is ready.`)
+            ? "/app?msg=" + encodeURIComponent(`Welcome, ${acct?.display_name ?? (displayName || "there")}! Your dashboard is ready.`)
             : next;
         return redirectWithCookie(res, landing, sessionCookie(token));
       } catch (err) {
@@ -1637,13 +1645,13 @@ async function handleReset(
         const link = `${appBaseUrl(url.origin)}/reset-password/${r.token}${f.next ? "?next=" + encodeURIComponent(f.next) : ""}`;
         await sendMail({
           to: email,
-          subject: "Reset your CardIndex password",
+          subject: `Reset your ${SITE} password`,
           text:
-            `Someone (hopefully you) asked to reset the password for this CardIndex account.\n\n` +
+            `Someone (hopefully you) asked to reset the password for your ${SITE} account.\n\n` +
             `Set a new password here — the link works once and expires in 60 minutes:\n${link}\n\n` +
             `If you didn't ask for this, ignore this email; your password hasn't changed.`,
           html:
-            `<p>Someone (hopefully you) asked to reset the password for this CardIndex account.</p>` +
+            `<p>Someone (hopefully you) asked to reset the password for your ${SITE} account.</p>` +
             `<p><a href="${link}">Set a new password</a> — the link works once and expires in 60 minutes.</p>` +
             `<p>If you didn't ask for this, ignore this email; your password hasn't changed.</p>`,
         });
@@ -1663,6 +1671,9 @@ async function handleReset(
 }
 
 // ---- owner console sub-router ---------------------------------------------
+
+/** Owner console: the owner's own seller row is missing. Plain sentence first, the setting name as a hint (J48). */
+const OWNER_DASHBOARD_MISSING = "Your own dashboard isn't set up yet. (For your developer: check the ADMIN_EMAIL setting, then restart the app.)";
 
 /**
  * The owner's CRM. Gate: a live OWNER session (its own login at /admin/login,
@@ -1739,8 +1750,8 @@ async function handleAdmin(
         const buf = await readBodyBuffer(req);
         const boundary = boundaryOf(ctype);
         if (boundary) mp = parseMultipart(buf, boundary);
-      } catch (err) {
-        return redirect(res, soldBack(tooLargeMessage(err)));
+      } catch {
+        return redirect(res, soldBack(tooLargeMessage("file")));
       }
       const file = mp.files.find((x) => x.field === "feed" && x.data.length);
       if (!file) return redirect(res, soldBack("Choose a .csv or .json file."));
@@ -1756,7 +1767,7 @@ async function handleAdmin(
       return redirect(
         res,
         soldBack(
-          `${file.filename}: ${r.inserted} sale${r.inserted === 1 ? "" : "s"} added, ${r.updated} updated, ${r.skipped} skipped · ${r.canonized} of ${r.inserted + r.updated} matched to a catalog card. The archive now holds ${r.total}.`
+          `${file.filename}: ${plural(r.inserted, "sale")} added, ${r.updated} updated, ${r.skipped} skipped · ${r.canonized} of ${r.inserted + r.updated} matched to a catalog card. Sales lookup now has ${plural(r.total, "sale")}.`
         )
       );
     }
@@ -1771,16 +1782,15 @@ async function handleAdmin(
     if ((path === "/admin/upload/photos" || ownerChunked) && ctype.startsWith("multipart/form-data")) {
       const ownerId = await ownerSellerId();
       if (!ownerId) {
-        const note = "The owner account isn't set up — check ADMIN_EMAIL and restart.";
-        return ownerChunked ? sendJson(res, 500, { error: note }) : redirect(res, uploadBack(note));
+        return ownerChunked ? sendJson(res, 500, { error: OWNER_DASHBOARD_MISSING }) : redirect(res, uploadBack(OWNER_DASHBOARD_MISSING));
       }
       const boundary = boundaryOf(ctype);
       let mp = { fields: {} as Record<string, string>, files: [] as UploadedFile[] };
       try {
         const buf = await readBodyBuffer(req);
         if (boundary) mp = parseMultipart(buf, boundary);
-      } catch (err) {
-        return ownerChunked ? sendJson(res, 413, { error: tooLargeMessage(err) }) : redirect(res, uploadBack(tooLargeMessage(err)));
+      } catch {
+        return ownerChunked ? sendJson(res, 413, { error: tooLargeMessage() }) : redirect(res, uploadBack(tooLargeMessage()));
       }
       // Chunked (fetch) steps, in the owner's seller scope. The finish reply
       // pins the act-as cookie so the landing page opens in the owner's workspace.
@@ -1806,7 +1816,7 @@ async function handleAdmin(
     // ---- the owner's own uploader: pasted list ----
     if (path === "/admin/upload") {
       const ownerId = await ownerSellerId();
-      if (!ownerId) return redirect(res, uploadBack("The owner account isn't set up — check ADMIN_EMAIL and restart."));
+      if (!ownerId) return redirect(res, uploadBack(OWNER_DASHBOARD_MISSING));
       const landing = await runWithSeller(ownerId, () => handleScan(f));
       if (!landing.startsWith("/app/review/")) return redirect(res, uploadBack("Paste at least one card line."));
       const n = (f.lines ?? "").split(/\r?\n/).filter((l) => l.trim()).length;
@@ -1816,11 +1826,11 @@ async function handleAdmin(
     // ---- eBay integration: keys, test, clear ----
     if (path === "/admin/ebay/settings") {
       await saveEbayConfig(ebayFormToPatch(f));
-      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("eBay settings saved. Run the live search test to confirm the keys work."));
+      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("eBay setup saved. Run the live search test to confirm the keys work."));
     }
     if (path === "/admin/ebay/clear") {
       await clearEbayConfig();
-      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("Console keys removed; env values (if any) apply again."));
+      return redirect(res, "/admin/ebay?msg=" + encodeURIComponent("Keys removed from the console. Any eBay keys your developer set on the server apply again."));
     }
     if (path === "/admin/ebay/test") {
       const q = (f.q ?? "").trim() || "Charizard 4/102 Base Set Holo";
@@ -1838,14 +1848,14 @@ async function handleAdmin(
     }
     if (path === "/admin/catalog/hash") {
       if (catalogImportProgress().running) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Wait for the running import; it builds the index when it finishes."));
-      buildHashIndex({ log: (l) => console.log("  " + l) }).catch((err) => console.error("hash index:", err));
-      return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Rebuilding the photo-ID index in the background — watch the server log; the counts here update as it goes."));
+      buildHashIndex({ log: (l) => console.log("  " + l) }).catch((err) => console.error("photo-ID index:", err));
+      return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Rebuilding the photo-ID index in the background. The counts on this page update as it goes."));
     }
 
     // ---- sold-sales archive: demo sample + remove a source ----
     if (path === "/admin/sold/sample") {
       const r = await importSoldFeed(readFeedFile(SAMPLE_FEED), { source: SAMPLE_SOURCE, demo: true, log: (l) => console.log("  " + l) });
-      return redirect(res, soldBack(`Sample feed loaded: ${r.inserted} added, ${r.updated} updated, ${r.skipped} already present. The archive now holds ${r.total} sales.`));
+      return redirect(res, soldBack(`Sample feed loaded: ${r.inserted} added, ${r.updated} updated, ${r.skipped} already present. Sales lookup now has ${plural(r.total, "sale")}.`));
     }
     if (path === "/admin/sold/source/remove") {
       const source = (f.source ?? "").trim();
@@ -1860,7 +1870,7 @@ async function handleAdmin(
       if (!target) return notFound(res);
 
       if (m[2] === "act-as") {
-        await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: "Owner opened this workspace" });
+        await logActivity({ sellerId: id, byOwner: true, kind: "owner", method, path, detail: "Owner opened this dashboard" });
         return redirectWithCookie(res, safeNext(f.next), actAsCookie(id));
       }
 
@@ -1870,7 +1880,7 @@ async function handleAdmin(
         await setPlanTier(id, tier);
         await logActivity({ sellerId: id, byOwner: true, kind: "plan_change", method, path, detail: `Plan changed ${target.plan_tier === "pro" ? "Pro" : "Free"} → ${tier === "pro" ? "Pro" : "Free"} by owner` });
       }
-      return redirect(res, back(id, `${target.display_name} is now on the ${tier === "pro" ? "Pro" : "Free"} tier.`));
+      return redirect(res, back(id, `${target.display_name} is now on the ${tier === "pro" ? "Pro" : "Free"} plan.`));
     }
 
     if ((m = path.match(/^\/admin\/feedback\/(\d+)\/reply$/))) {
@@ -1914,7 +1924,7 @@ async function handleAdmin(
     // The owner's personal uploader: everything here is the owner's own account.
     const ownerId = await ownerSellerId();
     const owner = ownerId ? await getUser(ownerId) : undefined;
-    if (!ownerId || !owner) return sendPage(res, renderAdminUpload(null, null, null, [], msg ?? "The owner account isn't set up — check ADMIN_EMAIL and restart."), "/admin/upload");
+    if (!ownerId || !owner) return sendPage(res, renderAdminUpload(null, null, null, [], msg ?? OWNER_DASHBOARD_MISSING), "/admin/upload");
     const [seller, usage, batches] = await Promise.all([runWithSeller(ownerId, () => getSeller()), userUsage(ownerId), userBatches(ownerId, 8)]);
     return sendPage(res, renderAdminUpload(owner, seller, usage, batches, msg), "/admin/upload");
   }
@@ -1970,7 +1980,7 @@ async function handleApp(
   }
   if (!acct || acct.id == null) {
     // Owner session without an owner seller row (console not configured): back to the console.
-    if (acct?.admin) return redirect(res, "/admin?msg=" + encodeURIComponent("Your owner account isn't set up — check ADMIN_EMAIL and restart."));
+    if (acct?.admin) return redirect(res, "/admin?msg=" + encodeURIComponent(OWNER_DASHBOARD_MISSING));
     if (method === "GET") {
       return redirect(res, "/login?next=" + encodeURIComponent(path + (url.search || "")));
     }
@@ -2077,14 +2087,15 @@ async function handleAppAuthed(
       try {
         const buf = await readBodyBuffer(req);
         if (boundary) mp = parseMultipart(buf, boundary);
-      } catch (err) {
-        if (chunked) return sendJson(res, 413, { error: tooLargeMessage(err) });
+      } catch {
+        if (chunked) return sendJson(res, 413, { error: tooLargeMessage() });
         // Send the user back to the page they uploaded from, not always /app/scan.
         const mi = path.match(/^\/app\/review\/(\d+)\/item\/\d+\/image$/);
         // (The multipart body couldn't be parsed, so the mode field is unknown; the
         // page picks its default by plan.)
         const back = mi ? `/app/review/${mi[1]}` : path === "/app/orders/import" ? "/app/orders" : path === "/app/pricing-tool/upload" ? "/app/scan?mode=price" : "/app/scan";
-        return redirect(res, back + (back.includes("?") ? "&" : "?") + "msg=" + encodeURIComponent(tooLargeMessage(err)));
+        const sent = mi ? "photo" : path === "/app/orders/import" ? "file" : "photos";
+        return redirect(res, back + (back.includes("?") ? "&" : "?") + "msg=" + encodeURIComponent(tooLargeMessage(sent)));
       }
       if (chunked) {
         const pro = await workspacePro();
@@ -2133,7 +2144,7 @@ async function handleAppAuthed(
     if (path === "/app/blank-listing") return redirect(res, await handleBlank(f));
     if (path === "/app/orders") return redirect(res, await handleOrderCreate(f));
     if (path === "/app/inbox") {
-      if (!(f.title ?? "").trim()) return redirect(res, "/app/inbox?msg=" + encodeURIComponent("Give your note a title."));
+      if (!(f.title ?? "").trim()) return redirect(res, "/app/inbox?msg=" + encodeURIComponent("Give your feedback a title."));
       await submitFeedback(f.kind ?? "feedback", f.title, f.body ?? "");
       return redirect(res, "/app/inbox?msg=" + encodeURIComponent("Sent — replies will show up here."));
     }
@@ -2148,7 +2159,7 @@ async function handleAppAuthed(
         return redirect(res, `/app/pricing/${id}?msg=` + encodeURIComponent("Sharing stopped."));
       }
       await setBatchKind(id, "scan");
-      return redirect(res, `/app/review/${id}?msg=` + encodeURIComponent("Now an inventory batch — review, then add to inventory."));
+      return redirect(res, `/app/review/${id}?msg=` + encodeURIComponent("Review these cards, then add them to inventory."));
     }
     if ((m = path.match(/^\/app\/orders\/(\d+)\/(pick|ship|delete)$/))) {
       const id = Number(m[1]);
@@ -2156,7 +2167,7 @@ async function handleAppAuthed(
       else if (m[2] === "ship") {
         const r = await shipOrder(id, (f.tracking ?? "").trim() ? { carrier: f.carrier ?? "Other", number: f.tracking } : null);
         const extra = await afterShip(id);
-        return redirect(res, "/app/orders?msg=" + encodeURIComponent(`Order #${id} shipped — ${r.adjusted} inventory row${r.adjusted === 1 ? "" : "s"} adjusted.${extra}`));
+        return redirect(res, "/app/orders?msg=" + encodeURIComponent(`Order #${id} shipped — ${plural(r.adjusted, "product")} updated in inventory.${extra}`));
       } else await deleteOrder(id);
       return redirect(res, "/app/orders");
     }
@@ -2170,18 +2181,18 @@ async function handleAppAuthed(
         const p = await syncPolicies();
         return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Synced ${p.fulfillment.length} shipping, ${p.payment.length} payment and ${p.return.length} return polic${p.return.length === 1 ? "y" : "ies"} from eBay — pick one of each and save.`) + "#s-ebay");
       } catch (err) {
-        return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Policy sync failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
+        return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Couldn't sync policies from eBay. ${ebayErrorText(err)}`) + "#s-ebay");
       }
     }
     if (path === "/app/listings/bulk") return redirect(res, await handleListingsBulk(f, currentSellerId()));
     if ((m = path.match(/^\/app\/listings\/(\d+)\/(publish|end)$/))) {
       const id = Number(m[1]);
-      if (m[2] === "publish") return redirect(res, await publishAndRedirect(id, `#${id}`));
+      if (m[2] === "publish") return redirect(res, await publishAndRedirect(id, `listing #${id}`));
       try {
         await endListing(id);
         return redirect(res, "/app/listings?msg=" + encodeURIComponent(`Listing #${id} ended on eBay.`));
       } catch (err) {
-        return redirect(res, "/app/listings?msg=" + encodeURIComponent(`Couldn't end listing #${id}: ${err instanceof Error ? err.message : String(err)}`));
+        return redirect(res, "/app/listings?msg=" + encodeURIComponent(`Couldn't end listing #${id}. ${ebayErrorText(err)}`));
       }
     }
     if ((m = path.match(/^\/app\/inventory\/automatic\/(\d+)$/))) {
@@ -2193,7 +2204,7 @@ async function handleAppAuthed(
       const sec = settingsSection(m[1]);
       if (!sec) return notFound(res);
       const note = await handleSettings(f, sec.key);
-      return redirect(res, `/app/settings/${sec.key}?msg=` + encodeURIComponent(`${sec.title} saved.` + note));
+      return redirect(res, `/app/settings/${sec.key}?msg=` + encodeURIComponent("Changes saved." + note));
     }
     if (path === "/app/settings") return redirect(res, "/app/settings");
     if (path === "/app/inventory/bulk") return redirect(res, await handleInventoryBulk(f));
@@ -2205,8 +2216,8 @@ async function handleAppAuthed(
     if ((m = path.match(/^\/app\/review\/(\d+)\/bulk$/))) return redirect(res, await handleReviewBulk(Number(m[1]), f));
     if ((m = path.match(/^\/app\/review\/(\d+)\/commit$/))) {
       const r = await commitBatch(Number(m[1]), { mergeDuplicates: f.merge === "1" });
-      const extra = r.merged ? ` (${r.merged} merged)` : "";
-      return redirect(res, "/app/inventory?msg=" + encodeURIComponent(`Added ${r.created.length} card(s) to inventory${extra}.`));
+      const extra = r.merged ? ` (${plural(r.merged, "duplicate")} combined)` : "";
+      return redirect(res, "/app/inventory?msg=" + encodeURIComponent(`Added ${plural(r.created.length, "card")} to inventory${extra}.`));
     }
     if ((m = path.match(/^\/app\/list\/(\d+)$/))) return redirect(res, await handleCreateListing(Number(m[1]), f));
 
@@ -2261,7 +2272,7 @@ async function handleAppAuthed(
   }
   // eBay OAuth: start on eBay's consent page, come back with a code.
   if (path === "/app/ebay/connect") {
-    if (!ebaySellConfigured()) return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay isn't configured on this server yet (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET / EBAY_RU_NAME).") + "#s-ebay");
+    if (!ebaySellConfigured()) return redirect(res, "/app/settings?msg=" + encodeURIComponent("Connecting eBay isn't available yet. You can still export an eBay CSV and upload it in eBay Seller Hub → Reports → Upload.") + "#s-ebay");
     return redirect(res, await beginConnect());
   }
   if (path === "/app/ebay/callback") {
@@ -2269,7 +2280,7 @@ async function handleAppAuthed(
     const state = url.searchParams.get("state") ?? "";
     if (!code || !state) {
       console.warn(`  ebay connect: seller #${currentSellerId()} came back without a code (${url.searchParams.get("error") ?? "cancelled"})`);
-      return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay sign-in was cancelled or returned no code.") + "#s-ebay");
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent("eBay sign-in was cancelled or didn't finish. Press Connect eBay to try again.") + "#s-ebay");
     }
     try {
       const c = await completeConnect(code, state);
@@ -2287,11 +2298,13 @@ async function handleAppAuthed(
       void runWithSeller(sid, () => harvestSoldSalesFor(sid))
         .then((h) => h && console.log(`  sold harvest (on connect): seller #${sid}, ${h.inserted} new sale${h.inserted === 1 ? "" : "s"} archived`))
         .catch((err) => console.error(`  sold harvest (on connect): seller #${sid} ${err instanceof Error ? err.message : String(err)}`));
-      extra += " Your paid eBay sales are being added to the sold-price archive now.";
-      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Connected eBay account ${c.ebay_user ?? ""}.${extra}`) + "#s-ebay");
+      extra += " Your paid eBay sales are being added to Sales lookup now.";
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connected${c.ebay_user ? ` as ${c.ebay_user}` : ""}.${extra}`) + "#s-ebay");
     } catch (err) {
-      console.error(`  ebay connect: seller #${currentSellerId()} failed: ${err instanceof Error ? err.message : String(err)}`);
-      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`eBay connection failed: ${err instanceof Error ? err.message : String(err)}`) + "#s-ebay");
+      // The HTTP status stays in the log; the seller sees eBay's own words (ebayErrorText).
+      const http = err instanceof EbayError && err.status ? ` (HTTP ${err.status})` : "";
+      console.error(`  ebay connect: seller #${currentSellerId()} failed${http}: ${err instanceof Error ? err.message : String(err)}`);
+      return redirect(res, "/app/settings?msg=" + encodeURIComponent(`Couldn't connect eBay. ${ebayErrorText(err)}`) + "#s-ebay");
     }
   }
   if (path === "/app/sales-lookup") {

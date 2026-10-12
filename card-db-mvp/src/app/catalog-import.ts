@@ -28,9 +28,26 @@ import { buildHashIndex } from "./hashindex.ts";
 
 const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 
-export type CatalogGame = { slug: string; name: string; category: number; sort: number };
+export type CatalogGame = {
+  slug: string;
+  name: string;
+  category: number;
+  sort: number;
+  /** Printed language of every card in the category (card_variants.language); default EN. */
+  language?: string;
+  /**
+   * Also import singles that carry no collector number. Vintage Japanese sets
+   * (1996–2000) and many JP promos were printed without one; TCGplayer still
+   * lists them with a CardType, which sealed products never have.
+   */
+  numberlessSingles?: boolean;
+};
 export const CATALOG_GAMES: Record<string, CatalogGame> = {
   pokemon: { slug: "pokemon", name: "Pokemon", category: 3, sort: 0 },
+  // TCGplayer's "Pokemon Japan" category: its own database, like CardUploader's
+  // "Pokemon Japanese" — same art as many English cards, different printing,
+  // language and price. sort 0 + name order puts it right after Pokemon.
+  "pokemon-jp": { slug: "pokemon-jp", name: "Pokemon Japanese", category: 85, sort: 0, language: "JP", numberlessSingles: true },
   onepiece: { slug: "onepiece", name: "One Piece Card Game", category: 68, sort: 1 },
   mtg: { slug: "mtg", name: "Magic: The Gathering", category: 1, sort: 2 },
 };
@@ -83,10 +100,14 @@ function imageUrls(p: TcgProduct): { small: string | null; large: string | null 
   return { small: u, large: u.replace(/_200w\.jpg$/i, "_400w.jpg") };
 }
 
-/** "Pikachu - 025/185" (a few Pokémon products) -> "Pikachu". */
-function cleanCardName(name: string, number: string | null): string {
+/**
+ * "Pikachu - 025/185" -> "Pikachu"; "Pikachu - 025/165 (Poke Ball Pattern)" ->
+ * "Pikachu (Poke Ball Pattern)" (TCGplayer repeats the number before a
+ * printing suffix on Poké Ball / Master Ball / alt-art products).
+ */
+export function cleanCardName(name: string, number: string | null): string {
   let n = name.trim();
-  if (number) n = n.replace(new RegExp(`\\s*[-–]\\s*${number.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\s*$`, "i"), "");
+  if (number) n = n.replace(new RegExp(`\\s*[-–]\\s*${number.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?=\\s*(\\(|$))`, "i"), "");
   return n.trim() || name.trim();
 }
 
@@ -195,7 +216,7 @@ export async function importGame(slug: string, opts: ImportOptions = {}): Promis
           continue;
         }
         const [productsRaw, pricesRaw] = await Promise.all([fetchJson(`${BASE}/${g.category}/${grp.groupId}/products`), fetchJson(`${BASE}/${g.category}/${grp.groupId}/prices`)]);
-        const singles = (results(productsRaw) as TcgProduct[]).filter((p) => ext(p, "Number"));
+        const singles = (results(productsRaw) as TcgProduct[]).filter((p) => ext(p, "Number") || (g.numberlessSingles && ext(p, "CardType")));
         if (!singles.length) {
           await query("INSERT INTO meta (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [metaKey, JSON.stringify({ singles: 0, at: day })]);
           progress.groupsDone++;
@@ -260,8 +281,8 @@ export async function importGame(slug: string, opts: ImportOptions = {}): Promis
             let v = variants.find((x) => x.finish === mapped.finish);
             if (!v) {
               const created = await one<{ id: number }>(
-                `INSERT INTO card_variants (card_id, finish, finish_label, language, tcgplayer_id, is_default) VALUES ($1,$2,$3,'EN',$4,false) RETURNING id`,
-                [card.id, mapped.finish, mapped.label, String(p.productId)]
+                `INSERT INTO card_variants (card_id, finish, finish_label, language, tcgplayer_id, is_default) VALUES ($1,$2,$3,$4,$5,false) RETURNING id`,
+                [card.id, mapped.finish, mapped.label, g.language ?? "EN", String(p.productId)]
               );
               v = { id: created!.id, finish: mapped.finish, is_default: false };
               variants.push(v);
@@ -310,7 +331,7 @@ export async function importGame(slug: string, opts: ImportOptions = {}): Promis
     }
 
     await query("INSERT INTO meta (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [`catalog_import_${slug}`, new Date().toISOString()]);
-    note(`${g.name} done: ${progress.sets} new sets, ${progress.cardsAdded} new cards, ${progress.cardsUpdated} updated, ${progress.variants} new printings, ${progress.prices} prices, ${progress.skipped} groups skipped (already imported), ${progress.errors} errors.`, log);
+    note(`${g.name} done: ${progress.sets} new sets, ${progress.cardsAdded} new cards, ${progress.cardsUpdated} updated, ${progress.variants} new variants, ${progress.prices} prices, ${progress.skipped} groups skipped (already imported), ${progress.errors} errors.`, log);
 
     if (opts.hashAfter !== false && progress.cardsAdded > 0) {
       progress.current = "photo-ID index";
@@ -335,7 +356,7 @@ export function startCatalogImport(slug: string, opts: ImportOptions = {}): void
   importGame(slug, { ...opts, log: opts.log ?? ((l) => console.log("  " + l)) }).catch((err) => console.error("catalog import:", err));
 }
 
-export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; lastImport: string | null; inCatalog: boolean };
+export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; lastImport: string | null; inCatalog: boolean; importable: boolean };
 
 /** Per-game counts for the owner console. Games without a row yet are listed as importable. */
 export async function catalogStats(): Promise<CatalogGameStats[]> {
@@ -354,7 +375,7 @@ export async function catalogStats(): Promise<CatalogGameStats[]> {
   ))) as Array<{ slug: string; name: string; sets: number; cards: number; hashed: number }>;
   const meta = (await query("SELECT key, value FROM meta WHERE key LIKE 'catalog_import_%'")) as Array<{ key: string; value: string }>;
   const last = new Map(meta.map((m) => [m.key.replace("catalog_import_", ""), m.value]));
-  const out: CatalogGameStats[] = rows.map((r) => ({ ...r, lastImport: last.get(r.slug) ?? null, inCatalog: true }));
-  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, lastImport: null, inCatalog: false });
+  const out: CatalogGameStats[] = rows.map((r) => ({ ...r, lastImport: last.get(r.slug) ?? null, inCatalog: true, importable: !!CATALOG_GAMES[r.slug] }));
+  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, lastImport: null, inCatalog: false, importable: true });
   return out;
 }

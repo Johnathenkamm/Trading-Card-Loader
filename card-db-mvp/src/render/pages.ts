@@ -32,6 +32,7 @@ import type { SearchParams, SearchResult, FacetOption } from "../search.ts";
 import { ebayConfigured } from "../ebay.ts";
 import { ebaySearchUrl, ebaySoldUrl, tcgplayerLink, ebayCardQuery, ebayCategoryFor, affiliateDisclosure } from "../affiliate.ts";
 import { tcgConfigured } from "../tcgplayer.ts";
+import { SITE } from "./layout.ts";
 
 const ORIGIN = ""; // relative canonicals keep it host-agnostic for the demo
 
@@ -83,9 +84,9 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
             <div class="dp-name">${esc(hero.name)}</div>
             <div class="dp-sub">${esc(hero.set_name)}${hero.number ? " · #" + esc(hero.number) : ""}</div>
             <span class="dp-chip">Near Mint ▾</span>
-            <div class="dp-row"><span>Market Price</span><b class="mono">${money(hero.price_cents, hero.currency)}</b></div>
-            <div class="dp-row"><span>Your Price</span><b class="mono accent">${money(yourCents, hero.currency)}</b></div>
-            <a class="dp-btn" href="/app/scan">Add to Inventory</a>
+            <div class="dp-row"><span>Market price</span><b class="mono">${money(hero.price_cents, hero.currency)}</b></div>
+            <div class="dp-row"><span>Your price</span><b class="mono accent">${money(yourCents, hero.currency)}</b></div>
+            <a class="dp-btn" href="/app/scan">Add to inventory</a>
             <div class="dp-tabs"><span class="on">Details</span><span>Pricing</span><span>History</span></div>
           </div>
         </div>
@@ -98,14 +99,14 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
     <div class="home-hero-copy">
       <div class="tag">All-in-one TCG seller platform</div>
       <h1>Scan once.<br>List <span class="hl">everywhere.</span></h1>
-      <p class="lead">Scan, identify, price and list your trading cards on eBay, TCGplayer, Whatnot and more — from one place. Backed by a live price catalog of ${c.cards.toLocaleString()} cards.</p>
+      <p class="lead">Scan, identify and price your trading cards in one place. List on eBay, and export ready-to-upload files for TCGplayer, Whatnot and Shopify. Backed by a price catalog of ${c.cards.toLocaleString()} cards, updated daily.</p>
       <div class="cta-row">
-        <a class="btn primary lg" href="/app/scan">Start Scanning →</a>
+        <a class="btn primary lg" href="/app/scan">Start scanning →</a>
         <a class="btn lg ghost" href="#how">See how it works</a>
       </div>
       <div class="mk-strip">
         <span class="mk-lbl">List to multiple marketplaces</span>
-        <div class="mk-logos"><span class="mk">eBay</span><span class="mk">TCGplayer</span><span class="mk">Whatnot</span><span class="mk">Shopify</span><span class="mk more">+ More</span></div>
+        <div class="mk-logos"><span class="mk">eBay</span><span class="mk">TCGplayer</span><span class="mk">Whatnot</span><span class="mk">Shopify</span></div>
       </div>
     </div>
     ${heroVisual}
@@ -114,11 +115,11 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 
 <section class="feature-row">
   <div class="wrap feats">
-    ${feature("scan", "Scan Any Card", "Use your scanner or phone to add single cards or entire collections.")}
-    ${feature("ai", "AI Identification", "Instantly identifies cards, sets, variants and conditions.")}
-    ${feature("price", "Get Market Prices", "Real-time pricing from TCGplayer and eBay to price with confidence.")}
-    ${feature("box", "Manage Inventory", "Organize, track and price your collection with SKUs and bulk tools.")}
-    ${feature("rocket", "List & Sell", "List to eBay, TCGplayer, Whatnot and more with a few clicks.")}
+    ${feature("scan", "Scan any card", "Use your scanner or phone to add single cards or whole binders.")}
+    ${feature("ai", "Photo matching", "Each photo is matched to catalog card images with a confidence score; you confirm anything uncertain.")}
+    ${feature("price", "Get market prices", "TCGplayer market prices, updated daily, plus live eBay listings to price with confidence.")}
+    ${feature("box", "Manage inventory", "Organize, track and price your inventory with SKUs and bulk tools.")}
+    ${feature("rocket", "List & sell", "List on eBay, or export ready-to-upload files for TCGplayer, Whatnot and Shopify.")}
   </div>
 </section>
 
@@ -127,12 +128,12 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
     <div class="how-head"><h2>How it works</h2><p>From scan to sale in just a few steps.</p></div>
     <div class="steps">
       ${step(1, "scan", "Scan", "Scan your cards using a scanner or phone.")}
-      ${step(2, "ai", "Identify", "AI identifies the card details instantly.")}
+      ${step(2, "ai", "Identify", "Each card is matched to the catalog; you confirm the uncertain ones.")}
       ${step(3, "price", "Price", "Review market prices and set your price.")}
       ${step(4, "box", "Organize", "Add to inventory, set conditions, SKUs and quantities.")}
-      ${step(5, "send", "List", "Export and list to your favorite marketplaces.", true)}
+      ${step(5, "send", "List", "List on eBay, or export files for other marketplaces.", true)}
     </div>
-    <div class="how-cta"><a class="btn primary" href="/app/scan">Start your free scan</a></div>
+    <div class="how-cta"><a class="btn primary" href="/app/scan">Price your cards free</a></div>
   </div>
 </section>
 
@@ -145,10 +146,10 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
 
 <section class="trust-bar">
   <div class="wrap trust-grid">
-    <div class="tb"><div class="tb-ic">${ICONS.scan}</div><div><b>${esc(gameNames)} today</b><span>${c.cards.toLocaleString()} cards, every printing priced from TCGplayer market data. More games as sets are added.</span></div></div>
-    <div class="tb"><div class="tb-ic">${ICONS.price}</div><div><b>Graded &amp; ungraded</b><span>Supports PSA, BGS, CGC, TAG and raw cards.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.scan}</div><div><b>${esc(gameNames)} today</b><span>${c.cards.toLocaleString()} cards, every variant priced from TCGplayer market data. More games as sets are added.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.price}</div><div><b>Graded &amp; ungraded</b><span>Supports PSA, BGS, CGC, TAG and ungraded cards.</span></div></div>
     <div class="tb"><div class="tb-ic">${ICONS.box}</div><div><b>Bulk scanning</b><span>Scan and process hundreds of cards at once.</span></div></div>
-    <div class="tb"><div class="tb-ic">${ICONS.ai}</div><div><b>Secure &amp; private</b><span>Your data is yours — never sold or shared.</span></div></div>
+    <div class="tb"><div class="tb-ic">${ICONS.ai}</div><div><b>Secure &amp; private</b><span>We never sell your data or use it for ads.</span></div></div>
   </div>
 </section>`;
 
@@ -156,7 +157,7 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
     {
       "@context": "https://schema.org",
       "@type": "WebSite",
-      name: "CardIndex",
+      name: SITE,
       url: ORIGIN + "/",
       potentialAction: {
         "@type": "SearchAction",
@@ -167,8 +168,8 @@ export async function renderHome(): Promise<{ html: string; title: string; descr
   ];
   return {
     html,
-    title: "CardIndex — scan, price & list your trading cards",
-    description: `Scan, identify, price and list TCG cards on eBay, TCGplayer, Whatnot and more. Backed by a live catalog of ${c.cards.toLocaleString()} cards with variant-aware prices.`,
+    title: `${SITE} — scan, price and list your trading cards`,
+    description: `Scan, price and list your trading cards: list on eBay and export ready-to-upload files for TCGplayer, Whatnot and Shopify. Market prices for ${c.cards.toLocaleString()} cards, updated daily from TCGplayer.`,
     jsonLd,
   };
 }
@@ -214,8 +215,8 @@ export async function renderBrowse(game?: Game): Promise<{ html: string; title: 
   </div>`;
   return {
     html,
-    title: game ? `${game.name} sets — CardIndex` : "Browse all sets — CardIndex",
-    description: game ? `Browse ${game.name} sets and card prices on CardIndex.` : "Browse every trading card set on CardIndex.",
+    title: game ? `${game.name} sets | ${SITE}` : `Browse all sets | ${SITE}`,
+    description: game ? `Browse ${game.name} sets and card prices on ${SITE}.` : `Browse every trading card set on ${SITE}.`,
     jsonLd: [
       {
         "@context": "https://schema.org",
@@ -262,7 +263,7 @@ export async function renderSet(set: CardSet): Promise<{ html: string; title: st
   </div>`;
   return {
     html,
-    title: `${set.name} card list & prices — CardIndex`,
+    title: `${set.name} card list and prices | ${SITE}`,
     description: `All ${set.card_count} cards in ${set.name} (${set.game_name}) with market prices and variants.`,
     jsonLd: [
       {
@@ -379,15 +380,15 @@ export async function renderCard(
         (s) => `<tr title="${esc(s.title)}">
           <td class="date">${(() => { const href = soldListingLink(s); return href ? `<a href="${esc(href)}" target="_blank" rel="noopener nofollow">${esc(fmtDate(s.sold_on))}</a>` : esc(fmtDate(s.sold_on)); })()}</td>
           <td>${sourceChip(s.marketplace)}</td>
-          <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
-          <td>${saleCell(s)}</td>
+          <td>${s.grade ? esc(s.grade) : `<span class="chip">Ungraded${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
+          <td>${saleCell(s)}${s.is_demo ? ` <span class="chip" title="Sample sale shown as an example — there's no original listing">sample</span>` : ""}</td>
           <td class="price">${money(s.price_cents, s.currency)}</td>
         </tr>`
       )
       .join("");
     compsTable = rows
-      ? `<table class="comps"><thead><tr><th>Date</th><th>Market</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<div style="padding:16px;color:var(--muted)">No sold comps for this filter.</div>`;
+      ? `<table class="comps"><thead><tr><th>Date</th><th>Sold on</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div style="padding:16px;color:var(--muted)">No sold prices for this filter.</div>`;
   } else {
     const rows = sold
       .filter((s) => tab === "all" || (s.grade ?? "Ungraded") === tab)
@@ -396,14 +397,14 @@ export async function renderCard(
         (s) => `<tr>
           <td class="date">${esc(fmtDate(s.observed_on))}</td>
           <td>${sourceChip(s.source)}</td>
-          <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
+          <td>${s.grade ? esc(s.grade) : `<span class="chip">Ungraded${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
           <td class="price">${money(s.price_cents, s.currency)}</td>
         </tr>`
       )
       .join("");
     compsTable = rows
-      ? `<table class="comps"><thead><tr><th>Date</th><th>Source</th><th>Grade</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<div style="padding:16px;color:var(--muted)">No sold comps for this filter.</div>`;
+      ? `<table class="comps"><thead><tr><th>Date</th><th>Sold on</th><th>Grade</th><th class="price">Price</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div style="padding:16px;color:var(--muted)">No sold prices for this filter.</div>`;
   }
 
   const noPrice = !market && graded.length === 0;
@@ -415,7 +416,7 @@ export async function renderCard(
   // (src/affiliate.ts), so research clicks that turn into purchases pay out.
   // Name + collector number only, in the game's singles category — the query
   // CardUploader uses; set name + finish made eBay's sold search come back empty.
-  const ebayQuery = ebayCardQuery(card.name, card.number);
+  const ebayQuery = ebayCardQuery(card.name, card.number, card.game_slug);
   const ebayCat = ebayCategoryFor(card.game_slug);
 
   const html = `<div class="wrap">
@@ -444,7 +445,7 @@ export async function renderCard(
 
         ${
           noPrice
-            ? `<div class="price-panel" style="padding:22px">${demoNote("No market price is available for this printing yet.")}</div>`
+            ? `<div class="price-panel" style="padding:22px">${demoNote("No market price is available for this variant yet.")}</div>`
             : `<div class="price-panel">
           <div class="price-head">
             <div>
@@ -480,7 +481,7 @@ export async function renderCard(
           <a class="btn primary" href="/app/scan?add=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""} ${selected.finish_label}`)}">+ Add to my inventory</a>
           <a class="btn" href="/app/listing-creator?game=${encodeURIComponent(card.game_slug ?? "")}&amp;set=${encodeURIComponent(card.set_slug ?? "")}" title="Build a listing from the catalog stock image — no scan needed">List on eBay</a>
           ${card.tcgplayer_url ? `<a class="btn" href="${esc(tcgplayerLink(card.tcgplayer_url))}" target="_blank" rel="noopener nofollow">View on TCGplayer ↗</a>` : ""}
-          <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Archived sold prices for this card in Sales Lookup">Sold prices</a>
+          <a class="btn" href="/sales?q=${encodeURIComponent(`${card.name} ${card.number ?? ""} ${card.set_name ?? ""}`.trim())}" title="Sold prices recorded on this site for this card">Sales lookup</a>
           <a class="btn" href="${esc(ebaySearchUrl(ebayQuery, "card-page-listed", ebayCat))}" target="_blank" rel="noopener nofollow" title="Live eBay listings for this card">eBay listed ↗</a>
           <a class="btn" href="${esc(ebaySoldUrl(ebayQuery, "card-page-sold", ebayCat))}" target="_blank" rel="noopener nofollow" title="eBay's completed and sold listings for this card">eBay sold ↗</a>
         </div>
@@ -489,16 +490,16 @@ export async function renderCard(
         ${
           useArchive
             ? demoNote(
-                `<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Sold comps below come from the sold-sales archive</b>${archive.every((s) => s.is_demo) ? " (sample feed import — plug a licensed feed into <code>npm run import:sold</code> to go live)" : ""}, canonicalized to this exact card. Per-grade values and the history chart are demo data until real depth accrues.`
+                "<b>Market prices</b> come from TCGplayer and update daily. <b>Sold prices</b> are sales recorded on this site; rows marked “sample” are examples. Grade values and the price chart include sample data for now."
               )
             : demoNote(
-                "<b>Market prices</b> are synced daily from TCGplayer (via the TCGCSV mirror). <b>Per-grade values, the price-history chart and sold comps below are demo data</b> — real sold-comp data is a licensed-feed line item (see the data-sourcing research report §8.1), and the archive schema + importer are ready for it."
+                "<b>Market prices</b> come from TCGplayer and update daily. Grade values, the price chart and the sold prices below include sample data for now."
               )
         }
 
         <div class="panel" id="comps">
-          <h2>Sold comps</h2>
-          <div class="sub">${useArchive ? "Real sales attached to this exact card — accepted Best Offer prices included." : "Recent sales for this printing, by grade and source."}</div>
+          <h2>Sold prices</h2>
+          <div class="sub">${useArchive ? "Sales matched to this exact card, including accepted Best Offer prices." : "Recent sales for this variant, by grade."}</div>
           <div class="comps-tabs">${compTabs}</div>
           <div class="comps-wrap">${compsTable}</div>
         </div>
@@ -507,7 +508,7 @@ export async function renderCard(
           ebayConfigured()
             ? `<div class="panel" id="ebay-live">
           <h2>Live on eBay</h2>
-          <div class="sub">Current listings for this card, from eBay's Browse API. Loaded on demand.</div>
+          <div class="sub">Current eBay listings for this card.</div>
           <button class="btn" id="ebay-load" data-card="${card.id}" data-v="${esc(selected.finish)}">Load live listings</button>
           <div class="comps-wrap" id="ebay-rows" hidden></div>
         </div>
@@ -548,7 +549,7 @@ export async function renderCard(
           tcgConfigured()
             ? `<div class="panel" id="tcg-cond">
           <h2>TCGplayer by condition</h2>
-          <div class="sub">SKU-level NM/LP/MP/HP market prices, per printing. Loaded on demand.</div>
+          <div class="sub">TCGplayer market prices by condition (NM, LP, MP, HP) for each variant.</div>
           <button class="btn" id="tcg-load" data-card="${card.id}" data-v="${esc(selected.finish)}">Load condition prices</button>
           <div class="comps-wrap" id="tcg-rows" hidden></div>
         </div>
@@ -565,7 +566,7 @@ export async function renderCard(
               var groups=j.groups||[];
               if(!groups.length){w.textContent='No condition prices available for this product.';b.remove();return;}
               var t=document.createElement('table');t.className='comps';
-              t.innerHTML='<thead><tr><th>Condition</th><th>Printing</th><th class="price">Low</th><th class="price">Market</th></tr></thead>';
+              t.innerHTML='<thead><tr><th>Condition</th><th>Variant</th><th class="price">Low</th><th class="price">Market</th></tr></thead>';
               var tb=document.createElement('tbody');
               var fmt=function(c){return c!=null?('$'+(c/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'—';};
               groups.forEach(function(g){
@@ -621,8 +622,8 @@ export async function renderCard(
 
   return {
     html,
-    title: `${card.name} ${card.number ? "#" + card.number + " " : ""}price — ${card.set_name} | CardIndex`,
-    description: `${card.name} (${card.set_name}${card.number ? " #" + card.number : ""}) ${market ? "market price " + money(market.price_cents, market.currency) + ", " : ""}with variants, price history and sold comps.`,
+    title: `${card.name} ${card.number ? "#" + card.number + " " : ""}price — ${card.set_name} | ${SITE}`,
+    description: `${card.name} (${card.set_name}${card.number ? " #" + card.number : ""}) ${market ? "market price " + money(market.price_cents, market.currency) + ", " : ""}with variants, price history and sold prices.`,
     jsonLd,
     ogImage: card.image_large || card.image_small || null,
   };
@@ -686,13 +687,13 @@ export function renderSearch(p: SearchParams, r: SearchResult): { html: string; 
     ${facetGroup("Game", "game", r.facets.game, p)}
     ${facetGroup("Set", "set", r.facets.set, p)}
     ${facetGroup("Rarity", "rarity", r.facets.rarity, p)}
-    ${facetGroup("Finish", "finish", r.facets.finish, p)}
+    ${facetGroup("Variant", "finish", r.facets.finish, p)}
     <div class="facet-group"><h3>Price (USD)</h3>
       <form class="pricefilter" action="/search" method="get">
         ${hidden(p, ["min", "max", "page"])}
         <input type="number" name="min" placeholder="min" value="${p.min ?? ""}" aria-label="Min price" min="0">
         <input type="number" name="max" placeholder="max" value="${p.max ?? ""}" aria-label="Max price" min="0">
-        <button type="submit">Go</button>
+        <button type="submit">Apply</button>
       </form>
     </div>
     ${applied.length ? `<a class="clear-filters" href="/search?${qs({ q: p.q })}">Clear all filters</a>` : ""}
@@ -739,8 +740,8 @@ export function renderSearch(p: SearchParams, r: SearchResult): { html: string; 
 
   return {
     html,
-    title: p.q ? `“${p.q}” — card search | CardIndex` : "Search cards | CardIndex",
-    description: `Search results${p.q ? ` for ${p.q}` : ""} across trading card prices on CardIndex.`,
+    title: p.q ? `“${p.q}” — card search | ${SITE}` : `Search cards | ${SITE}`,
+    description: `Search results${p.q ? ` for ${p.q}` : ""} across trading card prices on ${SITE}.`,
     jsonLd: [],
   };
 }

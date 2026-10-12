@@ -9,7 +9,7 @@
 // under the form, and a reset flow that is email → link → new password.
 
 import { esc } from "../util.ts";
-import { BRAND_MARK } from "./layout.ts";
+import { BRAND_MARK, SITE, SUPPORT_EMAIL } from "./layout.ts";
 import { PASSWORD_MIN } from "../app/auth.ts";
 
 type Rendered = { html: string; title: string; description: string };
@@ -50,7 +50,7 @@ function passwordField(opts: { id: string; name: string; label: string; autocomp
 function card(inner: string, title: string, sub: string): string {
   return `<div class="auth-wrap">
     <div class="auth-card">
-      <a class="auth-brand" href="/">${BRAND_MARK}<span>CardIndex</span></a>
+      <a class="auth-brand" href="/">${BRAND_MARK}<span>${SITE}</span></a>
       <h1>${title}</h1>
       <p class="auth-sub">${sub}</p>
       ${inner}
@@ -87,8 +87,8 @@ export function renderLogin(
       <div class="auth-alt">New here? <a href="${esc(withNext("/signup", next))}">Create an account</a></div>`;
   return {
     html: card(inner, "Welcome back", "Your scans, inventory, pricing rules and listings."),
-    title: "Sign in — CardIndex",
-    description: "Sign in to your CardIndex seller workspace.",
+    title: `Sign in | ${SITE}`,
+    description: `Sign in to your ${SITE} account.`,
   };
 }
 
@@ -120,8 +120,8 @@ export function renderSignup(
       <div class="auth-alt">Already have an account? <a href="${esc(withNext("/login", next))}">Sign in</a></div>`;
   return {
     html: card(inner, "Create your account", "Your cards, scans, pricing rules and listing preferences — saved and private to you."),
-    title: "Create your account — CardIndex",
-    description: "Create a CardIndex account to price, scan, and list your trading cards.",
+    title: `Create account | ${SITE}`,
+    description: `Create a ${SITE} account to scan, price and list your trading cards.`,
   };
 }
 
@@ -130,12 +130,15 @@ export function renderSignup(
 export function renderResetRequest(
   opts: { email?: string; next?: string; sent?: boolean; mode?: "live" | "log"; error?: string } = {}
 ): Rendered {
-  const { email = "", next, sent, mode = "live", error } = opts;
+  // `mode` (how the server delivered the mail) is accepted but never shown:
+  // the confirmation reads the same either way, and never says whether an
+  // account exists for the address.
+  const { email = "", next, sent, error } = opts;
   const nextField = next ? `<input type="hidden" name="next" value="${esc(next)}">` : "";
   const inner = sent
     ? `<div class="auth-ok" role="status">
         <b>Check your inbox.</b> If an account exists for <span class="mono">${esc(email)}</span>, we've emailed a link to set a new password. It expires in 60 minutes.
-        ${mode === "log" ? `<div class="auth-devnote">Email isn't configured on this server yet (<span class="mono">MAIL_PROVIDER</span>), so the link was printed to the server log instead.</div>` : ""}
+        <div class="auth-devnote">Didn't get it? Check your spam folder, or email <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>.</div>
       </div>
       <div class="auth-alt"><a href="${esc(withNext("/login", next))}">Back to sign in</a></div>`
     : `${error ? `<div class="auth-error" role="alert">${esc(error)}</div>` : ""}
@@ -148,8 +151,8 @@ export function renderResetRequest(
       <div class="auth-alt"><a href="${esc(withNext("/login", next))}">Back to sign in</a></div>`;
   return {
     html: card(inner, "Reset your password", "Enter the email you signed up with and we'll send you a link."),
-    title: "Reset your password — CardIndex",
-    description: "Reset your CardIndex password.",
+    title: `Reset your password | ${SITE}`,
+    description: `Reset your ${SITE} password.`,
   };
 }
 
@@ -169,14 +172,14 @@ export function renderResetForm(opts: { token: string; valid: boolean; error?: s
           placeholder: "Create a new password",
           hint: `At least ${PASSWORD_MIN} characters. Every other device will be signed out.`,
         })}
-        <button class="btn primary lg auth-submit" type="submit">Set new password</button>
+        <button class="btn primary lg auth-submit" type="submit">Set a new password</button>
       </form>`
     : `<div class="auth-error" role="alert">This reset link has expired or was already used.</div>
       <div class="auth-alt"><a href="${esc(withNext("/reset-password", next))}">Request a new link</a></div>`;
   return {
-    html: card(inner, "Choose a new password", valid ? "You'll be signed in as soon as it's saved." : "Reset links work once and expire after 60 minutes."),
-    title: "Choose a new password — CardIndex",
-    description: "Set a new CardIndex password.",
+    html: card(inner, "Set a new password", valid ? "You'll be signed in as soon as it's saved." : "Reset links work once and expire after 60 minutes."),
+    title: `Set a new password | ${SITE}`,
+    description: `Set a new ${SITE} password.`,
   };
 }
 

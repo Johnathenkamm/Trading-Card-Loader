@@ -1,5 +1,6 @@
 import { esc, jsonLd } from "../util.ts";
 import { currentAccount } from "../app/session-context.ts";
+import { getGames } from "../pg.ts";
 
 export type PageOpts = {
   title: string;
@@ -12,13 +13,17 @@ export type PageOpts = {
   ogImage?: string | null;
 };
 
-const SITE = "CardIndex";
+/** The product name, everywhere a seller or search engine sees it (titles, logo, emails). */
+export const SITE = "Trading Card Loader";
+export const SITE_DOMAIN = "tradingcardloader.com";
+/** Where sellers write for help, Pro requests and data requests (same inbox as the privacy policy). */
+export { PRIVACY_CONTACT as SUPPORT_EMAIL } from "./privacy.ts";
 
 // Brand mark: two offset cards on a cobalt-blue tile. Inline SVG so it inherits
 // crisp rendering at any size and needs no asset request. Exported for reuse on
 // the auth pages. (The gradient id repeats if the mark appears twice on a page;
 // browsers resolve to the first definition — same gradient, so it renders fine.)
-export const BRAND_MARK = `<svg class="mark" viewBox="0 0 32 32" width="27" height="27" role="img" aria-label="CardIndex" focusable="false"><defs><linearGradient id="ciMark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f6bff"/><stop offset="1" stop-color="#5b8cff"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="url(#ciMark)"/><rect x="8" y="8" width="11" height="15" rx="2.2" fill="#fff" fill-opacity="0.5" transform="rotate(-9 13.5 15.5)"/><rect x="13" y="9" width="11" height="15" rx="2.2" fill="#fff"/></svg>`;
+export const BRAND_MARK = `<svg class="mark" viewBox="0 0 32 32" width="27" height="27" role="img" aria-label="${SITE}" focusable="false"><defs><linearGradient id="ciMark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2f6bff"/><stop offset="1" stop-color="#5b8cff"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="url(#ciMark)"/><rect x="8" y="8" width="11" height="15" rx="2.2" fill="#fff" fill-opacity="0.5" transform="rotate(-9 13.5 15.5)"/><rect x="13" y="9" width="11" height="15" rx="2.2" fill="#fff"/></svg>`;
 
 function accountControls(): string {
   const acct = currentAccount();
@@ -27,7 +32,7 @@ function accountControls(): string {
     if (acct.id == null) {
       // Owner-console session only (no customer account signed in). The
       // owner's own workspace is reachable when their seller row exists.
-      const mine = acct.acting?.owner ? `<a class="acct-name" href="/app" title="Your own seller workspace">My workspace</a>` : "";
+      const mine = acct.acting?.owner ? `<a class="acct-name" href="/app" title="Your own dashboard">My dashboard</a>` : "";
       return `<div class="hdr-acct">
       ${owner}
       ${mine}
@@ -38,13 +43,13 @@ function accountControls(): string {
     // a Free / Pro pill plus the one plan action that applies.
     const pro = acct.plan_tier === "pro";
     const plan = pro
-      ? `<a class="hdr-plan pro" href="/app/settings" title="Your plan and billing">Pro</a>`
-      : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free — upgrade to Pro to scan, build inventory and list">Upgrade</a>`;
+      ? `<a class="hdr-plan pro" href="/pricing" title="Your plan">Pro</a>`
+      : `<a class="hdr-plan free" href="/pricing?upgrade=1" title="You're on Free. Upgrade to Pro to add cards to inventory and list them.">Upgrade</a>`;
     return `<div class="hdr-acct">
       ${owner}
-      <a class="acct-name" href="/app" title="Your seller workspace">${esc(acct.display_name)}</a>
+      <a class="acct-name" href="/app" title="Your dashboard">${esc(acct.display_name)}</a>
       ${plan}
-      <form method="post" action="/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Log out</button></form>
+      <form method="post" action="/logout" class="acct-logout-form"><button type="submit" class="acct-logout">Sign out</button></form>
     </div>`;
   }
   return `<a class="hdr-signin" href="/login">Sign in</a>
@@ -67,7 +72,7 @@ function actingBanner(canonical: string): string {
     return `<div class="owner-banner own" role="status">
     <div class="wrap owner-banner-in">
       <span class="ob-ic">🗂</span>
-      <span>Your own workspace — cards you add here go into <b>your</b> inventory, not a customer's.</span>
+      <span>Your own dashboard — cards you add here go into <b>your</b> inventory, not a seller's.</span>
       <a class="btn sm" href="/admin/upload">My uploader</a>
       <a class="btn sm" href="/admin">Owner console</a>
     </div>
@@ -76,7 +81,7 @@ function actingBanner(canonical: string): string {
   return `<div class="owner-banner" role="status">
     <div class="wrap owner-banner-in">
       <span class="ob-ic">👁</span>
-      <span>Owner mode — you're in <b>${esc(a.display_name)}</b>'s workspace${a.email ? ` <span class="mono">(${esc(a.email)})</span>` : ""} · <span class="pill ${a.plan_tier === "pro" ? "sold" : ""}">${a.plan_tier === "pro" ? "Pro" : "Free"}</span>. Everything you add or change lands in their account.</span>
+      <span>Owner mode — you're in <b>${esc(a.display_name)}</b>'s dashboard${a.email ? ` <span class="mono">(${esc(a.email)})</span>` : ""} · <span class="pill ${a.plan_tier === "pro" ? "sold" : ""}">${a.plan_tier === "pro" ? "Pro" : "Free"}</span>. Everything you add or change lands in their account.</span>
       <a class="btn sm" href="/admin/users/${a.id}">Their profile</a>
       <form method="post" action="/admin/stop-acting" class="inline-form"><button class="btn sm" type="submit">Exit owner mode</button></form>
     </div>
@@ -95,9 +100,9 @@ function header(searchValue = ""): string {
     <nav class="nav">
       <a href="/browse">Browse</a>
       <a href="/search">Search</a>
-      <a href="/sales">Sales Lookup</a>
-      <a href="/pricing">Pricing</a>
-      <a href="${appHref}" class="nav-app">Seller tools</a>
+      <a href="/sales">Sales lookup</a>
+      <a href="/pricing">Plans</a>
+      <a href="${appHref}" class="nav-app">Dashboard</a>
     </nav>
     <div class="header-search">
       <div class="searchbox">
@@ -116,35 +121,49 @@ function header(searchValue = ""): string {
 </header>`;
 }
 
+// The footer names the client's focus games. Japanese Pokémon and One Piece
+// only get a link once the catalog holds them (a missing game 404s); the list is refreshed in
+// the background at most every five minutes, so page() stays synchronous.
+let catalogGames: Set<string> | null = null;
+let catalogGamesAt = 0;
+function hasGame(slug: string): boolean {
+  if (Date.now() - catalogGamesAt > 5 * 60_000) {
+    catalogGamesAt = Date.now();
+    getGames()
+      .then((games) => { catalogGames = new Set(games.map((g) => g.slug)); })
+      .catch(() => {});
+  }
+  return catalogGames?.has(slug) ?? false;
+}
+
 function footer(): string {
   return `
 <footer class="site-footer">
   <div class="wrap cols">
     <div class="about">
       <div class="brand" style="margin-bottom:10px">${BRAND_MARK}${SITE}</div>
-      Live prices on every card, plus the workspace to scan, price and list your
-      own — variant-aware values, per-grade comps, and one-click marketplace
-      listings.
+      Market prices for every card, plus the tools to scan, price and list your
+      own: eBay listing tools and CSV exports for other marketplaces.
     </div>
     <div>
       <h4>Browse</h4>
       <a href="/g/pokemon">Pokémon</a>
-      <a href="/g/mtg">Magic: The Gathering</a>
+      ${hasGame("pokemon-jp") ? `<a href="/g/pokemon-jp">Japanese Pokémon</a>` : ""}
+      ${hasGame("onepiece") ? `<a href="/g/onepiece">One Piece</a>` : ""}
       <a href="/browse">All sets</a>
       <a href="/search">Search</a>
     </div>
     <div>
-      <h4>Seller tools</h4>
-      <a href="/app">Dashboard</a>
-      <a href="/app/scan">Scan &amp; identify</a>
-      <a href="/app/inventory">Inventory &amp; pricing</a>
-      <a href="/app/listings">eBay listings</a>
-      <a href="/pricing">Pricing &amp; plans</a>
+      <h4>Dashboard</h4>
+      <a href="/app/scan?mode=inventory">Ungraded cards</a>
+      <a href="/app/inventory">Inventory</a>
+      <a href="/app/listings">Listings</a>
+      <a href="/pricing">Plans</a>
     </div>
   </div>
   <div class="wrap legal">
-    <span>Catalog &amp; market prices from the Pokémon TCG API &amp; Scryfall. Grade values, price history &amp; sold comps are demo data.</span>
-    <span>Phase 1 MVP — not affiliated with any marketplace. · <a href="/privacy">Privacy</a></span>
+    <span>Card data and market prices: TCGplayer, updated daily. Grade values, price history and sold prices include sample data for now.</span>
+    <span>Not affiliated with or endorsed by eBay, TCGplayer, The Pokémon Company or Bandai. · <a href="/privacy">Privacy</a></span>
   </div>
 </footer>`;
 }

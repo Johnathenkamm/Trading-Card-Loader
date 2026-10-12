@@ -7,7 +7,7 @@
 type Page = { html: string; title: string; description: string };
 
 export const PRIVACY_CONTACT = "thegivingbulbasaur@gmail.com";
-const UPDATED = "September 28, 2026";
+const UPDATED = "September 29, 2026";
 
 export function renderPrivacy(): Page {
   const mail = `<a href="mailto:${PRIVACY_CONTACT}">${PRIVACY_CONTACT}</a>`;
@@ -27,10 +27,10 @@ export function renderPrivacy(): Page {
     <h3>If you create a seller account</h3>
     <ul>
       <li><b>Account details:</b> your email address, shop name, and your password stored only as a one-way hash. We never see or store your password in plain text.</li>
-      <li><b>Sign-in cookie:</b> a session cookie that keeps you signed in. It is required for the workspace to work.</li>
-      <li><b>Your workspace:</b> card photos you upload, your inventory, prices, listing drafts, orders you record, and your settings.</li>
-      <li><b>Activity log:</b> sign-ins and actions inside your workspace (what was done and when), used for support, security and account management.</li>
-      <li><b>Photo matching:</b> photos are used to identify your cards for you. They are used to improve identification <i>only</i> if you turn on that option in Settings, and it is off by default.</li>
+      <li><b>Sign-in cookie:</b> a session cookie that keeps you signed in. It is required for the dashboard to work.</li>
+      <li><b>Your dashboard:</b> card photos you upload, your inventory, prices, listing drafts, orders you record, and your choices in Configuration.</li>
+      <li><b>Activity log:</b> sign-ins and actions inside your dashboard (what was done and when), used for support, security and account management.</li>
+      <li><b>Photo matching:</b> photos are used to identify your cards for you. They are used to improve matching <i>only</i> if you turn on <b>Help improve matching</b> in Configuration, and it is off by default.</li>
     </ul>
     <h3>If you connect your eBay account</h3>
     <p>Connecting is optional. You sign in on eBay’s own page, and we never receive your eBay password. With your permission, eBay gives us:</p>
@@ -39,7 +39,7 @@ export function renderPrivacy(): Page {
       <li>access tokens that let the site list, revise and end listings, read your business policies, read your orders and mark them shipped, on your behalf;</li>
       <li>the business policies and ship-from location you choose.</li>
     </ul>
-    <p>When you fetch your <b>open eBay orders</b> so you can ship them, we store each order’s items, the buyer’s eBay username, and the ship-to name, city, state and ZIP code. Only you (and site support, when helping you) can see them in your Orders page.</p>
+    <p>When you fetch your <b>open eBay orders</b> so you can ship them, we store each order’s items, the buyer’s eBay username, and the ship-to name, city, state and ZIP code. Only you (and site support, when helping you) can see them, on the Orders page (when orders are turned on).</p>
     <p>From your <b>paid eBay orders</b> we also take the card title, sale price, sale date, listing number and your SKU. These become sold-price comparisons that other visitors can see. The public sold-price archive never includes buyer names, usernames, addresses or contact details.</p>
 
     <h2>How we use it</h2>
@@ -61,8 +61,8 @@ export function renderPrivacy(): Page {
 
     <h2>How long we keep it</h2>
     <ul>
-      <li>Account and workspace data: while your account is open.</li>
-      <li>eBay connection: until you click <b>Disconnect</b> in Settings → eBay, or until eBay tells us you closed your eBay account. Either one deletes your stored eBay username, user ID, tokens and settings straight away.</li>
+      <li>Account and dashboard data: while your account is open.</li>
+      <li>eBay connection: until you click <b>Disconnect</b> in Configuration → eBay, or until eBay tells us you closed your eBay account. Either one deletes your stored eBay username, user ID, tokens and settings straight away.</li>
       <li>Sold-price records contain no personal details and may be kept as market history.</li>
     </ul>
 
@@ -71,14 +71,14 @@ export function renderPrivacy(): Page {
 
     <h2>Your choices and rights</h2>
     <ul>
-      <li>Disconnect eBay at any time from Settings → eBay.</li>
-      <li>Turn photo matching for identification improvements on or off in Settings.</li>
+      <li>Disconnect eBay at any time from Configuration → eBay.</li>
+      <li>Turn <b>Help improve matching</b> on or off in Configuration.</li>
       <li>Email ${mail} to ask for a copy of your data, a correction, or deletion of your account and its data. We’ll respond within 30 days.</li>
     </ul>
     <p>Depending on where you live (for example California, the EU or the UK), you may have additional rights under local law. Contact us to use them.</p>
 
     <h2>Security</h2>
-    <p>Traffic to the site is encrypted (HTTPS), passwords are hashed, and access to the back office is restricted. No system is perfectly secure. If we learn of a breach affecting your data, we’ll tell you.</p>
+    <p>Traffic to the site is encrypted (HTTPS), passwords are hashed, and access to the owner console is restricted. No system is perfectly secure. If we learn of a breach affecting your data, we’ll tell you.</p>
 
     <h2>Children</h2>
     <p>The site is not directed at children under 13, and we don’t knowingly collect their information.</p>

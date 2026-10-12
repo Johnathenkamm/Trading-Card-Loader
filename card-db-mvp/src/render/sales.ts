@@ -3,10 +3,11 @@
 // card matching is our edge).
 
 import { esc, money, fmtDate } from "../util.ts";
-import { breadcrumb, sourceChip, demoNote } from "./components.ts";
+import { breadcrumb, sourceChip, demoNote, platformLabel } from "./components.ts";
 import { soldListingLink, type SalesParams, type SalesResult, type SalesRow } from "../sales.ts";
 import type { SoldSale } from "../db.ts";
 import { affiliateDisclosure } from "../affiliate.ts";
+import { SITE } from "./layout.ts";
 
 function qs(params: Record<string, string | undefined>): string {
   const u = new URLSearchParams();
@@ -56,7 +57,7 @@ export function renderSales(
   const typeBar = [
     pill("All", filt({ type: undefined }), !p.type),
     pill("Auctions", filt({ type: "auction" }), p.type === "auction"),
-    pill("BIN", filt({ type: "bin" }), p.type === "bin"),
+    pill("Buy It Now", filt({ type: "bin" }), p.type === "bin"),
     pill("Best Offer", filt({ type: "best_offer" }), p.type === "best_offer"),
   ].join("");
   const sortBar = [
@@ -75,7 +76,7 @@ export function renderSales(
         ${r.matchedCard.image ? `<img src="${esc(r.matchedCard.image)}" alt="" width="44" height="61" style="border-radius:4px">` : ""}
         <div>
           <div><b>${esc(r.matchedCard.name)}</b>${r.matchedCard.number ? ` · #${esc(r.matchedCard.number)}` : ""} · ${esc(r.matchedCard.set_name)}</div>
-          <div class="sub" style="margin:2px 0 0">Recognized your search — results include every archived sale of this exact card, however the listing was titled.</div>
+          <div class="sub" style="margin:2px 0 0">Recognized your search — results include every recorded sale of this exact card, however the listing was titled.</div>
         </div>
         <a class="btn" style="margin-left:auto" href="${esc(r.matchedCard.slug)}">View card →</a>
       </div>`
@@ -98,17 +99,17 @@ export function renderSales(
         const cardHref = s.card_id && s.card_slug ? `/c/${esc(s.card_slug)}-${s.card_id}` : null;
         const listing = soldListingLink(s);
         const title = cardHref
-          ? `<a href="${cardHref}" title="Open this card — every archived sale, market price and grades">${esc(s.title)}</a>`
+          ? `<a href="${cardHref}" title="Open this card — every recorded sale, market price and grades">${esc(s.title)}</a>`
           : listing
             ? `<a href="${esc(listing)}" target="_blank" rel="noopener nofollow">${esc(s.title)}</a>`
             : esc(s.title);
         const chips = [
-          cardHref && listing ? `<a class="chip" href="${esc(listing)}" target="_blank" rel="noopener nofollow" title="Original listing on ${esc(s.marketplace)}">listing ↗</a>` : "",
-          s.is_demo ? `<span class="chip" title="Sample-feed row — the original listing page doesn't exist">sample</span>` : "",
+          cardHref && listing ? `<a class="chip" href="${esc(listing)}" target="_blank" rel="noopener nofollow" title="Original listing on ${esc(platformLabel(s.marketplace))}">listing ↗</a>` : "",
+          s.is_demo ? `<span class="chip" title="Sample sale shown as an example — there's no original listing">sample</span>` : "",
         ].filter(Boolean);
         return title + (chips.length ? " " + chips.join(" ") : "");
       })()}</td>
-      <td>${s.grade ? esc(s.grade) : `<span class="chip">Raw${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
+      <td>${s.grade ? esc(s.grade) : `<span class="chip">Ungraded${s.condition ? " · " + esc(s.condition) : ""}</span>`}</td>
       <td>${saleCell(s)}</td>
       <td class="price">${money(s.price_cents, s.currency)}</td>
     </tr>`
@@ -117,15 +118,13 @@ export function renderSales(
 
   const table = rows
     ? `<div class="comps-wrap"><table class="comps sales-table">
-        <thead><tr><th>Date</th><th>Market</th><th>Listing</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead>
+        <thead><tr><th>Date</th><th>Sold on</th><th>Listing</th><th>Grade</th><th>Sale</th><th class="price">Price</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`
-    : `<div class="empty"><h2>No archived sales${p.q ? ` for “${esc(p.q)}”` : ""}</h2>
-       <p>${p.q || r.total ? "Try a broader search, or remove filters. " : ""}The archive grows as connected sellers' eBay sales come in and with every imported feed.</p></div>`;
+    : `<div class="empty"><h2>No recorded sales${p.q ? ` for “${esc(p.q)}”` : ""}</h2>
+       <p>${p.q || r.total ? "Try a broader search, or remove filters. " : ""}More sales are recorded as sellers connect their eBay accounts and as sales files are imported.</p></div>`;
 
   const sampleNote = r.allDemo
-    ? demoNote(
-        "The archive currently holds a <b>sample feed import</b> — plug a licensed sold-data feed into <code>npm run import:sold</code> and this page goes live with real depth."
-      )
+    ? demoNote("Only sample sales so far. Real sales appear as sellers connect their eBay accounts.")
     : "";
 
   const searchForm = `<form class="sales-search" action="${esc(base)}" method="get" role="search">
@@ -136,7 +135,7 @@ export function renderSales(
     ${cardBanner}
     ${gradeNote}
     <div class="sales-filters">
-      <div class="fgroup"><span class="fl">Market</span>${marketBar}</div>
+      <div class="fgroup"><span class="fl">Sold on</span>${marketBar}</div>
       <div class="fgroup"><span class="fl">Type</span>${typeBar}</div>
       <div class="fgroup"><span class="fl">Sort</span>${sortBar}</div>
     </div>
@@ -147,10 +146,10 @@ export function renderSales(
   const html = opts.embedded
     ? `<div class="sales-head sales-head-embedded">${searchForm}</div>${body}`
     : `<div class="wrap">
-    ${breadcrumb([{ label: "Sales Lookup" }])}
+    ${breadcrumb([{ label: "Sales lookup" }])}
     <div class="sales-head">
-      <h1>Sold-price lookup</h1>
-      <p class="sub">Real sales from the archive — eBay, Goldin and Fanatics, with accepted Best Offer prices revealed and every recognized sale tied to its exact card.</p>
+      <h1>Sales lookup</h1>
+      <p class="sub">Sold prices recorded from connected sellers' eBay sales and imported sales files, including accepted Best Offer prices.</p>
       ${searchForm}
     </div>
     ${body}
@@ -158,9 +157,9 @@ export function renderSales(
 
   return {
     html,
-    title: p.q ? `“${p.q}” sold prices — Sales Lookup | CardIndex` : "Card sold-price lookup | CardIndex",
+    title: p.q ? `“${p.q}” sold prices — Sales lookup | ${SITE}` : `Sales lookup — card sold prices | ${SITE}`,
     description:
-      "Free trading-card sold-price search: real sales from eBay, Goldin and Fanatics with accepted Best Offer prices revealed, canonicalized to exact cards.",
+      "Free trading card sold-price search: sold prices recorded from connected sellers' eBay sales and imported sales files, with accepted Best Offer prices, matched to the exact card.",
     jsonLd: [],
   };
 }

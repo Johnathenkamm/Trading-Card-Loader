@@ -1,7 +1,7 @@
 // Orders (CardUploader's Orders page): pending orders per channel, a picklist,
-// and quantity coming off inventory when an order ships. eBay / Mana Pool order
-// *fetching* needs those APIs (OAuth) — labeled seams on the page; what works
-// today: manual orders, TCGplayer pull-sheet CSV import, pick/ship flow.
+// and quantity coming off inventory when an order ships. eBay orders are
+// fetched once the seller connects eBay (app/ebay-sell.ts); manual orders, the
+// TCGplayer pull-sheet CSV import and the pick/ship flow work without it.
 
 import { query, one, tx } from "../pg.ts";
 import { currentSellerId } from "./session-context.ts";
@@ -41,14 +41,13 @@ export async function ensureOrdersSchema(): Promise<void> {
 export const CARRIERS = ["USPS", "UPS", "FedEx", "DHL", "Royal Mail", "Canada Post", "Australia Post", "Other"];
 export type Tracking = { carrier: string; number: string };
 
-export const ORDER_PLATFORMS: Array<{ key: string; label: string; live: boolean }> = [
-  { key: "ebay", label: "eBay", live: true }, // Fulfillment API via app/ebay-sell.ts (needs a connected account)
-  { key: "tcgplayer", label: "TCGplayer", live: true },
-  { key: "manapool", label: "Mana Pool", live: false },
-  { key: "storefront", label: "Storefront", live: false },
-  { key: "manual", label: "Manual", live: true },
+// The Orders page's platform tabs and the add-order select. Older orders saved
+// as manapool / storefront still show, labeled by platformLabel() in render/components.ts.
+export const ORDER_PLATFORMS: Array<{ key: string; label: string }> = [
+  { key: "ebay", label: "eBay" }, // Fulfillment API via app/ebay-sell.ts (needs a connected account)
+  { key: "tcgplayer", label: "TCGplayer" },
+  { key: "manual", label: "Manual" },
 ];
-export const platformLabel = (k: string): string => ORDER_PLATFORMS.find((p) => p.key === k)?.label ?? k;
 
 export type Order = {
   id: number;

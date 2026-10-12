@@ -67,7 +67,7 @@ export function ruleKey(mode: string, pct: number): string {
 export type AutoPricePref = "rule" | "previous_first" | "previous_only";
 
 export const AUTO_PRICE_PREFS: Array<{ key: AutoPricePref; label: string; hint: string }> = [
-  { key: "previous_first", label: "Previous price first, then pricing rule", hint: "Re-listing the same printing? Reuse what you priced it at last time; fall back to the rule for new cards." },
+  { key: "previous_first", label: "Previous price first, then pricing rule", hint: "Re-listing the same card and variant? Reuse what you priced it at last time; fall back to the pricing rule for new cards." },
   { key: "rule", label: "Pricing rule only", hint: "Always compute from market (Market, Market ± %, or Fixed). Previous prices are shown as a hint only." },
   { key: "previous_only", label: "Previous price only", hint: "Never auto-price from market — leave the price empty for cards you haven't listed before." },
 ];

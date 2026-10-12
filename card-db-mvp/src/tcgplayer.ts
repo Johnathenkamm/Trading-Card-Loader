@@ -31,7 +31,7 @@ const ENV = () => ({
 const BASE = () => `https://api.tcgplayer.com/${ENV().version}`;
 
 // game slug -> TCGplayer category id (same map as scripts/sync-tcgcsv.ts)
-const CATEGORY_BY_GAME: Record<string, number> = { pokemon: 3, mtg: 1 };
+const CATEGORY_BY_GAME: Record<string, number> = { pokemon: 3, "pokemon-jp": 85, mtg: 1 };
 
 export type ConditionRow = {
   condition: string; // "Near Mint"

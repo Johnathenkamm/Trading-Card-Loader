@@ -158,4 +158,56 @@ export function pager(base: string, page: number, totalPages: number): string {
   return `<nav class="pager" aria-label="Pagination">${out.join("")}</nav>`;
 }
 
+// ---- one label per stored value ---------------------------------------------
+// The database keeps short codes (done, exported, in_stock, ebay, fixed …).
+// Sellers see these words instead, the same on every page.
+
+const sentence = (s: string | null | undefined): string => {
+  const t = String(s ?? "").replace(/_/g, " ").trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
+};
+const labelFrom = (map: Record<string, string>) => (v: string | null | undefined): string => map[v ?? ""] ?? sentence(v);
+
+/** Where a listing, order or sale lives: "eBay", "TCGplayer", "Mana Pool" … */
+export const platformLabel = labelFrom({
+  ebay: "eBay", tcgplayer: "TCGplayer", whatnot: "Whatnot", shopify: "Shopify", manapool: "Mana Pool",
+  storefront: "Storefront", manual: "Manual", csv: "CSV", goldin: "Goldin", fanatics: "Fanatics",
+});
+/** Inventory status: Not listed / Listed / Sold. */
+export const inventoryStatusLabel = labelFrom({ in_stock: "Not listed", listed: "Listed", sold: "Sold" });
+/** Batch status: Processing… / Ready. */
+export const batchStatusLabel = labelFrom({ processing: "Processing…", done: "Ready" });
+/** How a batch's cards came in. */
+export const batchSourceLabel = labelFrom({ upload: "Photos", paste: "Pasted list", sample: "Sample", certs: "Cert numbers", catalog: "Catalog" });
+/** Listing format: Fixed price / Auction. */
+export const formatLabel = labelFrom({ fixed: "Fixed price", auction: "Auction" });
+/** Order status: Pending / Picked / Shipped. */
+export const orderStatusLabel = labelFrom({ pending: "Pending", picked: "Picked", shipped: "Shipped" });
+/** Inbox thread status: Open / Answered / Closed. */
+export const feedbackStatusLabel = labelFrom({ open: "Open", answered: "Answered", closed: "Closed" });
+
+const LISTING_STATUS = labelFrom({ draft: "Draft", scheduled: "Scheduled", exported: "CSV exported", ended: "Ended" });
+/** Listing status: Draft → Scheduled → CSV exported → Live on eBay → Ended. */
+export function listingStatusLabel(status: string | null | undefined, platform: string | null | undefined = "ebay"): string {
+  return status === "published" ? `Live on ${platformLabel(platform || "ebay")}` : LISTING_STATUS(status);
+}
+
+/** A batch's name: its own label, else one default per source, the same on every page. */
+export function batchName(b: { label?: string | null; source?: string | null; kind?: string | null }): string {
+  if (b.label) return b.label;
+  if (b.kind === "pricing") return "Pricing batch";
+  switch (b.source) {
+    case "upload": return "Photo batch";
+    case "certs": return "Graded batch";
+    case "catalog": return "Catalog batch";
+    case "sample": return "Sample batch";
+    default: return "Pasted batch";
+  }
+}
+
+/** "1 card", "3 cards"; pass the plural when it isn't the word plus "s". */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 export { money, fmtDate };

@@ -17,6 +17,7 @@ export const EBAY_TITLE_MAX = 80;
 // confirms the exact leaf in the eBay flow / pre-flight validation.
 const CATEGORY_BY_GAME: Record<string, string> = {
   pokemon: "183454",
+  "pokemon-jp": "183454",
   mtg: "38292",
   onepiece: "183454",
   yugioh: "31395",
@@ -149,7 +150,8 @@ export function buildTitle(f: ListingFields, template?: string | null): string {
   if (f.rarityAbbr && !(f.finish && finishLc.includes(f.rarityAbbr.toLowerCase()))) tail.push(f.rarityAbbr);
   if (f.finish) tail.push(f.finish);
   tail.push(graded ? f.grade : f.condition);
-  tail.push(f.languageName);
+  // "Pokemon Japanese" already says it; don't spend title space twice
+  if (!f.game.toLowerCase().includes(f.languageName.toLowerCase())) tail.push(f.languageName);
 
   const assemble = (opt: string[], tl: string[]) => squeeze([...opt, mandatory, ...tl].join(" "));
 
@@ -201,13 +203,14 @@ export function buildSpecifics(f: ListingFields): Record<string, string> {
 
 export const DESCRIPTION_TEMPLATE_MAX = 3;
 
+// `k` is the {variable} sellers type into a template; `label` is only the chip text.
 export const DESCRIPTION_VARS: Array<{ k: string; label: string; hint: string }> = [
   { k: "title", label: "Title", hint: "The generated listing title" },
-  { k: "name", label: "Card Name", hint: "Name of the card" },
-  { k: "number", label: "Card Number", hint: "Full card number (e.g. 4/102)" },
-  { k: "set", label: "Set Name", hint: "Full name of the set" },
-  { k: "setcode", label: "Set Code", hint: "Set code abbreviation" },
-  { k: "game", label: "Card Game", hint: "Card game name" },
+  { k: "name", label: "Card name", hint: "Name of the card" },
+  { k: "number", label: "Card number", hint: "Full card number (e.g. 4/102)" },
+  { k: "set", label: "Set name", hint: "Full name of the set" },
+  { k: "setcode", label: "Set code", hint: "Set code abbreviation" },
+  { k: "game", label: "Card game", hint: "Card game name" },
   { k: "year", label: "Year", hint: "Year the set was released" },
   { k: "rarity", label: "Rarity", hint: "Card rarity" },
   { k: "finish", label: "Finish", hint: "Card finish (e.g. Holo)" },
@@ -215,8 +218,8 @@ export const DESCRIPTION_VARS: Array<{ k: string; label: string; hint: string }>
   { k: "conditionlabel", label: "Condition (full)", hint: "Full condition text (e.g. Near Mint)" },
   { k: "language", label: "Language", hint: "Card language" },
   { k: "grade", label: "Grade", hint: "Grade when graded (e.g. PSA 10), else empty" },
-  { k: "grader", label: "Grade Company", hint: "PSA, CGC, BGS… when graded, else empty" },
-  { k: "cert", label: "Certification Number", hint: "Grader's cert number when graded, else empty" },
+  { k: "grader", label: "Grader", hint: "PSA, CGC, BGS… when graded, else empty" },
+  { k: "cert", label: "Cert number", hint: "Grader's cert number when graded, else empty" },
   { k: "sku", label: "SKU", hint: "Stock keeping unit" },
   { k: "price", label: "Price", hint: "Your listing price" },
 ];

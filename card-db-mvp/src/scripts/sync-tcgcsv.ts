@@ -33,9 +33,10 @@ import { numberSort, sleep } from "../util.ts";
 const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 
 // game slug (ours) -> TCGplayer category id. Extend as games are added
-// (85 = Pokemon Japan when a JP catalog lands).
+// (same ids as CATALOG_GAMES in src/app/catalog-import.ts).
 const CATEGORY_BY_GAME: Record<string, number> = {
   pokemon: 3,
+  "pokemon-jp": 85,
   onepiece: 68,
   mtg: 1,
 };
@@ -235,9 +236,11 @@ async function syncSet(
     ]);
 
     const variants = (await query(
-      "SELECT id, finish, tcgplayer_id FROM card_variants WHERE card_id=$1",
+      "SELECT id, finish, tcgplayer_id, language FROM card_variants WHERE card_id=$1",
       [card.id]
-    )) as Array<{ id: number; finish: string; tcgplayer_id: string | null }>;
+    )) as Array<{ id: number; finish: string; tcgplayer_id: string | null; language: string }>;
+    // a printing TCGCSV adds later keeps the card's language (Japanese cards stay JP)
+    const language = variants[0]?.language ?? "EN";
 
     for (const pr of priceByProduct.get(product.productId) ?? []) {
       if (pr.marketPrice == null) continue;
@@ -251,10 +254,10 @@ async function syncSet(
       if (!variant) {
         const created = await one<{ id: number }>(
           `INSERT INTO card_variants (card_id, finish, finish_label, language, tcgplayer_id, is_default)
-           VALUES ($1,$2,$3,'EN',$4,false) RETURNING id`,
-          [card.id, mapped.finish, mapped.label, String(product.productId)]
+           VALUES ($1,$2,$3,$4,$5,false) RETURNING id`,
+          [card.id, mapped.finish, mapped.label, language, String(product.productId)]
         );
-        variant = { id: created!.id, finish: mapped.finish, tcgplayer_id: String(product.productId) };
+        variant = { id: created!.id, finish: mapped.finish, tcgplayer_id: String(product.productId), language };
         variants.push(variant);
         newVariants++;
       } else if (!variant.tcgplayer_id) {

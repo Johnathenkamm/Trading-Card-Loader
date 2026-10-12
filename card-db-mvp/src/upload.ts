@@ -60,12 +60,18 @@ export class UploadTooLargeError extends Error {
   }
 }
 
-/** Human-readable "Upload too large" message naming both sizes. */
-export function tooLargeMessage(err: unknown, limit = MAX_UPLOAD_BYTES): string {
+/** What an over-limit request carried: a group (chunk) of photos, one photo, or a file (CSV/JSON). */
+export type UploadKind = "photos" | "photo" | "file";
+
+/**
+ * Human-readable "too large" message. The byte limit is per request — one group
+ * of photos from the dropzone, not the whole batch — so that's what it names.
+ */
+export function tooLargeMessage(kind: UploadKind = "photos", limit = MAX_UPLOAD_BYTES): string {
   const mb = (b: number) => (b >= 10_000_000 ? Math.round(b / 1_000_000) : (b / 1_000_000).toFixed(1)) + " MB";
-  let yours = "";
-  if (err instanceof UploadTooLargeError) yours = err.partial ? ` (this batch was over ${mb(limit)})` : ` (this batch was about ${mb(err.bytes)})`;
-  return `Upload too large — max ${mb(limit)} per batch${yours}. Try fewer or smaller images.`;
+  if (kind === "file") return `That file was over ${mb(limit)}. Try a smaller file.`;
+  if (kind === "photo") return `That photo was over ${mb(limit)}. Try a smaller photo.`;
+  return `One group of photos was over ${mb(limit)}. Try smaller photos.`;
 }
 
 /**

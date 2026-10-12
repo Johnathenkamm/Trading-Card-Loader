@@ -9,10 +9,12 @@
 // APP_BASE_URL is the public origin used to build links inside messages; when
 // unset the request's own origin is used.
 
+import { SITE, SITE_DOMAIN } from "../render/layout.ts";
+
 export type Mail = { to: string; subject: string; text: string; html?: string };
 
 const PROVIDER = (process.env.MAIL_PROVIDER ?? "log").toLowerCase();
-const FROM = process.env.MAIL_FROM ?? "CardIndex <no-reply@localhost>";
+const FROM = process.env.MAIL_FROM ?? `${SITE} <no-reply@${SITE_DOMAIN}>`;
 
 export function mailConfigured(): boolean {
   return PROVIDER === "resend" && !!process.env.RESEND_API_KEY;

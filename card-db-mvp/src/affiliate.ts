@@ -67,15 +67,19 @@ export function ebayLink(url: string, customid = "cardindex"): string {
  * is why "eBay sold" so often came back empty. Parenthesised catalog suffixes
  * are cleaned up because eBay reads "(a, b)" as an OR group: "(060)" repeats
  * the collector number and is dropped; "(Alternate Art)" keeps its words.
+ * A Japanese card adds "japanese": its name and number are the same as the
+ * English printing's, and eBay sellers title JP cards with the word.
  */
-export function ebayCardQuery(name: string, number?: string | null): string {
+const QUERY_WORD_BY_GAME: Record<string, string> = { "pokemon-jp": "japanese" };
+
+export function ebayCardQuery(name: string, number?: string | null, gameSlug?: string | null): string {
   const n = (name ?? "")
     .replace(/\(\s*\d+\s*\)/g, " ")
     .replace(/[()"*,]/g, " ")
     .replace(/(^|\s)-+/g, " ") // a leading "-" would exclude the word
     .replace(/\s+/g, " ")
     .trim();
-  return [n, (number ?? "").trim()].filter(Boolean).join(" ");
+  return [n, (number ?? "").trim(), QUERY_WORD_BY_GAME[gameSlug ?? ""] ?? ""].filter(Boolean).join(" ");
 }
 
 /** eBay leaf category for a game's singles (CCG Individual Cards, or MTG Individual Cards). */

@@ -6,6 +6,8 @@
 //   none  -> no vision; fall back to the filename hint (offline default)
 //   mock  -> returns a fixed label set; proves the pixels→labels→catalog→review
 //            pipeline works end-to-end with no external service
+//   hash  -> local perceptual-hash matcher (src/imagehash.ts); exact catalog-art
+//            scans only, it fails once the card doesn't fill the frame
 //   http  -> POST the image to any recognition API (Ximilar, a self-hosted model,
 //            eBay Browse searchByImage, …); map its JSON response to card labels
 //
@@ -42,9 +44,12 @@ export type VisionResult = {
   raw?: unknown; // provider payload (for logging / future training data)
 };
 
+/** Batch settings a recognizer may honour (the upload's "Database" choice). */
+export type VisionOptions = { game?: string };
+
 export interface VisionProvider {
   readonly name: string;
-  identify(image: VisionImage): Promise<VisionResult | null>;
+  identify(image: VisionImage, opts?: VisionOptions): Promise<VisionResult | null>;
 }
 
 /** Assemble a catalog-searchable string from structured labels. */
@@ -85,7 +90,7 @@ class MockProvider implements VisionProvider {
  * Requires the index built by `npm run hash:catalog`; with an empty index it
  * returns null and the caller falls back (filename hint) gracefully.
  */
-type HashIndexRow = { card_id: number; name: string; number: string | null; set_name: string; h: ImageHashes };
+type HashIndexRow = { card_id: number; name: string; number: string | null; set_name: string; game_slug: string; h: ImageHashes };
 let hashIndex: { rows: HashIndexRow[]; at: number } | null = null;
 const HASH_INDEX_TTL_MS = 10 * 60 * 1000;
 
@@ -97,14 +102,15 @@ export function invalidateHashIndex(): void {
 async function loadHashIndex(): Promise<HashIndexRow[]> {
   if (hashIndex && Date.now() - hashIndex.at < HASH_INDEX_TTL_MS) return hashIndex.rows;
   const raw = (await query(
-    `SELECT h.card_id, h.dhash, h.ahash, h.dhash_inset, h.ahash_inset, c.name, c.number, s.name AS set_name
-     FROM card_image_hashes h JOIN cards c ON c.id=h.card_id JOIN sets s ON s.id=c.set_id`
-  )) as Array<{ card_id: number; dhash: string; ahash: string; dhash_inset: string; ahash_inset: string; name: string; number: string | null; set_name: string }>;
+    `SELECT h.card_id, h.dhash, h.ahash, h.dhash_inset, h.ahash_inset, c.name, c.number, s.name AS set_name, g.slug AS game_slug
+     FROM card_image_hashes h JOIN cards c ON c.id=h.card_id JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id`
+  )) as Array<{ card_id: number; dhash: string; ahash: string; dhash_inset: string; ahash_inset: string; name: string; number: string | null; set_name: string; game_slug: string }>;
   const rows = raw.map((r) => ({
     card_id: r.card_id,
     name: r.name,
     number: r.number,
     set_name: r.set_name,
+    game_slug: r.game_slug,
     h: {
       full: { dhash: fromHex(r.dhash), ahash: fromHex(r.ahash) },
       inset: { dhash: fromHex(r.dhash_inset), ahash: fromHex(r.ahash_inset) },
@@ -119,13 +125,16 @@ async function loadHashIndex(): Promise<HashIndexRow[]> {
 class HashProvider implements VisionProvider {
   readonly name = "hash";
 
-  async identify(image: VisionImage): Promise<VisionResult | null> {
+  async identify(image: VisionImage, opts: VisionOptions = {}): Promise<VisionResult | null> {
     let index: HashIndexRow[];
     try {
       index = await loadHashIndex();
     } catch {
       return null;
     }
+    // Honour the batch's Database: a Pokémon batch never resolves to a Magic card.
+    const game = (opts.game ?? "").trim().toLowerCase();
+    if (game) index = index.filter((r) => r.game_slug === game);
     if (index.length === 0) return null;
 
     let q: ImageHashes;
@@ -149,9 +158,12 @@ class HashProvider implements VisionProvider {
     if (!best) return null;
 
     // distance -> confidence (64-bit dHash + half-weight aHash scale; measured:
-    // same image re-encoded ≈ 0, different cards ≈ 20+)
+    // same image re-encoded ≈ 0, true matches in test-cards/ ≤ 3, while the
+    // nearest DIFFERENT card can land as close as 8–10 when the real card isn't
+    // in the catalog). Only d ≤ 6 clears the auto-match bar; 6–10 is a strong
+    // suggestion that still goes to review.
     let confidence: number | null =
-      best.d <= 6 ? 0.97 : best.d <= 10 ? 0.9 : best.d <= 14 ? 0.75 : best.d <= 18 ? 0.55 : null;
+      best.d <= 6 ? 0.97 : best.d <= 10 ? 0.85 : best.d <= 14 ? 0.75 : best.d <= 18 ? 0.55 : null;
     if (confidence == null) return null;
     // near-tie with a different card (reprints/alt arts): route to review
     if (second && second.d - best.d < 2) confidence = Math.min(confidence, 0.7);
@@ -166,7 +178,13 @@ class HashProvider implements VisionProvider {
       labels,
       hintText: labelsToHint(labels),
       confidence,
-      raw: { distance: best.d, runner_up: second ? { card_id: second.row.card_id, distance: second.d } : null, card_id: best.row.card_id },
+      raw: {
+        distance: best.d,
+        runner_up: second
+          ? { card_id: second.row.card_id, distance: second.d, hint: labelsToHint({ name: second.row.name, number: second.row.number ?? undefined, set: second.row.set_name }) }
+          : null,
+        card_id: best.row.card_id,
+      },
     };
   }
 }
@@ -311,7 +329,7 @@ export async function visionIdentify(
 ): Promise<{ result: IdentifyResult; source: IdentifySource; hintText: string | null; vision: VisionResult | null }> {
   let vision: VisionResult | null = null;
   try {
-    vision = await visionProvider().identify(image);
+    vision = await visionProvider().identify(image, { game: opts.game });
   } catch {
     vision = null;
   }
@@ -319,11 +337,37 @@ export async function visionIdentify(
   const visionHint = vision ? (vision.hintText || (vision.labels ? labelsToHint(vision.labels) : "")) : "";
   if (visionHint && visionHint.trim()) {
     let result = await identify(visionHint, opts);
-    // Fold the recognizer's confidence in: a strong vision match on a card the
-    // catalog also found should clear the auto-match bar.
+    // The photo is the evidence; the hint lookup only finds that card in the
+    // catalog. When the hint IS a catalog card's own name (hash matcher) the
+    // lookup always scores ~0.99, so the photo's confidence has to cap the
+    // result, never floor it — otherwise a weak nearest neighbour (a card that
+    // isn't in the catalog at all) shows as a "99% match".
     if (result.best && vision?.confidence != null) {
-      const c = Math.max(result.confidence, Math.min(0.99, vision.confidence));
-      result = { ...result, confidence: c, status: c >= AUTO_THRESHOLD ? "matched" : "needs_review" };
+      // Pin to the exact card the recognizer picked when it named one (same
+      // name in another set would otherwise win the text lookup).
+      const raw = vision.raw as { card_id?: number; distance?: number; runner_up?: { card_id: number; distance: number; hint?: string } | null } | undefined;
+      const pinned = raw?.card_id;
+      let { best, alternatives } = result;
+      let c = Math.min(result.confidence, Math.min(0.99, vision.confidence));
+      if (pinned != null && best.card_id !== pinned) {
+        const hit = alternatives.find((a) => a.card_id === pinned);
+        if (hit) {
+          alternatives = [best, ...alternatives.filter((a) => a !== hit)];
+          best = hit;
+        } else {
+          c = Math.min(c, 0.7);
+        }
+      }
+      // A near-tie (identical-art reprint: Base vs Shadowless, a Prize Pack
+      // stamp) goes to review; offer the runner-up as a one-click alternative.
+      const ru = raw?.runner_up;
+      if (c < AUTO_THRESHOLD && ru?.hint && raw?.distance != null && ru.distance - raw.distance < 2 && ![best, ...alternatives].some((a) => a.card_id === ru.card_id)) {
+        const alt = (await identify(ru.hint, opts)).best;
+        if (alt && alt.card_id === ru.card_id) alternatives = [alt, ...alternatives].slice(0, 4);
+      }
+      // Their text scores are as inflated as the best's; the photo caps them too.
+      alternatives = alternatives.map((a) => ({ ...a, score: Math.min(a.score, c) }));
+      result = { ...result, best, alternatives, confidence: c, status: c >= AUTO_THRESHOLD ? "matched" : "needs_review" };
     }
     return { result, source: "vision", hintText: visionHint, vision };
   }

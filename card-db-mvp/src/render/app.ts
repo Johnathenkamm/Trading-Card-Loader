@@ -6,7 +6,10 @@
 
 import { esc, money } from "../util.ts";
 import { getVariants, getAllSets } from "../pg.ts";
-import { finishChip } from "./components.ts";
+import {
+  finishChip, platformLabel, inventoryStatusLabel, batchStatusLabel, batchSourceLabel, formatLabel, listingStatusLabel, batchName, plural,
+} from "./components.ts";
+import { SITE } from "./layout.ts";
 import {
   getSeller, listInventory, inventoryStats, listBatches, listBatchesOfKind, listBatchesWithStats, workspaceCounts, getBatch, getItems,
   listingsFor, listListings, marketCents, getVariantFull, getInventoryItem, scheduledCounts,
@@ -40,29 +43,29 @@ export const EBAY_UPLOADS_URL = "https://www.ebay.com/sh/reports/uploads";
  */
 export function ebayHandoff(mode: "full" | "compact" = "full"): string {
   return `<div class="handoff${mode === "compact" ? " compact" : ""}">
-    <div class="ho-head"><b>Exported the eBay CSV? Now upload it at eBay.</b><a class="btn sm primary" href="${EBAY_UPLOADS_URL}" target="_blank" rel="noopener">Open eBay → Reports → Uploads ↗</a></div>
+    <div class="ho-head"><b>Exported the eBay CSV? Now upload it at eBay.</b><a class="btn sm primary" href="${EBAY_UPLOADS_URL}" target="_blank" rel="noopener">Open eBay Seller Hub → Reports → Upload ↗</a></div>
     <ol>
       <li><b>Export eBay CSV</b> here — the file downloads to your computer.</li>
-      <li>On eBay's Uploads page press <b>Upload template</b> → file type <b>.csv</b> → template <b>Create new listings</b> → choose the file → <b>Upload</b>.</li>
-      <li>Wait until the status reads <b>Completed</b> (usually under 15 minutes) and open the results file for any rejected rows.</li>
-      <li>Back here, select those rows and press <b>Mark as listed</b>.</li>
+      <li>On eBay's Upload page press <b>Upload template</b> → <b>.csv</b> → <b>Create new listings template</b> → choose your file → <b>Upload</b>.</li>
+      <li>Wait for <b>Your upload is complete</b> (usually under 15 minutes), then download the results report to see any rejected rows.</li>
+      <li>Back here, select the rows that went live and press <b>Mark as listed</b>.</li>
     </ol>
   </div>`;
 }
 
 /**
- * The "Database" select on the upload pages: which game the photos are from.
- * Pokémon first, One Piece second (the client's two focus games), then the
- * rest of the catalog; games the catalog doesn't hold yet are shown disabled.
+ * The "Game" select on the upload pages: which game the photos are from.
+ * Pokémon first (English, then Japanese), One Piece next (the client's focus
+ * games), then the rest of the catalog; games the catalog doesn't hold yet
+ * are left out.
  */
 export function gameOptions(games: Game[], selected = ""): string {
-  const order = ["pokemon", "onepiece", "mtg"];
+  const order = ["pokemon", "pokemon-jp", "onepiece", "mtg"];
   const have = new Map(games.map((g) => [g.slug, g]));
   const rows: Array<{ slug: string; name: string; enabled: boolean }> = [];
   for (const s of order) {
     const g = have.get(s);
     if (g) rows.push({ slug: g.slug, name: g.name, enabled: true });
-    else if (s === "onepiece") rows.push({ slug: s, name: "One Piece Card Game — coming soon", enabled: false });
   }
   for (const g of games) if (!order.includes(g.slug)) rows.push({ slug: g.slug, name: g.name, enabled: true });
   return (
@@ -195,11 +198,11 @@ function subnav(active: string, navMode: NavMode = "auto"): string {
     ["Account", [["/app/inbox", "Inbox", "inbox"], ["/app/settings", "Configuration", "settings"]]],
   ];
   const item = ([href, text, key]: [string, string, string]) =>
-    `<a href="${href}" class="${key === active ? "active" : ""}${ADD_KEYS.has(key) ? " adds" : ""}" title="${esc(text)}${ADD_KEYS.has(key) ? " — takes cards in" : ""}">${navIcon(key)}<span class="nav-t">${text}</span>${
+    `<a href="${href}" class="${key === active ? "active" : ""}${ADD_KEYS.has(key) ? " adds" : ""}" title="${esc(text)}${ADD_KEYS.has(key) ? " — add cards here" : ""}">${navIcon(key)}<span class="nav-t">${text}</span>${
       !pro && PRO_KEYS.has(key) ? `<span class="nav-pro" title="Pro plan">Pro</span>` : ""
     }</a>`;
   const collapse = `<button type="button" class="ws-collapse" aria-expanded="true" title="Collapse menu"><svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M12 5l-5 5 5 5"/><path d="M4 4v12" /></svg><span class="sr-only">Collapse menu</span></button>`;
-  return `<nav class="ws-nav" aria-label="Workspace" data-mode="${navMode}">${collapse}${groups
+  return `<nav class="ws-nav" aria-label="Dashboard" data-mode="${navMode}">${collapse}${groups
     .map(
       ([label, items]) =>
         `<div class="ws-group">${label ? `<span class="ws-glabel">${label}</span>` : ""}${items.map(item).join("")}</div>`
@@ -226,9 +229,9 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
       <div class="plan-line"><b>${pro ? "Pro" : "Free"}</b>${pro ? ` · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : ""} <span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span></div>
       <p class="hint">${
         pro
-          ? "Unlimited scans, inventory and listings."
+          ? `Unlimited batches (up to ${MAX_UPLOAD_FILES_PRO} photos each), inventory and listings.`
           : "Pricing tool, card search and sales lookup are included. Pro adds scanning, inventory and eBay listings."
-      } <a href="/pricing${pro ? "" : "?upgrade=1"}">${pro ? "Plans &amp; pricing" : "Upgrade to Pro"}</a></p>
+      } <a href="/pricing${pro ? "" : "?upgrade=1"}">${pro ? "Plans" : "Upgrade to Pro"}</a></p>
     </div>
     <div class="home-plan-shop"><div class="eyebrow">Shop</div><b>${esc(seller.display_name)}</b><div class="hint">Next SKU <span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span></div></div>
   </div>`;
@@ -236,9 +239,9 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
   const diff = stats.market_cents - stats.value_cents;
   const statCards = `<div class="stat-cards home-stats">
     <div class="stat"><div class="k">Inventory value</div><div class="v mono">${money(stats.value_cents)}</div><div class="s">your prices × quantity</div></div>
-    <div class="stat"><div class="k">Market value</div><div class="v mono">${money(stats.market_cents)}</div><div class="s">${stats.count ? `catalog market · ${diff >= 0 ? "+" : "−"}${money(Math.abs(diff))} vs. yours` : "catalog market price × quantity"}</div></div>
-    <div class="stat"><div class="k">Cards in stock</div><div class="v mono">${stats.units}</div><div class="s">${stats.count} record${stats.count === 1 ? "" : "s"} · ${stats.listed} listed · ${counts.sold} sold</div></div>
-    <div class="stat${counts.review_items ? " attn" : ""}"><div class="k">Awaiting review</div><div class="v mono">${counts.review_items}</div><div class="s">${counts.review_items ? `<a href="/app/batches">open batches →</a>` : "nothing waiting on you"}</div></div>
+    <div class="stat"><div class="k">Market value</div><div class="v mono">${money(stats.market_cents)}</div><div class="s">${stats.count ? `TCGplayer market price · ${diff >= 0 ? "+" : "−"}${money(Math.abs(diff))} vs. yours` : "TCGplayer market price × quantity"}</div></div>
+    <div class="stat"><div class="k">Cards</div><div class="v mono">${stats.stock_cards}</div><div class="s">${plural(stats.stock_products, "product")} · ${stats.listed} listed · ${counts.sold} sold</div></div>
+    <div class="stat${counts.review_items ? " attn" : ""}"><div class="k">Needs review</div><div class="v mono">${counts.review_items}</div><div class="s">${counts.review_items ? `<a href="/app/batches">Previous batches →</a>` : "nothing waiting on you"}</div></div>
   </div>`;
 
   // Free accounts see which tiles are Pro before they click (mirrors the nav).
@@ -247,9 +250,9 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
     <a class="quick" href="/app/scan?mode=inventory"><span class="qi">📷</span><b>Ungraded cards ${proTag}</b><span>Upload photos or paste a list → identified, priced, queued for review.</span></a>
     <a class="quick" href="/app/graded"><span class="qi">🏅</span><b>Graded cards ${proTag}</b><span>Paste cert numbers; priced at the grade, listed with the slab details.</span></a>
     <a class="quick" href="/app/listing-creator"><span class="qi">🗂️</span><b>Listing creator ${proTag}</b><span>Build listings from catalog images — browse a set, tick the cards.</span></a>
-    <a class="quick" href="/app/scan?mode=price"><span class="qi">🔎</span><b>Pricing tool</b><span>Free: price a binder or a list and share the result by link — nothing added to stock.</span></a>
-    <a class="quick" href="/app/orders"><span class="qi">📦</span><b>Orders ${proTag}</b><span>Pull sheets, picklists, and stock that comes off when you ship.</span></a>
-    <a class="quick" href="/app/settings"><span class="qi">⚙️</span><b>Settings</b><span>SKUs, pricing, matching, titles, descriptions, every channel.</span></a>
+    <a class="quick" href="/app/scan?mode=price"><span class="qi">🔎</span><b>Ungraded pricing tool</b><span>Free: price a binder or a list and share the result by link — nothing added to stock.</span></a>
+    ${ordersEnabled() ? `<a class="quick" href="/app/orders"><span class="qi">📦</span><b>Orders ${proTag}</b><span>Pull sheets, picklists, and stock that comes off when you ship.</span></a>` : ""}
+    <a class="quick" href="/app/settings"><span class="qi">⚙️</span><b>Configuration</b><span>SKUs, pricing rules, matching, titles, descriptions and platforms.</span></a>
   </div>`;
 
   const steps: Array<[boolean, string, string, string]> = [
@@ -258,7 +261,7 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
     [policiesDone, "Fill in your eBay business policies", "Shipping, return and payment policy names must match your eBay account exactly or the upload fails.", "/app/settings/ebay"],
     [counts.batches > 0, "Scan or paste your first batch", "Every match shows a confidence score; anything uncertain waits in review.", "/app/scan"],
     [stats.count > 0, "Add reviewed cards to inventory", "Approve a batch to assign SKUs and record the prices you chose.", counts.batches ? "/app/batches" : "/app/scan"],
-    [counts.listings > 0, "Create a listing draft or export a CSV", "Drafts export to an eBay File Exchange CSV with your policies filled in.", stats.count ? "/app/inventory" : "/app/scan"],
+    [counts.listings > 0, "Create a listing draft or export a CSV", "Drafts export to an eBay CSV with your policies filled in.", stats.count ? "/app/inventory" : "/app/scan"],
   ];
   const done = steps.filter((s) => s[0]).length;
   const checklist = `<div class="ws-panel">
@@ -269,21 +272,21 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
   </div>`;
 
   const recent = `<div class="ws-panel">
-    <div class="ws-panel-head"><h2>Recent batches</h2><a href="/app/batches">All batches →</a></div>
+    <div class="ws-panel-head"><h2>Recent batches</h2><a href="/app/batches">Previous batches →</a></div>
     ${batches.length ? `<div class="batch-list">${batches.map(batchRow).join("")}</div>` : `<p class="hint">No batches yet — <a href="/app/scan">scan or paste cards</a> to start one.</p>`}
   </div>`;
 
   const help = `<div class="ws-panel help-panel">
     <div class="ws-panel-head"><h2>How it works</h2></div>
-    <details><summary>How are cards identified?</summary><p>Photos go through the configured recognizer and pasted lines are parsed for name, number, set, finish, condition, language and quantity. Both resolve against the catalog and get a confidence score: <b>90%+ auto-matches</b>, anything lower waits in review with alternatives and a manual search. Use <b>Advanced Matching Options</b> on the scan page to prioritize or exclude sets and keywords when you know what a binder holds.</p></details>
-    <details><summary>How are prices chosen?</summary><p>Each card resolves a price from your rule (Market, Market ± %, or Fixed). If you've listed the same printing before, that previous price is remembered and — depending on your <a href="/app/settings/pricing">automatic pricing preference</a> — used first. A floor stops automatic prices dropping below a minimum. You can always type an exact price.</p></details>
-    <details><summary>What if a card isn't in the catalog?</summary><p>It lands in review as "No match". Search manually for the closest printing, or skip it. The public catalog grows by set sync; tell us which set is missing.</p></details>
-    <details><summary>How do listings reach eBay?</summary><p>Listing drafts carry your title, item specifics, description template, price and policies. Export them as an eBay File Exchange CSV, or connect eBay for direct publishing (next integration). Policy names are validated before export so the CSV isn't rejected.</p></details>
-    <details><summary>Where are my previous batches?</summary><p><a href="/app/batches">Batches</a> keeps every scan with matched / review / failed counts and the value that reached inventory. Reopen any batch to finish reviewing it.</p></details>
+    <details><summary>How are cards identified?</summary><p>Each photo is matched to catalog card images, and pasted lines are read for name, number, set, variant, condition, language and quantity. Both are checked against the catalog and get a confidence score: <b>90%+ auto-matches</b>, anything lower waits in review with alternatives and a manual search. Use <b>Advanced matching options</b> on the Ungraded cards page to prioritize or exclude sets and keywords when you know what a binder holds.</p></details>
+    <details><summary>How are prices chosen?</summary><p>Each card gets a price from your pricing rule (Market, Market ± %, or Fixed). If you've listed the same variant before, that previous price is remembered and — depending on your <a href="/app/settings/pricing">automatic pricing preference</a> — used first. A minimum price stops automatic prices going below it. You can always type an exact price.</p></details>
+    <details><summary>What if a card isn't in the catalog?</summary><p>It lands in review as "No match". Search manually for the closest card, or skip it. Tell us which set is missing in your <a href="/app/inbox">Inbox</a> and we'll add it.</p></details>
+    <details><summary>How do listings reach eBay?</summary><p>Listing drafts carry your title, item specifics, description template, price and policies. Export them as an eBay CSV and upload it in eBay Seller Hub → Reports → Upload, or connect eBay (<a href="/app/settings/ebay">Configuration → eBay</a>) to list directly. Policy names are checked before export so the upload isn't rejected.</p></details>
+    <details><summary>Where are my previous batches?</summary><p><a href="/app/batches">Previous batches</a> keeps every batch with its matched, needs review and no match counts and the value that reached inventory. Reopen any batch to finish reviewing it.</p></details>
   </div>`;
 
   const html = `<div class="wrap ws">
-    ${wsHead("home", "Dashboard", `Where your stock stands and what's waiting on you.`, `<a class="btn primary" href="/app/scan">+ Scan cards</a>`)}
+    ${wsHead("home", "Dashboard", `Where your stock stands and what's waiting on you.`, `<a class="btn primary" href="/app/scan">+ Add cards</a>`)}
     ${flash(msg)}
     ${planCard}
     ${statCards}
@@ -294,14 +297,14 @@ export async function renderWorkspaceHome(msg?: string): Promise<{ html: string;
     </div>
     ${APP_JS}
   </div>`;
-  return { html, title: "Dashboard — Seller workspace | CardIndex", description: "Your seller workspace overview." };
+  return { html, title: `Dashboard | ${SITE}`, description: "Your stock, batches and what's waiting on you." };
 }
 
 function batchRow(b: BatchStats): string {
-  const st = b.review ? `<span class="warn">${b.review} to review</span>` : b.approved === b.total && b.total ? `<span class="ok">in inventory</span>` : b.status;
+  const st = b.review ? `<span class="warn">${b.review} needs review</span>` : b.approved === b.total && b.total ? `<span class="ok">in inventory</span>` : esc(batchStatusLabel(b.status));
   return `<a class="batch-row" href="/app/review/${b.id}">
     <span class="bid">#${b.id}</span>
-    <span class="blabel">${esc(b.label || (b.source === "sample" ? "Sample batch" : b.source === "upload" ? "Photo batch" : "Pasted batch"))}</span>
+    <span class="blabel">${esc(batchName(b))}</span>
     <span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"} · ${st}</span>
   </a>`;
 }
@@ -314,15 +317,16 @@ export async function renderBatches(msg?: string): Promise<{ html: string; title
     .map((b) => {
       const when = b.created_at.slice(0, 10);
       const state = b.review
-        ? `<span class="pill review">${b.review} to review</span>`
+        ? `<span class="pill review">${b.review} needs review</span>`
         : b.total && b.approved === b.total
         ? `<span class="pill sold">In inventory</span>`
         : b.approved
         ? `<span class="pill listed">${b.approved}/${b.total} added</span>`
-        : `<span class="pill">${esc(b.status)}</span>`;
+        : `<span class="pill">${esc(batchStatusLabel(b.status))}</span>`;
+      const target = b.platform === "tcgplayer" ? "TCGplayer" : "eBay";
       return `<tr>
         <td class="mono">#${b.id}</td>
-        <td><a href="/app/review/${b.id}"><b>${esc(b.label || (b.source === "upload" ? "Photo batch" : b.source === "sample" ? "Sample batch" : "Pasted batch"))}</b></a><div class="sub">${esc(b.source)} · ${esc(when)}</div></td>
+        <td><a href="/app/review/${b.id}"><b>${esc(batchName(b))}</b></a><div class="sub">${esc(batchSourceLabel(b.source))} · ${esc(when)}</div></td>
         <td class="mono">${b.total}</td>
         <td class="mono ok">${b.matched}</td>
         <td class="mono${b.review ? " warn" : ""}">${b.review}</td>
@@ -330,23 +334,23 @@ export async function renderBatches(msg?: string): Promise<{ html: string; title
         <td class="mono">${money(b.value_cents)}</td>
         <td>${state}</td>
         <td class="act"><a class="btn sm" href="/app/review/${b.id}">${b.review ? "Review →" : "Open"}</a>${
-          b.approved ? ` <a class="btn sm ghost" href="/app/export/${b.platform === "tcgplayer" ? "tcgplayer" : "ebay"}.csv?batch=${b.id}" target="_blank" title="Export this batch's inventory rows as a ${b.platform === "tcgplayer" ? "TCGplayer" : "eBay"} file">CSV</a>` : ""
+          b.approved ? ` <a class="btn sm ghost" href="/app/export/${b.platform === "tcgplayer" ? "tcgplayer" : "ebay"}.csv?batch=${b.id}" target="_blank" title="${target} CSV of the cards from this batch that are in inventory">Export ${target} CSV</a>` : ""
         }</td>
       </tr>`;
     })
     .join("");
 
   const html = `<div class="wrap ws">
-    ${wsHead("batches", "Previous batches", "Every scan and paste, with what matched, what's waiting on you, and what reached inventory.", `<a class="btn primary" href="/app/scan">+ New batch</a>`)}
+    ${wsHead("batches", "Previous batches", "Every scan and paste, with what matched, what's waiting on you, and what reached inventory.", `<a class="btn primary" href="/app/scan">+ Add cards</a>`)}
     ${flash(msg)}
     ${
       rows.length
-        ? `<div class="tablewrap"><table class="inv-table batches-table"><thead><tr><th>#</th><th>Batch</th><th>Cards</th><th>Matched</th><th>Review</th><th>Failed</th><th>Value</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`
-        : `<div class="ws-empty"><h3>No batches yet</h3><p>Your scans and pasted lists will appear here.</p><a class="btn primary" href="/app/scan">Scan / add cards</a></div>`
+        ? `<div class="tablewrap"><table class="inv-table batches-table"><thead><tr><th>#</th><th>Batch</th><th>Cards</th><th>Matched</th><th>Needs review</th><th>No match</th><th>Value</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`
+        : `<div class="ws-empty"><h3>No batches yet</h3><p>Your scans and pasted lists will appear here.</p><a class="btn primary" href="/app/scan">+ Add cards</a></div>`
     }
     ${APP_JS}
   </div>`;
-  return { html, title: "Batches — Seller workspace | CardIndex", description: "Your previous scan batches." };
+  return { html, title: `Previous batches | ${SITE}`, description: "Your previous batches." };
 }
 
 // The nav is emitted as a sibling of the header (not inside it) so the page
@@ -359,7 +363,7 @@ export function wsHead(active: string, title: string, sub: string, actions = "",
   return `${subnav(active, opts.navMode ?? "auto")}<div class="ws-head">
     <div class="ws-title-row">
       <div>
-        <div class="eyebrow">Seller workspace</div>
+        <div class="eyebrow">Dashboard</div>
         <h1>${esc(title)}</h1>
         <p class="ws-sub">${sub}</p>
       </div>
@@ -385,15 +389,15 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
 
   // CardUploader's inventory header pair — "Price $ · Market $" — plus counts.
   const statCards = `<div class="stat-cards">
-    <div class="stat"><div class="k">Inventory value</div><div class="v mono">${money(stats.value_cents)}</div><div class="s">your prices × quantity · ${stats.units} unit${stats.units === 1 ? "" : "s"}</div></div>
-    <div class="stat"><div class="k">Market value</div><div class="v mono">${money(stats.market_cents)}</div><div class="s">catalog market price × quantity</div></div>
-    <div class="stat"><div class="k">Cards in stock</div><div class="v mono">${stats.count}</div><div class="s">${stats.listed} listed · next SKU <span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span></div></div>
-    <div class="stat"><div class="k">Default pricing</div><div class="v" style="font-size:1.3rem">${esc(ruleLabel({ mode: seller.price_mode, pct: seller.price_pct, fixed_cents: seller.price_fixed_cents }))}</div><div class="s"><a href="/app/settings/pricing">Change defaults →</a></div></div>
+    <div class="stat"><div class="k">Inventory value</div><div class="v mono">${money(stats.value_cents)}</div><div class="s">your prices × quantity</div></div>
+    <div class="stat"><div class="k">Market value</div><div class="v mono">${money(stats.market_cents)}</div><div class="s">TCGplayer market price × quantity</div></div>
+    <div class="stat"><div class="k">Cards</div><div class="v mono">${stats.stock_cards}</div><div class="s">${plural(stats.stock_products, "product")} · ${stats.listed} listed · next SKU <span class="mono">${esc(seller.sku_prefix)}-${String(seller.sku_next).padStart(seller.sku_pad, "0")}</span></div></div>
+    <div class="stat"><div class="k">Default pricing rule</div><div class="v" style="font-size:1.3rem">${esc(ruleLabel({ mode: seller.price_mode, pct: seller.price_pct, fixed_cents: seller.price_fixed_cents }))}</div><div class="s"><a href="/app/settings/pricing">Change defaults →</a></div></div>
   </div>`;
 
   const statusTabs = ["all", "in_stock", "listed", "sold"]
     .map((s) => {
-      const label = s === "all" ? "All" : s === "in_stock" ? "In stock" : s === "listed" ? "Listed" : "Sold";
+      const label = s === "all" ? "All" : inventoryStatusLabel(s);
       const cur = (filter.status ?? "all") === s;
       const params = new URLSearchParams();
       if (s !== "all") params.set("status", s);
@@ -408,7 +412,7 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
     table = `<div class="ws-empty">
       <h3>No cards in inventory yet</h3>
       <p>Scan or paste a list of cards to identify them, price them, and add them to inventory.</p>
-      <a class="btn primary" href="/app/scan">Scan / add cards</a>
+      <a class="btn primary" href="/app/scan">+ Add cards</a>
     </div>`;
   } else {
     const body = (
@@ -427,8 +431,8 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
         <td>${esc(r.language)}</td>
         <td class="mono">${r.quantity}</td>
         <td class="mono sku">${esc(r.sku)}</td>
-        <td class="mono price">${money(r.price_cents)}<div class="mkt">mkt ${money(market)}</div></td>
-        <td><span class="pill ${r.status}">${r.status === "in_stock" ? "In stock" : r.status === "listed" ? "Listed" : "Sold"}</span></td>
+        <td class="mono price">${money(r.price_cents)}<div class="mkt">Market ${money(market)}</div></td>
+        <td><span class="pill ${r.status}">${esc(inventoryStatusLabel(r.status))}</span></td>
         <td class="act">
           <a class="btn sm" href="/app/list/${r.id}">List →</a>
         </td>
@@ -445,7 +449,7 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
           <select name="sort" onchange="this.form.submit()" aria-label="Sort">
             ${opt("", "Newest", filter.sort ?? "")}${opt("value", "Value", filter.sort ?? "")}${opt("name", "Name", filter.sort ?? "")}${opt("sku", "SKU", filter.sort ?? "")}
           </select>
-          <button class="btn sm" type="submit">Go</button>
+          <button class="btn sm" type="submit">Search</button>
         </form>
       </div>
       <form id="bulkform" method="post" action="/app/inventory/bulk">
@@ -453,18 +457,21 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
       <div class="bulkbar" id="bulkbar" hidden>
         <span class="n"><b id="bulk-count">0</b> selected</span>
         <label>Condition <select name="condition">${opt("", "—", "")}${conditionOptions("")}</select></label>
-        <label>Pricing <select name="rule">${opt("", "—", "")}${ruleOptions("")}</select></label>
+        <label>Pricing rule <select name="rule">${opt("", "—", "")}${ruleOptions("")}</select></label>
         <button class="btn sm" name="do" value="apply" type="submit">Apply</button>
-        <span class="bulk-exports">Export ${EXPORT_FORMATS.map((f) => `<button class="btn sm" name="do" value="export" type="submit" formaction="/app/export/${f.key}.csv" formmethod="get" formtarget="_blank" title="${esc(f.label)}">${esc(f.label.replace(/ \(.*\)$/, ""))}</button>`).join("")}</span>
+        <span class="bulk-exports">${EXPORT_FORMATS.map((f) => {
+          const name = esc(f.label.replace(/ \(.*\)$/, ""));
+          return `<button class="btn sm" name="do" value="export" type="submit" formaction="/app/export/${f.key}.csv" formmethod="get" formtarget="_blank" title="${name} CSV of the selected cards">Export ${name} CSV</button>`;
+        }).join("")}</span>
         <button class="btn sm primary" name="do" value="list" type="submit">Create listings</button>
         <button class="btn sm" name="do" value="mark-listed" type="submit" title="You uploaded the exported CSV at eBay">Mark as listed</button>
-        <button class="btn sm ghost" name="do" value="mark-in-stock" type="submit">Mark in stock</button>
+        <button class="btn sm ghost" name="do" value="mark-in-stock" type="submit">Mark not listed</button>
       </div>
       <div class="tablewrap">
       <table class="inv-table">
         <thead><tr>
           <th class="chk"><input type="checkbox" id="selall" aria-label="Select all"></th>
-          <th></th><th>Card</th><th>Cond</th><th>Lang</th><th>Qty</th><th>SKU</th><th>Price</th><th>Status</th><th></th>
+          <th></th><th>Card</th><th>Condition</th><th>Language</th><th>Qty</th><th>SKU</th><th>Price</th><th>Status</th><th></th>
         </tr></thead>
         <tbody>${body}</tbody>
       </table>
@@ -475,13 +482,13 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
 
   const recent = batches.length
     ? `<div class="ws-panel">
-        <div class="ws-panel-head"><h2>Recent batches</h2><a href="/app/batches">All batches →</a></div>
+        <div class="ws-panel-head"><h2>Recent batches</h2><a href="/app/batches">Previous batches →</a></div>
         <div class="batch-list">${batches
           .map(
             (b) => `<a class="batch-row" href="/app/review/${b.id}">
               <span class="bid">#${b.id}</span>
-              <span class="blabel">${esc(b.label || (b.source === "sample" ? "Sample batch" : "Scan batch"))}</span>
-              <span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"} · ${b.status}</span>
+              <span class="blabel">${esc(batchName(b))}</span>
+              <span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"} · ${esc(batchStatusLabel(b.status))}</span>
             </a>`
           )
           .join("")}</div>
@@ -489,7 +496,7 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
     : "";
 
   const html = `<div class="wrap ws">
-    ${wsHead("inventory", "Inventory", `Your confirmed stock. Every card carries a SKU and a price you can push to a marketplace.`, `<a class="btn primary" href="/app/scan">+ Scan cards</a>`)}
+    ${wsHead("inventory", "Inventory", `Your cards, each with a SKU and a price, ready to list on eBay or export.`, `<a class="btn primary" href="/app/scan">+ Add cards</a>`)}
     ${flash(msg)}
     <p class="inv-summary" aria-label="Inventory totals"><b class="mono">${stats.stock_products.toLocaleString()}</b> product${stats.stock_products === 1 ? "" : "s"} · <b class="mono">${stats.stock_cards.toLocaleString()}</b> card${stats.stock_cards === 1 ? "" : "s"} · Price <b class="mono up">${money(stats.value_cents)}</b> · Market <b class="mono">${money(stats.market_cents)}</b></p>
     ${statCards}
@@ -498,7 +505,7 @@ export async function renderInventory(filter: InventoryFilter, msg?: string): Pr
     ${APP_JS}
   </div>`;
 
-  return { html, title: "Inventory — Seller workspace | CardIndex", description: "Your card inventory, SKUs, pricing and listings." };
+  return { html, title: `Inventory | ${SITE}`, description: "Your card inventory, SKUs, pricing and listings." };
 }
 
 // ---- Scan / add -----------------------------------------------------------
@@ -611,7 +618,7 @@ export async function renderScan(
     getAllSets(),
     getGames(),
   ]);
-  const databaseField = `<label class="fld"><span>Database <small>which game the cards are from</small></span><select name="game">${gameOptions(games)}</select></label>`;
+  const databaseField = `<label class="fld"><span>Game <small>which game the cards are from</small></span><select name="game">${gameOptions(games)}</select></label>`;
   const pref = (prefill ?? "").replace(/\s+/g, " ").trim();
   const prefs = parseMatchingPrefs(seller.matching_prefs);
   const matchVals = prefsToForm(prefs, sets);
@@ -619,8 +626,8 @@ export async function renderScan(
   const modeField = `<input type="hidden" name="mode" value="${mode}">`;
 
   const sub = priceMode
-    ? "Price a binder page, a stack, or a list against the catalog. Nothing is added to inventory, and the priced list can be shared by link."
-    : "Upload photos or paste a list. Every card is identified against the catalog, scored for confidence, and anything uncertain waits in review before it reaches inventory.";
+    ? "Price a binder page, a stack or a list against the catalog and share the priced list by link — nothing is added to inventory."
+    : "Upload photos or paste a list; anything uncertain waits in review before it reaches inventory.";
 
   // Fields that only matter when cards are going into stock: CardUploader's
   // Ungraded Cards SETUP block — Platform, listing defaults (condition is in the
@@ -631,13 +638,13 @@ export async function renderScan(
     : `<div class="setup-block">
             <div class="sb-head"><b>Setup</b><span class="hint">listing defaults for this batch — saved to Configuration when "save as my defaults" is ticked</span></div>
             <div class="fld-row">
-              <label class="fld"><span>Platform <small>where this batch is going</small></span><select name="platform">${opt("ebay-fixed", "eBay Fixed Price", "ebay-fixed")}${opt("ebay-auction", "eBay Auctions", "ebay-fixed")}${opt("tcgplayer", "TCGplayer", "ebay-fixed")}</select></label>
+              <label class="fld"><span>Platform <small>where this batch is going</small></span><select name="platform">${opt("ebay-fixed", "eBay fixed price (Buy It Now)", "ebay-fixed")}${opt("ebay-auction", "eBay auction", "ebay-fixed")}${opt("tcgplayer", "TCGplayer", "ebay-fixed")}</select></label>
               <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(seller.price_mode, seller.price_pct))}</select></label>
-              <label class="fld"><span>Start price ($) <small>optional · one price for every card; blank = the rule</small></span><input type="text" name="start_price" value="" class="mono" inputmode="decimal" placeholder="0.99"></label>
+              <label class="fld"><span>Start price ($) <small>optional · one price for every card; blank = the pricing rule</small></span><input type="text" name="start_price" value="" class="mono" inputmode="decimal" placeholder="0.99"></label>
             </div>
             <div class="fld-row">
               <label class="fld"><span>SKU prefix</span><input type="text" name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12" class="mono"></label>
-              <label class="fld"><span>Store category <small>your eBay Store category id</small></span><input type="text" name="store_category" value="${esc(seller.ebay_store_category ?? "")}" class="mono" inputmode="numeric" placeholder="optional"></label>
+              <label class="fld"><span>Store category <small>eBay Store category number (from your eBay Store's category list)</small></span><input type="text" name="store_category" value="${esc(seller.ebay_store_category ?? "")}" class="mono" inputmode="numeric" placeholder="optional"></label>
             </div>
             <div class="ckrow">
               <input type="hidden" name="sku_increment_present" value="1">
@@ -677,7 +684,7 @@ export async function renderScan(
           ${modeField}
           <div class="ws-panel-head"><h2>Or paste a list</h2><button type="button" class="btn sm" id="loadsample">Load sample</button></div>
           <label class="fld">
-            <span>Cards <small>one per line — name, number (4/102 or #119), set, finish, condition, language, qty (e.g. 3x)</small></span>
+            <span>Cards <small>one per line — name, number (4/102 or #119), set, variant, condition, language, qty (e.g. 3x)</small></span>
             <textarea name="lines" id="lines" rows="7" placeholder="Charizard 4/102 Base Set holo NM&#10;3x Pikachu 58/102 Base&#10;The Wandering Emperor Neon Dynasty foil">${esc(pref)}</textarea>
           </label>
           <div class="fld-row">
@@ -706,7 +713,7 @@ export async function renderScan(
   // form that would bounce on submit.
   const locked = `<div class="ws-panel mode-lock">
           <div class="ws-panel-head"><h2>Add to inventory is part of Pro</h2><span class="pill">Pro · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}</span></div>
-          <p>With Pro, the same photos and lists go through review into your inventory: every card gets a SKU, its photos are stored as listing images, and it's ready to publish to eBay or export.</p>
+          <p>With Pro, the same photos and lists go through review into your inventory: every card gets a SKU, its photos are stored as listing images, and it's ready to list on eBay or export.</p>
           <div class="scan-submit"><a class="btn primary" href="/pricing?upgrade=1">Upgrade to Pro</a><a class="btn" href="/app/scan?mode=price">Price these cards for free instead</a></div>
         </div>`;
 
@@ -714,32 +721,30 @@ export async function renderScan(
 
   const aside = priceMode
     ? `<aside class="ws-panel scan-side">
-        <h2>Recent pricings</h2>
+        <h2>Recent pricing batches</h2>
         ${
           batches.length
             ? `<div class="batch-list">${batches
                 .map(
-                  (b) => `<a class="batch-row" href="/app/pricing/${b.id}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Pricing")}</span><span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"}${b.share_token ? " · shared" : ""}</span></a>`
+                  (b) => `<a class="batch-row" href="/app/pricing/${b.id}"><span class="bid">#${b.id}</span><span class="blabel">${esc(batchName(b))}</span><span class="bmeta">${b.total} card${b.total === 1 ? "" : "s"}${b.share_token ? " · shared" : ""}</span></a>`
                 )
                 .join("")}</div>`
-            : `<p class="hint">No pricings yet.</p>`
+            : `<p class="hint">No pricing batches yet.</p>`
         }
         <h3 style="margin-top:18px">What happens to the photos</h3>
-        <p>Each photo is read by the recognizer and matched to a catalog printing. The priced list keeps a thumbnail so you and whoever you share it with can see which card is which. Nothing is created in inventory, and any pricing can be turned into an inventory batch later from its results page.</p>
-        <div class="seam-note"><span class="i">◆</span><div><b>Binder-page detection</b> (several cards in one photo, auto-cropped) plugs into the same upload — today each photo is treated as one card.</div></div>
+        <p>Each photo is matched to catalog card images. The priced list keeps a thumbnail so you and whoever you share it with can see which card is which. Nothing is created in inventory, and any pricing batch can be added to inventory later from its results page.</p>
       </aside>`
     : `<aside class="ws-panel scan-side">
         <h2>What happens to the photos</h2>
-        <p><b>Photos</b> are stored and dropped straight into the review queue, one item per image. The recognizer reads each card (or we take a first guess from the filename, e.g. <span class="mono">charizard-4-102.jpg</span>); anything we can't place waits in the queue where you <b>search and confirm</b> it. Approved cards keep their photo as the listing image.</p>
-        <p><b>Pasted lines</b> are parsed for name, number, set, finish, condition, language and quantity, then matched against the catalog — <b>${Math.round(0.9 * 100)}%+</b> auto-matches, the rest route to review.</p>
+        <p><b>Photos</b> are stored and go straight into the review queue. Each photo is matched to catalog card images (or we take a first guess from the filename, e.g. <span class="mono">charizard-4-102.jpg</span>); anything we can't place waits in the queue where you <b>search and confirm</b> it. Approved cards keep their photo as the listing image.</p>
+        <p><b>Pasted lines</b> are read for name, number, set, variant, condition, language and quantity, then matched against the catalog — <b>${Math.round(0.9 * 100)}%+</b> auto-matches, the rest wait in review.</p>
         <p><b>Know what's in the binder?</b> Open <b>Advanced matching options</b> and prioritize its sets — same-name cards from other sets stop stealing matches. Exclude sets or keywords you never sell.</p>
-        <p><b>Prices</b> follow your rule, or the price you last listed the same printing at (<a href="/app/settings/pricing">automatic pricing</a>).</p>
-        <div class="seam-note"><span class="i">◆</span><div><b>Reading the card from the pixels is the remaining seam.</b> A vision model (photo → identity, front/back, auto-crop) and graded-slab OCR/QR + cert lookup drop in behind the same review queue and identify contract — upload, storage, and review already work end-to-end.</div></div>
+        <p><b>Prices</b> follow your pricing rule, or your previous price for the same variant (<a href="/app/settings/pricing">automatic pricing</a>).</p>
         ${
           batches.length
             ? `<h3 style="margin-top:18px">Recent batches</h3><div class="batch-list">${batches
                 .map(
-                  (b) => `<a class="batch-row" href="${b.kind === "pricing" ? `/app/pricing/${b.id}` : `/app/review/${b.id}`}"><span class="bid">#${b.id}</span><span class="blabel">${esc(b.label || "Batch")}</span><span class="bmeta">${b.total} · ${b.status}</span></a>`
+                  (b) => `<a class="batch-row" href="${b.kind === "pricing" ? `/app/pricing/${b.id}` : `/app/review/${b.id}`}"><span class="bid">#${b.id}</span><span class="blabel">${esc(batchName(b))}</span><span class="bmeta">${b.total} · ${esc(batchStatusLabel(b.status))}</span></a>`
                 )
                 .join("")}</div>`
             : ""
@@ -747,7 +752,7 @@ export async function renderScan(
       </aside>`;
 
   const html = `<div class="wrap ws">
-    ${wsHead(priceMode ? "pricing-tool" : "scan", "Add cards", sub)}
+    ${wsHead(priceMode ? "pricing-tool" : "scan", priceMode ? "Ungraded pricing tool" : "Ungraded cards", sub)}
     ${flash(msg)}
     ${setDatalist(sets)}
     ${modeChooser(mode, pro, pref)}
@@ -763,7 +768,7 @@ export async function renderScan(
 
   return {
     html,
-    title: `${priceMode ? "Price cards" : "Add cards"} — Seller workspace | CardIndex`,
+    title: `${priceMode ? "Ungraded pricing tool" : "Ungraded cards"} | ${SITE}`,
     description: priceMode ? "Free ungraded card pricing." : "Bulk-identify cards and route them to a review queue.",
   };
 }
@@ -809,14 +814,14 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
   const cardImg = vf ? vf.image_small || vf.image_large : null;
   // Primary thumb is the seller's uploaded scan when present, else the catalog image.
   const scanImg = item.image_url || cardImg;
-  // Resolve each variant's market price once (used in the printing dropdown).
+  // Resolve each variant's market price once (used in the variant dropdown).
   const vMarket = new Map<number, number | null>(
     await Promise.all(variants.map(async (v) => [v.id, await marketCents(v.id)] as const))
   );
 
   const action = `/app/review/${batch.id}/item/${item.id}`;
   const dup = item.dup_of_item_id
-    ? `<div class="dup-note">⚠ Duplicate of item #${item.dup_of_item_id} in this batch — <b>merge</b> folds its quantity in on commit.</div>`
+    ? `<div class="dup-note">⚠ Duplicate of card #${item.dup_of_item_id} in this batch. If <b>Combine duplicates</b> is ticked when you add the batch to inventory, the two become one card and their quantities are added together.</div>`
     : "";
   const certLink = certUrl(item.grader ?? g?.grader, item.cert);
   const certLine = item.cert
@@ -843,7 +848,7 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
   let links = "";
   if (vf) {
     // name + collector number, scoped to the game's singles category (see affiliate.ts)
-    const q = ebayCardQuery(vf.card_name, vf.number);
+    const q = ebayCardQuery(vf.card_name, vf.number, vf.game_slug);
     const cat = ebayCategoryFor(vf.game_slug);
     // TCGplayer opens filtered to this card's condition and language
     const tcg = tcgplayerProductUrl(vf.tcgplayer_id, { condition: item.condition, language: item.language });
@@ -864,7 +869,7 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
         .map(
           (a) => `<form method="post" action="${action}" class="alt">
             <input type="hidden" name="do" value="replace"><input type="hidden" name="variant_id" value="${a.variant_id}">
-            <button type="submit" title="${esc(a.set)} · ${esc(a.finish)}">${esc(a.label)} <span class="asc">${a.score}%</span></button>
+            <button type="submit" title="${esc(a.set)} · ${esc(a.finish)}">${esc(a.label)}${vf && a.set && a.set !== vf.set_name ? ` · ${esc(a.set)}` : ""} <span class="asc">${a.score}%</span></button>
           </form>`
         )
         .join("")}</div>`
@@ -876,7 +881,7 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
       <div class="manual-results"></div>
     </div></details>`;
 
-  const priceHint = `${market != null ? `mkt ${money(market)}` : "no market price"}${item.prev_price_cents != null ? ` · <span class="prev">you listed at ${money(item.prev_price_cents)}</span>` : ""}`;
+  const priceHint = `${market != null ? `Market ${money(market)}` : "no market price"}${item.prev_price_cents != null ? ` · <span class="prev">Previous price ${money(item.prev_price_cents)}</span>` : ""}`;
 
   // Data for the Card Comparison & Search modal (APP_JS): your photo vs the
   // matched catalog card, the confidence, and the alternatives with their %.
@@ -913,7 +918,7 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
       <div class="edit-grid">
         ${
           variants.length
-            ? `<label>Printing<select name="variant_id" data-autosubmit>${variants
+            ? `<label>Variant<select name="variant_id" data-autosubmit>${variants
                 .map((v) => {
                   const mc = vMarket.get(v.id) ?? null;
                   return opt(String(v.id), `${v.finish_label}${mc != null ? " · " + money(mc) : ""}`, String(item.matched_variant_id ?? ""));
@@ -922,11 +927,11 @@ async function reviewItem(item: ScanItem, batch: ScanBatch): Promise<string> {
             : ""
         }
         <label>Condition<select name="condition" data-autosubmit>${conditionOptions(item.condition)}</select></label>
-        <label>Lang<select name="language">${languageOptions(item.language)}</select></label>
-        <label>Grader<select name="grader">${opt("", "Raw", g?.grader ?? item.grader ?? "")}${GRADERS.map((x) => opt(x.key, x.key, g?.grader ?? item.grader ?? "")).join("")}</select></label>
+        <label>Language<select name="language">${languageOptions(item.language)}</select></label>
+        <label>Grader<select name="grader">${opt("", "Ungraded", g?.grader ?? item.grader ?? "")}${GRADERS.map((x) => opt(x.key, x.key, g?.grader ?? item.grader ?? "")).join("")}</select></label>
         <label>Grade<select name="grade_value" data-autosubmit>${opt("", "—", g?.value ?? "")}${GRADE_VALUES.map((v) => opt(v, v, g?.value ?? "")).join("")}</select></label>
         <label>Qty<input type="number" name="quantity" min="1" value="${item.quantity}" class="mono"></label>
-        <label>Pricing<select name="rule" data-autosubmit>${ruleOptions(ruleKey(item.price_mode, item.price_pct))}</select></label>
+        <label>Pricing rule<select name="rule" data-autosubmit>${ruleOptions(ruleKey(item.price_mode, item.price_pct))}</select></label>
         <label>Price<div class="price-in"><span>$</span><input type="text" name="price" value="${dollars(item.price_cents)}" class="mono" inputmode="decimal"></div></label>
         <label>SKU<input type="text" name="sku" value="${esc(item.sku ?? "")}" placeholder="auto" class="mono"></label>
       </div>
@@ -970,7 +975,7 @@ export async function renderReview(batchId: number, filterTab: string | undefine
   const tabs: Array<[string, string, number]> = [
     ["all", "All", all.length],
     ["needs_review", "Needs review", review],
-    ["failed", "Failed", failed],
+    ["failed", "No match", failed],
     ["matched", "Matched", auto],
   ];
   const filtered = all.filter((i) => {
@@ -1003,7 +1008,7 @@ export async function renderReview(batchId: number, filterTab: string | undefine
   // CardUploader's Bulk Edit: one price for the whole batch, and "Edit SKU
   // prefix" to number the cards in order (done after Manage Duplicates there).
   const batchTools = `<details class="batch-tools ws-panel">
-      <summary>Batch tools <span class="hint">set one price for every card · number the SKUs</span></summary>
+      <summary>Bulk edit <span class="hint">set one price for every card · number the SKUs</span></summary>
       <div class="bt-row">
         <form method="post" action="/app/review/${batch.id}/bulk">
           <span class="bt-title"><b>Set price for all cards</b> — every card in this batch gets this price, kept as your own (not recomputed).</span>
@@ -1011,31 +1016,31 @@ export async function renderReview(batchId: number, filterTab: string | undefine
           <button class="btn sm" name="do" value="price-all" type="submit">Apply to all</button>
         </form>
         <form method="post" action="/app/review/${batch.id}/bulk">
-          <span class="bt-title"><b>Edit SKU prefix</b> — number the cards in order from the start number; duplicates that merge are skipped, and your counter continues after the last one.</span>
+          <span class="bt-title"><b>Edit SKU prefix</b> — number the cards in order from the start number; duplicates that will be combined are skipped, and your counter continues after the last one.</span>
           <label>Prefix<input name="sku_prefix" value="${esc(seller.sku_prefix)}" maxlength="12" class="mono"></label>
           <label>Start at<input name="sku_start" value="${seller.sku_next}" class="mono" inputmode="numeric"></label>
           <button class="btn sm" name="do" value="sku" type="submit">Number SKUs</button>
-          <button class="btn sm ghost" name="do" value="sku-clear" type="submit" title="Back to automatic SKUs on commit">Clear</button>
+          <button class="btn sm ghost" name="do" value="sku-clear" type="submit" title="Use automatic SKUs when the batch is added to inventory">Clear</button>
         </form>
       </div>
     </details>`;
 
-  // The batch's Platform decides which file "Export batch" writes (rows reach
+  // The batch's Platform decides which file the export button writes (rows reach
   // the file once they are in inventory, i.e. after "Add to inventory").
-  const platformLabel = batch.platform === "tcgplayer" ? "TCGplayer" : batch.platform === "ebay-auction" ? "eBay Auctions" : "eBay Fixed Price";
+  const platformName = batch.platform === "tcgplayer" ? "TCGplayer" : batch.platform === "ebay-auction" ? "eBay auction" : "eBay fixed price (Buy It Now)";
   const exportHref = `/app/export/${batch.platform === "tcgplayer" ? "tcgplayer" : "ebay"}.csv?batch=${batch.id}`;
-  const exportBtn = `<a class="btn" href="${exportHref}" target="_blank" title="Every card of this batch that is in inventory, as a ${platformLabel} file${batch.store_category ? ` · store category ${esc(batch.store_category)}` : ""}">Export batch → ${platformLabel === "TCGplayer" ? "TCGplayer" : "eBay"} CSV</a>`;
+  const exportBtn = `<a class="btn" href="${exportHref}" target="_blank" title="The cards from this batch that are in inventory, as a CSV for ${platformName}${batch.store_category ? ` · store category ${esc(batch.store_category)}` : ""}">Export ${batch.platform === "tcgplayer" ? "TCGplayer" : "eBay"} CSV</a>`;
 
   const html = `<div class="wrap ws">
-    ${wsHead("scan", `Review batch #${batch.id}`, `${esc(batch.label || "Identify, correct, price, then add to inventory.")} <span class="chip">${platformLabel}</span>`, `${exportBtn}<a class="btn" href="/app/scan">New batch</a>`, { navMode: "collapsed" })}
+    ${wsHead("scan", `Review batch #${batch.id}`, `${esc(batch.label || "Identify, correct, price, then add to inventory.")} <span class="chip">${platformName}</span>`, `${exportBtn}<a class="btn" href="/app/scan">+ Add cards</a>`, { navMode: "collapsed" })}
     ${flash(msg)}
     <div class="batch-progress">
       <div class="bp-bar"><div class="bp-fill" style="width:${pctDone}%"></div></div>
       <div class="bp-stats">
         <span><b>${batch.total}</b> cards</span>
         <span class="ok">✅ ${auto} matched</span>
-        <span class="warn">⚠ ${review} need review</span>
-        <span class="bad">✖ ${failed} failed</span>
+        <span class="warn">⚠ ${review} needs review</span>
+        <span class="bad">✖ ${failed} no match</span>
       </div>
     </div>
     ${totals}
@@ -1045,8 +1050,8 @@ export async function renderReview(batchId: number, filterTab: string | undefine
       <div class="tabs">${tabs
         .map(([k, label, n]) => `<a href="/app/review/${batch.id}?tab=${k}" class="${k === tab ? "active" : ""}">${label} <span class="c">${n}</span></a>`)
         .join("")}</div>
-      <form method="post" action="/app/review/${batch.id}/commit" class="commit-form" onsubmit="return confirm('Add ${commitReady} matched card(s) to inventory?')">
-        <label class="ckbox sm"><input type="checkbox" name="merge" value="1" checked> merge duplicates</label>
+      <form method="post" action="/app/review/${batch.id}/commit" class="commit-form" onsubmit="return confirm('Add ${plural(commitReady, "matched card")} to inventory?')">
+        <label class="ckbox sm"><input type="checkbox" name="merge" value="1" checked> Combine duplicates</label>
         <button class="btn primary" type="submit" ${commitReady ? "" : "disabled"}>Add ${commitReady} to inventory →</button>
       </form>
     </div>
@@ -1056,7 +1061,7 @@ export async function renderReview(batchId: number, filterTab: string | undefine
     ${APP_JS}
   </div>`;
 
-  return { html, title: `Review batch #${batch.id} — Seller workspace | CardIndex`, description: "Review, correct and price identified cards before adding to inventory." };
+  return { html, title: `Review batch #${batch.id} | ${SITE}`, description: "Review, correct and price identified cards before adding to inventory." };
 }
 
 // ---- Listing builder ------------------------------------------------------
@@ -1081,7 +1086,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
   const exportUrl = `/app/export/ebay.csv?ids=${inv.id}`;
 
   const html = `<div class="wrap ws">
-    ${wsHead("inventory", "Build listing", `Generate an eBay listing for this card. Saved drafts export to a File Exchange CSV; live publish uses the eBay Sell API (seam).`, `<a class="btn" href="/app/inventory">← Inventory</a>`)}
+    ${wsHead("inventory", "Build listing", `Edit the listing, then save it as a draft, list it on eBay (when connected) or export an eBay CSV.`, `<a class="btn" href="/app/inventory">← Inventory</a>`)}
     ${flash(msg)}
     <div class="list-grid">
       <div class="list-card ws-panel">
@@ -1090,7 +1095,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
           <h2>${esc(inv.card_name)}</h2>
           <div class="ri-sub">${esc(inv.set_name)}${inv.number ? " · #" + esc(inv.number) : ""}</div>
           <div class="lc-chips">${finishChip({ finish: inv.finish, finish_label: inv.finish_label })} <span class="chip">${esc(inv.condition)}</span> <span class="chip">${esc(inv.language)}</span></div>
-          <div class="lc-price">SKU <b class="mono">${esc(inv.sku)}</b> · mkt <b class="mono">${money(market)}</b> · your price <b class="mono">${money(inv.price_cents)}</b></div>
+          <div class="lc-price">SKU <b class="mono">${esc(inv.sku)}</b> · Market <b class="mono">${money(market)}</b> · your price <b class="mono">${money(inv.price_cents)}</b></div>
           <div class="spec-table"><h3>Item specifics</h3><table>${specRows}</table></div>
         </div>
       </div>
@@ -1111,17 +1116,17 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
           <label class="fld"><span>Schedule (optional)</span><input type="datetime-local" name="scheduled_at"><input type="hidden" name="tz_offset" class="tz-offset"></label>
         </div>
         <label class="fld"><span>eBay category</span><input type="text" name="category" value="${esc(preview.category)}" class="mono"></label>
-        <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${seller.best_offer ? " checked" : ""}> <span>Accept Best Offers <small>fixed price only; your default is set in Configuration → eBay</small></span></label>
+        <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${seller.best_offer ? " checked" : ""}> <span>Allow offers (Best Offer) <small>fixed price only; your default is set in Configuration → eBay</small></span></label>
         <label class="fld"><span>Description</span><textarea name="description" rows="7">${esc(preview.description)}</textarea></label>
-        <div class="policy-note">Business policies applied from <a href="/app/settings/ebay">settings</a>: shipping <b>${esc(seller.ebay_shipping_policy || "—")}</b>, returns <b>${esc(seller.ebay_return_policy || "—")}</b>, payment <b>${esc(seller.ebay_payment_policy || "—")}</b>, location <b>${esc(seller.item_location || "—")}</b>.</div>
+        <div class="policy-note">Business policies from <a href="/app/settings/ebay">Configuration → eBay</a>: shipping <b>${esc(seller.ebay_shipping_policy || "—")}</b>, returns <b>${esc(seller.ebay_return_policy || "—")}</b>, payment <b>${esc(seller.ebay_payment_policy || "—")}</b>, location <b>${esc(seller.item_location || "—")}</b>.</div>
         <div class="list-actions">
           <button class="btn primary" name="do" value="draft" type="submit">Save listing draft</button>
-          ${ebayConn ? `<button class="btn primary" name="do" value="publish" type="submit">Save &amp; publish to eBay →</button>` : ""}
-          <a class="btn" href="${exportUrl}" target="_blank">Download eBay CSV</a>
+          ${ebayConn ? `<button class="btn primary" name="do" value="publish" type="submit">List on eBay →</button>` : ""}
+          <a class="btn" href="${exportUrl}" target="_blank">Export eBay CSV</a>
         </div>
         ${
           ebayConn
-            ? `<p class="hint">Publishing runs a pre-flight (policies by ID, ship-from location, image, title length) and then creates the eBay listing directly — no CSV to upload.</p>`
+            ? `<p class="hint">Before listing, we check your policies, ship-from location, photo and title length. Then the listing goes live on eBay — no CSV needed.</p>`
             : ebayHandoff("compact")
         }
       </form>
@@ -1129,9 +1134,9 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
 
     ${
       existing.length
-        ? `<div class="ws-panel"><div class="ws-panel-head"><h2>Listing drafts for this card</h2></div><div class="tablewrap"><table class="inv-table"><thead><tr><th>#</th><th>Marketplace</th><th>Format</th><th>Title</th><th>Price</th><th>Status</th></tr></thead><tbody>${existing
+        ? `<div class="ws-panel"><div class="ws-panel-head"><h2>Listings for this card</h2></div><div class="tablewrap"><table class="inv-table"><thead><tr><th>#</th><th>Platform</th><th>Format</th><th>Title</th><th>Price</th><th>Status</th></tr></thead><tbody>${existing
             .map(
-              (l) => `<tr><td class="mono">${l.id}</td><td>${esc(l.marketplace)}</td><td>${esc(l.format)}</td><td>${esc(l.title)}</td><td class="mono">${money(l.price_cents)}</td><td><span class="pill ${l.status}">${esc(l.status)}</span></td></tr>`
+              (l) => `<tr><td class="mono">${l.id}</td><td>${esc(platformLabel(l.marketplace))}</td><td>${esc(formatLabel(l.format))}</td><td>${esc(l.title)}</td><td class="mono">${money(l.price_cents)}</td><td><span class="pill ${l.status}">${esc(listingStatusLabel(l.status, l.marketplace))}</span></td></tr>`
             )
             .join("")}</tbody></table></div></div>`
         : ""
@@ -1139,7 +1144,7 @@ export async function renderListingBuilder(invId: number, msg?: string): Promise
     ${APP_JS}
   </div>`;
 
-  return { html, title: `List ${inv.card_name} — Seller workspace | CardIndex`, description: "Build an eBay listing for this card." };
+  return { html, title: `List ${inv.card_name} | ${SITE}`, description: "Build an eBay listing for this card." };
 }
 
 // ---- Listings list --------------------------------------------------------
@@ -1155,15 +1160,15 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
         <td class="mono">${l.id}</td>
         <td class="thumb">${l.image_small ? `<img src="${esc(l.image_small)}" alt="" loading="lazy">` : ""}</td>
         <td>${esc(l.title)}<div class="sub mono">${esc(l.sku ?? "")}${l.inventory_id == null ? " · blank" : ""}</div>${l.last_error ? `<div class="sub err">⚠ ${esc(l.last_error)}</div>` : ""}</td>
-        <td>${esc(l.marketplace)}${l.status === "published" && l.external_ref ? `<div class="sub"><a href="${ebayItemUrl(l.external_ref)}" target="_blank" rel="noopener" class="mono">${esc(l.external_ref)}</a></div>` : ""}</td>
-        <td>${esc(l.format)}</td>
+        <td>${esc(platformLabel(l.marketplace))}${l.status === "published" && l.external_ref ? `<div class="sub"><a href="${ebayItemUrl(l.external_ref)}" target="_blank" rel="noopener" class="mono">${esc(l.external_ref)}</a></div>` : ""}</td>
+        <td>${esc(formatLabel(l.format))}</td>
         <td class="mono">${money(l.price_cents ?? l.start_cents)}<div class="mkt">× ${l.quantity}</div></td>
         <td>${l.scheduled_at ? `${esc(l.scheduled_at.replace("T", " ").slice(0, 16))}${l.status === "scheduled" && l.publish_attempts ? `<div class="mkt warn">${l.publish_attempts} failed attempt${l.publish_attempts === 1 ? "" : "s"}</div>` : ""}` : "immediate"}</td>
-        <td><span class="pill ${l.status}">${esc(l.status)}</span></td>
+        <td><span class="pill ${l.status}">${esc(listingStatusLabel(l.status, l.marketplace))}</span></td>
         <td class="act">${
           ebayConn
-            ? `<form method="post" action="/app/listings/${l.id}/publish" class="inline"><button class="btn sm${l.status === "published" ? "" : " primary"}" type="submit" title="${l.status === "published" ? "Push current title, price and quantity to the live listing" : "Run pre-flight and create the eBay listing"}">${l.status === "published" ? "Revise" : "Publish"}</button></form>${l.status === "published" ? `<form method="post" action="/app/listings/${l.id}/end" class="inline" onsubmit="return confirm('End this eBay listing?')"><button class="btn sm ghost" type="submit">End</button></form>` : ""}`
-            : `<a class="btn sm" href="/app/settings/ebay" title="Connect eBay to publish directly">Connect eBay</a>`
+            ? `<form method="post" action="/app/listings/${l.id}/publish" class="inline"><button class="btn sm${l.status === "published" ? "" : " primary"}" type="submit" title="${l.status === "published" ? "Update the live eBay listing's title, price and quantity" : "Check and list on eBay"}">${l.status === "published" ? "Revise" : "List on eBay"}</button></form>${l.status === "published" ? `<form method="post" action="/app/listings/${l.id}/end" class="inline" onsubmit="return confirm('End this eBay listing?')"><button class="btn sm ghost" type="submit">End listing</button></form>` : ""}`
+            : `<a class="btn sm" href="/app/settings/ebay" title="Connect eBay to list directly">Connect eBay</a>`
         }</td>
       </tr>`
         )
@@ -1171,10 +1176,13 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
     : "";
 
   const exportAll = rows.length
-    ? `<span class="bulk-exports">Export all ${EXPORT_FORMATS.map((f) => `<a class="btn sm" href="/app/export/${f.key}.csv?all=1" target="_blank">${esc(f.label.replace(/ \(.*\)$/, ""))}</a>`).join("")}</span>`
+    ? `<span class="bulk-exports">${EXPORT_FORMATS.map((f) => {
+        const name = esc(f.label.replace(/ \(.*\)$/, ""));
+        return `<a class="btn sm" href="/app/export/${f.key}.csv?all=1" target="_blank" title="${name} CSV of all your listings">Export ${name} CSV</a>`;
+      }).join("")}</span>`
     : "";
   const html = `<div class="wrap ws">
-    ${wsHead("listings", "Listings", "Draft, scheduled and exported listings across channels — catalog cards and blank items alike. Export to eBay, TCGplayer, Whatnot or Shopify files with your channel preferences applied.", `${exportAll}<a class="btn" href="/app/blank-listing">+ Blank listing</a>`)}
+    ${wsHead("listings", "Listings", "Your listing drafts, scheduled listings and live eBay listings.", `${exportAll}<a class="btn" href="/app/blank-listing">+ Blank listing</a>`)}
     ${flash(msg)}
     ${
       rows.length
@@ -1182,35 +1190,35 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
            <input type="hidden" name="ids" id="bulk-ids"><input type="hidden" name="tz_offset" class="tz-offset">
            <div class="bulkbar" id="bulkbar" hidden>
              <span class="n"><b id="bulk-count">0</b> selected</span>
-             ${ebayConn ? `<button class="btn sm primary" name="do" value="publish" type="submit">Publish now</button>` : ""}
+             ${ebayConn ? `<button class="btn sm primary" name="do" value="publish" type="submit">List on eBay</button>` : ""}
              <label>Start <input type="datetime-local" name="start" class="mono"></label>
              <label>every <input type="number" name="gap" value="5" min="0" max="1440" class="mono" style="width:64px"> min</label>
-             <button class="btn sm" name="do" value="schedule" type="submit" title="Space the selected listings out from the start time (CardUploader's Space Out)">Schedule &amp; space out</button>
+             <button class="btn sm" name="do" value="schedule" type="submit" title="Space the selected listings the set number of minutes apart, from the start time">Schedule &amp; space out</button>
              <button class="btn sm" name="do" value="unschedule" type="submit">Back to draft</button>
-             <button class="btn sm" name="do" value="offers-on" type="submit" title="Accept Best Offers on the selected fixed-price listings">Offers on</button>
-             <button class="btn sm" name="do" value="offers-off" type="submit" title="Buyers pay the listed price">Offers off</button>
+             <button class="btn sm" name="do" value="offers-on" type="submit" title="Allow offers (Best Offer) on the selected fixed-price listings">Allow offers</button>
+             <button class="btn sm" name="do" value="offers-off" type="submit" title="Buyers pay the listed price">Turn off offers</button>
              <button class="btn sm" name="do" value="mark-listed" type="submit" title="You uploaded the CSV at eBay yourself">Mark as listed</button>
-             ${ebayConn ? `<button class="btn sm ghost" name="do" value="end" type="submit">End</button>` : ""}
+             ${ebayConn ? `<button class="btn sm ghost" name="do" value="end" type="submit">End listing</button>` : ""}
            </div>
-           <div class="tablewrap"><table class="inv-table"><thead><tr><th class="chk"><input type="checkbox" id="selall" aria-label="Select all"></th><th>#</th><th></th><th>Title</th><th>Channel</th><th>Format</th><th>Price</th><th>Schedule</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+           <div class="tablewrap"><table class="inv-table"><thead><tr><th class="chk"><input type="checkbox" id="selall" aria-label="Select all"></th><th>#</th><th></th><th>Title</th><th>Platform</th><th>Format</th><th>Price</th><th>Schedule</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
            </form>
            ${ebayConn ? "" : ebayHandoff()}
            ${
              sched.scheduled
-               ? `<div class="sched-note"><b>${sched.scheduled}</b> scheduled${sched.due ? ` · <b class="warn">${sched.due} due now</b>` : ""} — the runner checks every minute${ebayConn ? "" : " (needs your eBay connection to publish)"}. ${ebayConn && sched.due ? `<form method="post" action="/app/listings/bulk" class="inline"><input type="hidden" name="do" value="run-due"><button class="btn sm" type="submit">Publish due now</button></form>` : ""}</div>`
+               ? `<div class="sched-note"><b>${sched.scheduled}</b> scheduled${sched.due ? ` · <b class="warn">${sched.due} due now</b>` : ""}. Scheduled listings go live within a minute of their start time${ebayConn ? "" : " once eBay is connected"}. ${ebayConn && sched.due ? `<form method="post" action="/app/listings/bulk" class="inline"><input type="hidden" name="do" value="run-due"><button class="btn sm" type="submit">List due listings now</button></form>` : ""}</div>`
                : ""
            }
            ${
              ebayConn
-               ? `<p class="hint" style="margin-top:12px"><b>Publish</b> creates the live eBay listing through the Inventory API (pre-flight first); <b>Revise</b> pushes title, price and quantity to a live listing; <b>End</b> withdraws it. Select rows to publish in bulk or <b>schedule &amp; space out</b> — one listing every N minutes from a start time. Shipping a non-eBay order syncs quantity to eBay automatically.</p>`
-               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings/ebay"><b>Connect eBay</b></a> to publish, revise and end listings from here and pull orders. Drafts export as a File Exchange CSV meanwhile; scheduling still works and publishes once connected.</div></div>`
+               ? `<p class="hint" style="margin-top:12px"><b>List on eBay</b> makes the listing live. <b>Revise</b> updates its title, price and quantity. <b>End listing</b> takes it down. Select several rows to list or schedule them together.</p>`
+               : `<div class="seam-note" style="margin-top:16px"><span class="i">◆</span><div><a href="/app/settings/ebay"><b>Connect eBay</b></a> to list, revise and end listings from here. Meanwhile, drafts export as an eBay CSV, and scheduled listings go live once eBay is connected.</div></div>`
            }`
         : `<div class="ws-empty"><h3>No listings yet</h3><p>Open a card in your <a href="/app/inventory">inventory</a> and build a listing.</p></div>`
     }
     ${APP_JS}
   </div>`;
 
-  return { html, title: "Listings — Seller workspace | CardIndex", description: "Your marketplace listing drafts." };
+  return { html, title: `Listings | ${SITE}`, description: "Your listing drafts, scheduled listings and live eBay listings." };
 }
 
 // ---- Settings -------------------------------------------------------------
@@ -1221,19 +1229,23 @@ export async function renderListings(msg?: string): Promise<{ html: string; titl
 // their SKU prefix without scrolling past the title editor. Old anchors like
 // /app/settings/ebay still land on the right page (a tiny redirect script).
 
+/** eBay's marketplace ids (EBAY_US …) as sellers know the sites. */
+const ebaySiteName = (id: string | null | undefined): string =>
+  id === "EBAY_US" ? "eBay US" : id === "EBAY_GB" ? "eBay UK" : String(id ?? "").replace(/^EBAY_/, "eBay ");
+
 export type SettingsSection = { key: string; group: string; title: string; blurb: string };
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   { key: "shop", group: "Card settings", title: "Shop & SKUs", blurb: "Shop name, SKU prefix, how many digits, and the next number." },
-  { key: "pricing", group: "Card settings", title: "Pricing & condition", blurb: "Default rule, condition and language, automatic pricing, and the price floor." },
+  { key: "pricing", group: "Card settings", title: "Pricing & condition", blurb: "Default pricing rule, condition and language, automatic pricing, and the minimum price." },
   { key: "matching", group: "Card settings", title: "Matching", blurb: "Sets and keywords to prioritize or exclude when cards are identified." },
   { key: "titles", group: "Card settings", title: "Titles", blurb: "The block-by-block eBay title structure, auto-fitted to 80 characters." },
   { key: "descriptions", group: "Card settings", title: "Descriptions", blurb: "Up to three listing description templates with {variables}." },
-  { key: "ebay", group: "Platform settings", title: "eBay", blurb: "Account link, business policies, store category, Best Offer." },
+  { key: "ebay", group: "Platform settings", title: "eBay", blurb: "eBay connection, business policies, store category and Best Offer." },
   { key: "shopify", group: "Platform settings", title: "Shopify", blurb: "Vendor, location, weight and tags for the product CSV." },
   { key: "whatnot", group: "Platform settings", title: "Whatnot", blurb: "Category, shipping profile and offers for the bulk-listing CSV." },
   { key: "tcgplayer", group: "Platform settings", title: "TCGplayer", blurb: "My Store columns for the inventory CSV." },
-  { key: "manapool", group: "Platform settings", title: "Mana Pool", blurb: "Notes that ride along on exports until the API link exists." },
-  { key: "privacy", group: "Account", title: "Privacy", blurb: "Whether your confirmed matches may help improve identification." },
+  { key: "manapool", group: "Platform settings", title: "Mana Pool", blurb: "Notes about your Mana Pool store." },
+  { key: "privacy", group: "Plan & privacy", title: "Help improve matching", blurb: "Whether your confirmed matches may help improve matching." },
 ];
 export const settingsSection = (key: string): SettingsSection | undefined => SETTINGS_SECTIONS.find((s) => s.key === key);
 
@@ -1254,12 +1266,12 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
   if (!sectionKey) {
     const meta: Record<string, string> = {
       shop: `${esc(s.display_name)} · next SKU <span class="mono">${esc(nextSku)}</span>`,
-      pricing: `${esc(ruleLabel({ mode: s.price_mode, pct: s.price_pct, fixed_cents: s.price_fixed_cents }))} · ${esc(s.default_condition)} · floor ${s.price_floor_cents ? money(s.price_floor_cents) : "$0.99"}`,
-      matching: isEmptyPrefs(prefs) ? "Nothing set — every set considered equally" : esc(describePrefs(prefs, sets)),
+      pricing: `${esc(ruleLabel({ mode: s.price_mode, pct: s.price_pct, fixed_cents: s.price_fixed_cents }))} · ${esc(s.default_condition)} · min. ${s.price_floor_cents ? money(s.price_floor_cents) : "$0.99"}`,
+      matching: isEmptyPrefs(prefs) ? "Nothing set — every set is treated equally" : esc(describePrefs(prefs, sets)),
       titles: s.title_structure ? `${structure.blocks.length} blocks${structure.optimize ? " · auto-fit on" : ""}` : "Default structure",
       descriptions: tpls.items.length ? `${tpls.items.length} template${tpls.items.length === 1 ? "" : "s"} · active: ${esc(tpls.items[tpls.active]?.name ?? "")}` : "Built-in description",
       ebay: !ebaySellConfigured()
-        ? `Not configured on this server · ${policiesNamed ? "policy names set" : "policy names missing"}`
+        ? `Connecting eBay isn't available yet · ${policiesNamed ? "policy names set" : "policy names missing"}`
         : conn
         ? `Connected as ${esc(conn.ebay_user ?? "eBay account")}${conn.last_policy_sync ? " · policies synced" : " · policies not synced"}`
         : `Not connected · ${policiesNamed ? "policy names set" : "policy names missing"}`,
@@ -1267,14 +1279,16 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
       whatnot: `${esc(ch.whatnot_category)} · offers ${ch.whatnot_offerable ? "on" : "off"}`,
       tcgplayer: ch.tcg_my_store ? `My Store on · ×${esc(ch.tcg_store_multiplier)}` : "My Store columns off",
       manapool: ch.manapool_note ? esc(ch.manapool_note) : "No notes",
-      privacy: s.training_opt_in ? "Opted in to improving identification" : "Not sharing matches (default)",
+      privacy: s.training_opt_in ? "On" : "Off (default)",
     };
     const attention = new Set<string>([...(s.display_name === DEFAULT_SHOP_NAME ? ["shop"] : []), ...(!policiesNamed && !conn ? ["ebay"] : [])]);
-    const groups = [...new Set(SETTINGS_SECTIONS.map((x) => x.group))];
+    // Mana Pool (Magic singles only) isn't offered here; /app/settings/manapool still works.
+    const hubSections = SETTINGS_SECTIONS.filter((x) => x.key !== "manapool");
+    const groups = [...new Set(hubSections.map((x) => x.group))];
     const tiles = groups
       .map(
         (g) => `<h2 class="cfg-group">${esc(g)}</h2>
-      <div class="cfg-grid">${SETTINGS_SECTIONS.filter((x) => x.group === g)
+      <div class="cfg-grid">${hubSections.filter((x) => x.group === g)
         .map(
           (x) => `<a class="cfg-card${attention.has(x.key) ? " attn" : ""}" href="/app/settings/${x.key}">
             <span class="cfg-title">${esc(x.title)}${attention.has(x.key) ? `<span class="cfg-dot" title="Needs your attention"></span>` : ""}</span>
@@ -1284,11 +1298,11 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
           </a>`
         )
         .join("")}${
-          g === "Account"
+          g === "Plan & privacy"
             ? `<a class="cfg-card" href="/pricing${pro ? "" : "?upgrade=1"}">
             <span class="cfg-title">Your plan</span>
             <span class="cfg-blurb">${pro ? `Pro · ${PRO_PRICE_LABEL}/${PRO_PERIOD_LABEL}` : "Free — the pricing tool, card search and sales lookup."}</span>
-            <span class="cfg-meta"><span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span> ${pro ? "Billing management is coming soon" : "Pro adds scanning, inventory and listings"}</span>
+            <span class="cfg-meta"><span class="plan-dot${pro ? "" : " free"}">${pro ? "Active" : "Free"}</span> ${pro ? "To change or cancel Pro, send us a note from your Inbox." : "Pro adds scanning, inventory and listings"}</span>
             <span class="cfg-arrow" aria-hidden="true">→</span>
           </a>`
             : ""
@@ -1298,13 +1312,13 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
     // legacy anchors (#s-ebay, #s-shop …) → their pages
     const hashJs = `<script>(function(){var m=(location.hash||'').match(/^#s-([a-z]+)$/);if(!m)return;var k=m[1]==='desc'?'descriptions':m[1];if(k==='plan')return;if(${JSON.stringify(SETTINGS_SECTIONS.map((x) => x.key))}.indexOf(k)>=0)location.replace('/app/settings/'+k);})();</script>`;
     const html = `<div class="wrap ws">
-      ${wsHead("settings", "Configuration", "Set once, reuse on every scan and listing. Each card below opens one short page.", "", { navMode: "open" })}
+      ${wsHead("settings", "Configuration", "Set once, reuse on every scan and listing — each tile opens one short page.", "", { navMode: "open" })}
       ${flash(msg)}
       ${hashJs}
       ${tiles}
       ${APP_JS}
     </div>`;
-    return { html, title: "Configuration — Seller workspace | CardIndex", description: "Seller workspace configuration." };
+    return { html, title: `Configuration | ${SITE}`, description: "Configuration for your shop, pricing, titles and platforms." };
   }
 
   // ---- one section ----
@@ -1320,25 +1334,25 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
         <label class="fld"><span>SKU digits</span><input type="number" name="sku_pad" min="3" max="9" value="${s.sku_pad}" class="mono"></label>
         <label class="fld"><span>Next SKU number</span><input type="number" name="sku_next" min="1" value="${s.sku_next}" class="mono"></label>
       </div>
-      <p class="hint">The next card you add gets <b class="mono">${esc(nextSku)}</b>. The upload page can also number a batch from any start, or give every card the bare prefix as a box label.</p>`;
+      <p class="hint">The next card you add gets <b class="mono">${esc(nextSku)}</b>. The Ungraded cards page can also number a batch from any start, or give every card the bare prefix as a box label.</p>`;
   } else if (sec.key === "pricing") {
     body = `<div class="fld-row">
         <label class="fld"><span>Pricing rule</span><select name="rule">${ruleOptions(ruleKey(s.price_mode, s.price_pct))}</select></label>
-        <label class="fld"><span>Fixed price ($) <small>used when the rule is Fixed</small></span><input name="price_fixed" value="${dollars(s.price_fixed_cents)}" class="mono" inputmode="decimal"></label>
+        <label class="fld"><span>Fixed price ($) <small>used when the pricing rule is Fixed</small></span><input name="price_fixed" value="${dollars(s.price_fixed_cents)}" class="mono" inputmode="decimal"></label>
         <label class="fld"><span>Default condition</span><select name="default_condition">${conditionOptions(s.default_condition)}</select></label>
         <label class="fld"><span>Default language</span><select name="default_language">${languageOptions(s.default_language)}</select></label>
       </div>
       <h3 class="set-sub">Automatic pricing</h3>
-      <p class="hint">How a freshly identified card gets its first price. The price you last listed each printing at (per condition) is remembered; choose whether that memory beats the rule.</p>
+      <p class="hint">How a freshly identified card gets its first price. The price you last listed each variant at (per condition) is remembered as its previous price; choose whether your previous price or the pricing rule comes first.</p>
       <div class="radio-list">${AUTO_PRICE_PREFS.map(
         (p) => `<label class="radio-row"><input type="radio" name="auto_price_pref" value="${p.key}"${p.key === autoPref ? " checked" : ""}><span><b>${esc(p.label)}</b><small>${esc(p.hint)}</small></span></label>`
       ).join("")}</div>
       <div class="fld-row">
-        <label class="fld"><span>Never price below ($) <small>floor for automatic prices · blank = eBay's $0.99 minimum</small></span><input name="price_floor" value="${dollars(s.price_floor_cents)}" class="mono" placeholder="0.99" inputmode="decimal"></label>
+        <label class="fld"><span>Minimum price ($) <small>automatic prices never go below this · blank = $0.99, eBay's minimum for fixed-price listings</small></span><input name="price_floor" value="${dollars(s.price_floor_cents)}" class="mono" placeholder="0.99" inputmode="decimal"></label>
       </div>`;
   } else if (sec.key === "matching") {
     body = `${setDatalist(sets)}
-      <p class="hint">Applied to every scan unless you change it on the upload page. ${isEmptyPrefs(prefs) ? "Nothing set — the matcher considers every set equally." : `Currently: <b>${esc(describePrefs(prefs, sets))}</b>.`}</p>
+      <p class="hint">Applied to every scan unless you change it on the upload page. ${isEmptyPrefs(prefs) ? "Nothing set — every set is treated equally." : `Currently: <b>${esc(describePrefs(prefs, sets))}</b>.`}</p>
       <div class="fld-row">
         <label class="fld"><span>Prioritize sets <small>comma-separated set names</small></span><input type="text" name="prioritize_sets" list="setlist" value="${esc(matchVals.prioritize_sets)}" placeholder="e.g. Base Set, Jungle" autocomplete="off"></label>
         <label class="fld"><span>Exclude sets</span><input type="text" name="exclude_sets" list="setlist" value="${esc(matchVals.exclude_sets)}" placeholder="e.g. Vivid Voltage" autocomplete="off"></label>
@@ -1379,13 +1393,13 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
   } else if (sec.key === "descriptions") {
     const sampleTitle = sellerTitle(sampleFields, s);
     const SAMPLE_PRICE = 1250;
-    const tplItems = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => tpls.items[i] ?? { name: `Description ${i + 1}`, body: i === 0 && !tpls.items.length ? DEFAULT_DESCRIPTION_TEMPLATE : "" });
+    const tplItems = Array.from({ length: DESCRIPTION_TEMPLATE_MAX }, (_, i) => tpls.items[i] ?? { name: `Template ${i + 1}`, body: i === 0 && !tpls.items.length ? DEFAULT_DESCRIPTION_TEMPLATE : "" });
     const activeBody = tplItems[tpls.active]?.body || DEFAULT_DESCRIPTION_TEMPLATE;
     const descPreview = fillDescriptionTemplate(activeBody, sampleFields, SAMPLE_PRICE, sampleTitle);
     body = `<div class="desc-editor" id="s-desc">
         <p class="hint">Up to ${DESCRIPTION_TEMPLATE_MAX} templates; the <b>active</b> one is used when generating listings and CSV exports. Click a variable to insert it at the cursor. Lines whose variable is empty for a card (e.g. <span class="mono">Grade: {grade}</span> on an ungraded card) are dropped automatically.</p>
         <div class="desc-tabs" role="tablist">${tplItems
-          .map((t, i) => `<button type="button" class="desc-tab${i === tpls.active ? " on" : ""}" data-i="${i}" role="tab">${esc(t.name || `Description ${i + 1}`)}</button>`)
+          .map((t, i) => `<button type="button" class="desc-tab${i === tpls.active ? " on" : ""}" data-i="${i}" role="tab">${esc(t.name || `Template ${i + 1}`)}</button>`)
           .join("")}</div>
         ${tplItems
           .map(
@@ -1420,15 +1434,15 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
           : `<input value="${esc(ids[k])}" name="policy_${k}" placeholder="sync policies first" ${conn ? "" : "disabled"}>`
       }</label>`;
     const ebayCard = !ebaySellConfigured()
-      ? `<div class="ebay-card off"><div><b>eBay isn't configured on this server.</b><div class="hint">Add <span class="mono">EBAY_CLIENT_ID</span>, <span class="mono">EBAY_CLIENT_SECRET</span> and <span class="mono">EBAY_RU_NAME</span> to <span class="mono">.env</span> (see .env.example), or <span class="mono">EBAY_MOCK=1</span> to try the flow. Until then, listings export as a File Exchange CSV and the policy <em>names</em> below drive the file.</div></div></div>`
+      ? `<div class="ebay-card off"><div><b>Connecting eBay isn't available yet.</b><div class="hint">You can still export an eBay CSV and upload it in eBay Seller Hub → Reports → Upload.</div></div></div>`
       : conn
       ? `<div class="ebay-card on">
-          <div><span class="plan-dot">Connected</span> <b>${esc(conn.ebay_user ?? "eBay account")}</b> <span class="hint">· ${esc(conn.marketplace)}${ebayIsMock() ? " · mock mode" : ""} · since ${esc(conn.connected_at.slice(0, 10))}${conn.last_policy_sync ? ` · policies synced ${esc(conn.last_policy_sync.slice(0, 10))}` : " · policies not synced yet"}</span></div>
-          <div class="ebay-actions"><form method="post" action="/app/ebay/sync-policies" class="inline"><button class="btn sm" type="submit">Sync policies from eBay</button></form><form method="post" action="/app/ebay/disconnect" class="inline" onsubmit="return confirm('Disconnect eBay? Published listings stay live on eBay; you just lose direct publish/orders here.')"><button class="btn sm ghost" type="submit">Disconnect</button></form></div>
+          <div><span class="plan-dot">Connected</span> as <b>${esc(conn.ebay_user ?? "eBay account")}</b> <span class="hint">· ${esc(ebaySiteName(conn.marketplace))} · since ${esc(conn.connected_at.slice(0, 10))}${conn.last_policy_sync ? ` · policies synced ${esc(conn.last_policy_sync.slice(0, 10))}` : " · policies not synced yet"}</span></div>
+          <div class="ebay-actions"><form method="post" action="/app/ebay/sync-policies" class="inline"><button class="btn sm" type="submit">Sync policies from eBay</button></form><form method="post" action="/app/ebay/disconnect" class="inline" onsubmit="return confirm('Disconnect eBay? Your live listings stay on eBay, but you will not be able to list, revise or end them from here.')"><button class="btn sm ghost" type="submit">Disconnect</button></form></div>
         </div>`
-      : `<div class="ebay-card"><div><b>Not connected.</b><div class="hint">Connect to publish and revise listings directly, pull orders, and keep quantities in sync. You sign in on eBay's own page; no password is entered here.</div></div><a class="btn primary" href="/app/ebay/connect">Connect eBay account →</a></div>`;
+      : `<div class="ebay-card"><div><b>Not connected.</b><div class="hint">Connect to list and revise listings directly, pull orders, and keep quantities in sync. You sign in on eBay's own page; no password is entered here.</div></div><a class="btn primary" href="/app/ebay/connect">Connect eBay →</a></div>`;
     const ebayLive = conn
-      ? `<h3 class="set-sub">Business policies <small class="hint">chosen by ID — the pre-flight rejects a listing whose policy no longer exists, before eBay does</small></h3>
+      ? `<h3 class="set-sub">Business policies <small class="hint">We check these before each listing goes to eBay.</small></h3>
         <div class="fld-row">${policySelect("fulfillment", "Shipping")}${policySelect("payment", "Payment")}${policySelect("return", "Return")}</div>
         <h3 class="set-sub">Ship-from location <small class="hint">eBay requires one per seller; created on save</small></h3>
         <div class="fld-row">
@@ -1437,15 +1451,15 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
           <label class="fld"><span>City</span><input name="loc_city" value="${esc(loc.city)}"></label>
           <label class="fld"><span>State / province</span><input name="loc_state" value="${esc(loc.stateOrProvince)}"></label>
         </div>
-        ${conn.location_key ? `<p class="hint">Location <span class="mono">${esc(conn.location_key)}</span> is on file.</p>` : `<p class="hint warn">No ship-from location yet — save to create it.</p>`}`
+        ${conn.location_key ? `<p class="hint">Ship-from location saved${loc.postalCode ? ` (<span class="mono">${esc(loc.postalCode)}</span>)` : ""}.</p>` : `<p class="hint warn">No ship-from location yet — save to create it.</p>`}`
       : "";
     body = `${ebayCard}${ebayLive}
       <h3 class="set-sub">Listing defaults</h3>
       <div class="fld-row">
-        <label class="fld"><span>Store category <small>your eBay Store category id — the CSV's StoreCategory column</small></span><input name="ebay_store_category" value="${esc(s.ebay_store_category ?? "")}" class="mono" inputmode="numeric"></label>
+        <label class="fld"><span>Store category <small>eBay Store category number (from your eBay Store's category list)</small></span><input name="ebay_store_category" value="${esc(s.ebay_store_category ?? "")}" class="mono" inputmode="numeric"></label>
         <label class="fld"><span>Item location</span><input name="item_location" value="${esc(s.item_location ?? "")}" placeholder="City, ST, United States"></label>
       </div>
-      <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${s.best_offer ? " checked" : ""}> <span>Accept Best Offers on new fixed-price listings <small>off = buyers pay the listed price; flip it per listing or in bulk on the Listings page</small></span></label>
+      <label class="fld ckbox"><input type="checkbox" name="best_offer" value="1"${s.best_offer ? " checked" : ""}> <span>Allow offers (Best Offer) on new fixed-price listings <small>off = buyers pay the listed price; change it per listing or in bulk on the Listings page</small></span></label>
       <h3 class="set-sub">Policy names for the CSV ${conn ? `<small class="hint">filled from your selections above</small>` : `<small class="hint">must match your eBay business policies exactly or the upload fails</small>`}</h3>
       <div class="fld-row">
         <label class="fld"><span>Shipping policy</span><input name="ebay_shipping_policy" value="${esc(s.ebay_shipping_policy ?? "")}"></label>
@@ -1453,7 +1467,7 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
         <label class="fld"><span>Payment policy</span><input name="ebay_payment_policy" value="${esc(s.ebay_payment_policy ?? "")}"></label>
       </div>`;
   } else if (sec.key === "shopify") {
-    body = `<p class="hint">Applied to the Shopify product-import CSV (one product per card, one variant). Store linking with two-way inventory sync is the next integration.</p>
+    body = `<p class="hint">Applied to the Shopify product-import CSV (one product per card, one variant).</p>
       <div class="fld-row">
         <label class="fld"><span>Vendor</span><input name="shopify_vendor" value="${esc(ch.shopify_vendor)}" placeholder="${esc(s.display_name)}"></label>
         <label class="fld"><span>Inventory location</span><input name="shopify_location" value="${esc(ch.shopify_location)}" placeholder="e.g. Shop floor"></label>
@@ -1465,34 +1479,33 @@ export async function renderSettings(msg?: string, sectionKey?: string): Promise
       <div class="fld-row">
         <label class="fld"><span>Category</span><input name="whatnot_category" value="${esc(ch.whatnot_category)}"></label>
         <label class="fld"><span>Shipping profile</span><input name="whatnot_shipping_profile" value="${esc(ch.whatnot_shipping_profile)}" placeholder="exact profile name from Whatnot"></label>
-        <label class="fld ckbox"><input type="checkbox" name="whatnot_offerable" value="1"${ch.whatnot_offerable ? " checked" : ""}> <span>Accept offers</span></label>
+        <label class="fld ckbox"><input type="checkbox" name="whatnot_offerable" value="1"${ch.whatnot_offerable ? " checked" : ""}> <span>Allow offers</span></label>
       </div>`;
   } else if (sec.key === "tcgplayer") {
-    body = `<p class="hint">Applied to the TCGplayer inventory CSV (ungraded only — TCGplayer doesn't list slabs). Rows are keyed by TCGplayer product id when the catalog has one.</p>
+    body = `<p class="hint">Applied to the TCGplayer inventory CSV (ungraded only — TCGplayer doesn't list slabs). Cards are matched to TCGplayer products automatically.</p>
       <label class="fld ckbox"><input type="checkbox" name="tcg_my_store" value="1"${ch.tcg_my_store ? " checked" : ""}> <span><b>My Store channel (Pro Seller)</b> — populate My Store Price and Reserve Quantity columns</span></label>
       <div class="fld-row">
         <label class="fld"><span>My Store price multiplier <small>× your price</small></span><input name="tcg_store_multiplier" value="${esc(ch.tcg_store_multiplier)}" class="mono" inputmode="decimal"></label>
         <label class="fld"><span>My Store reserve quantity</span><input name="tcg_reserve_qty" value="${esc(ch.tcg_reserve_qty)}" class="mono" inputmode="numeric"></label>
       </div>`;
   } else if (sec.key === "manapool") {
-    body = `<p class="hint">Mana Pool sells Magic singles keyed by TCGplayer SKU. Live listing and order sync needs a Mana Pool API connection — the next integration after eBay. Notes you keep here ride along on exports.</p>
-      <label class="fld"><span>Notes</span><input name="manapool_note" value="${esc(ch.manapool_note)}" placeholder="e.g. store slug, pricing policy"></label>
-      <div class="seam-note"><span class="i">◆</span><div><b>Connect Mana Pool</b> (API key) → fetch orders, auto mark-shipped when picked, quantity sync on Listed / Sold.</div></div>`;
+    body = `<p class="hint">Mana Pool sells Magic singles. Keep notes about your Mana Pool store here.</p>
+      <label class="fld"><span>Notes</span><input name="manapool_note" value="${esc(ch.manapool_note)}" placeholder="e.g. store slug, pricing policy"></label>`;
   } else if (sec.key === "privacy") {
-    body = `<label class="ckbox"><input type="checkbox" name="training_opt_in" value="1" ${s.training_opt_in ? "checked" : ""}> <span>Opt in to improving identification from my confirmed matches <small>(off by default — the opposite of a perpetual training licence)</small></span></label>`;
+    body = `<label class="ckbox"><input type="checkbox" name="training_opt_in" value="1" ${s.training_opt_in ? "checked" : ""}> <span>Let my confirmed matches help improve matching <small>(off by default)</small></span></label>`;
   }
 
   const html = `<div class="wrap ws">
-    ${wsHead("settings", sec.title, esc(sec.blurb), `<a class="btn" href="/app/settings">← All settings</a>`, { navMode: "open" })}
+    ${wsHead("settings", sec.title, esc(sec.blurb), `<a class="btn" href="/app/settings">← Configuration</a>`, { navMode: "open" })}
     ${flash(msg)}
     <nav class="cfg-crumbs" aria-label="Configuration"><a href="/app/settings">Configuration</a> <span>›</span> <span>${esc(sec.group)}</span> <span>›</span> <b>${esc(sec.title)}</b></nav>
     <form class="ws-panel settings-form" method="post" action="/app/settings/${sec.key}">
       ${body}
-      <div class="cfg-actions"><button class="btn primary" type="submit">Save ${esc(sec.title.toLowerCase())}</button><a class="btn ghost" href="/app/settings">Cancel</a></div>
+      <div class="cfg-actions"><button class="btn primary" type="submit">Save changes</button><a class="btn ghost" href="/app/settings">Cancel</a></div>
     </form>
     ${APP_JS}${extraJs}
   </div>`;
-  return { html, title: `${sec.title} — Configuration | CardIndex`, description: sec.blurb };
+  return { html, title: `${sec.title} — Configuration | ${SITE}`, description: sec.blurb };
 }
 
 // ---- Description template editor (settings) -------------------------------
@@ -1509,7 +1522,7 @@ const DESC_EDITOR_JS = `<script>(function(){
   tabs.forEach(function(b){b.addEventListener('click',function(){show(parseInt(b.getAttribute('data-i'),10)||0);});});
   panes.forEach(function(p,i){
     var nm=p.querySelector('input[name^=desc_name_]');
-    if(nm)nm.addEventListener('input',function(){tabs[i].textContent=nm.value||('Description '+(i+1));});
+    if(nm)nm.addEventListener('input',function(){tabs[i].textContent=nm.value||('Template '+(i+1));});
     body(i).addEventListener('input',preview);
   });
   root.querySelectorAll('.desc-var').forEach(function(btn){
@@ -1628,7 +1641,7 @@ export function dropzone(opts: { max: number; pro: boolean; what: string }): str
               <div class="dz-ic">📷</div>
               <div class="dz-main"><b>Tap to choose</b> or drag &amp; drop card photos</div>
               <div class="dz-btns"><span class="btn sm">Choose photos</span><button type="button" class="btn sm" id="dzCam">📷 Take a photo</button><button type="button" class="btn sm" id="dzClear" hidden>Clear</button></div>
-              <div class="dz-hint">JPG / PNG / WebP / HEIC · front side · up to ${opts.max} cards per batch${opts.pro ? "" : ` (${MAX_UPLOAD_FILES_PRO} on Pro)`} · resized to ${UPLOAD_MAX_EDGE} px on your device and sent in groups of ${UPLOAD_CHUNK_FILES}</div>
+              <div class="dz-hint">JPG, PNG, WebP or HEIC · up to ${opts.max} cards per batch${opts.pro ? "" : ` (${MAX_UPLOAD_FILES_PRO} on Pro)`} · photos are shrunk on your device before upload</div>
               <div class="dz-what">${opts.what}</div>
             </div>
             <div class="dz-preview" id="dzPreview" hidden></div>
@@ -1695,7 +1708,7 @@ export const APP_JS = `<script>(function(){
       for(var i=0;i<n;i++){var s=picked[i].size||0;total+=s;if(s>biggest)biggest=s;cards+=cardsOf(picked[i]);}
       var over=[];
       if(pairs()){cards=Math.floor(n/2);if(n%2)over.push(n+' photos — front and back pairs need an even number');}
-      if(cards>maxFiles)over.push(cards+(multi()?' cards across '+n+' photos':pairs()?' cards ('+n+' photos)':' photos selected')+' — max '+maxFiles+' per upload');
+      if(cards>maxFiles)over.push(cards+(multi()?' cards across '+n+' photos':pairs()?' cards ('+n+' photos)':' photos selected')+' — max '+maxFiles+' per batch');
       if(canChunk){if(biggest>maxBytes)over.push('one photo is '+mb(biggest)+' — max '+mb(maxBytes)+' per photo');}
       else if(total>maxBytes)over.push(mb(total)+' selected — max '+mb(maxBytes)+' per upload');
       return {n:n,cards:cards,total:total,msg:over.join(' · ')};
@@ -1876,7 +1889,7 @@ export const APP_JS = `<script>(function(){
       return fetch(url,{method:'POST',body:fd,credentials:'same-origin',headers:{'Accept':'application/json'}}).then(function(r){
         return r.json().catch(function(){return {};}).then(function(j){
           if(r.ok)return j;
-          var err=new Error(j.error||('Upload failed (HTTP '+r.status+')'));err.status=r.status;err.redirect=j.redirect;throw err;
+          var err=new Error(j.error||'Upload interrupted');err.status=r.status;err.redirect=j.redirect;throw err;
         });
       }).catch(function(e){
         if(tries>0&&(!e.status||e.status>=500))return new Promise(function(ok){setTimeout(ok,1500);}).then(function(){return post(url,fd,tries-1);});
@@ -1989,7 +2002,8 @@ export const APP_JS = `<script>(function(){
       }).catch(function(e){
         window.removeEventListener('beforeunload',warn);
         if(e&&e.redirect){window.location.href=e.redirect;return;}
-        fail(((e&&e.message)||'Upload failed')+' — nothing is lost; press Retry to continue.');
+        // server messages are shown; a browser's own network error text is not
+        fail(((e&&e.status&&e.message)||'Upload interrupted')+' — nothing is lost; press Retry to continue.');
       });
     }
     if(upForm)upForm.addEventListener('submit',function(e){
@@ -2043,7 +2057,7 @@ export const APP_JS = `<script>(function(){
             var t=document.createElement('span');t.className='ebay-t';t.textContent=it.title;a.appendChild(t);
             var m=document.createElement('span');m.className='ebay-m';m.textContent=[it.condition,it.buying,it.seller,it.country].filter(Boolean).join(' · ');a.appendChild(m);
             var p=document.createElement('span');p.className='ebay-p';p.textContent=money(it.price_cents,it.currency);
-            if(it.shipping_cents!=null){var sm=document.createElement('small');sm.textContent=it.shipping_cents?'+'+money(it.shipping_cents,it.currency)+' ship':'free ship';p.appendChild(sm);}
+            if(it.shipping_cents!=null){var sm=document.createElement('small');sm.textContent=it.shipping_cents?'+'+money(it.shipping_cents,it.currency)+' shipping':'free shipping';p.appendChild(sm);}
             a.appendChild(p);list.appendChild(a);
           });
           var lo=null,hi=null;items.forEach(function(it){if(it.price_cents==null)return;if(lo==null||it.price_cents<lo)lo=it.price_cents;if(hi==null||it.price_cents>hi)hi=it.price_cents;});
@@ -2082,7 +2096,7 @@ export const APP_JS = `<script>(function(){
     function select(b){list.querySelectorAll('.cmp-alt').forEach(function(x){x.classList.remove('selected');});sel=b;if(b){b.classList.add('selected');b.scrollIntoView({block:'nearest'});}rep.disabled=!b||b.classList.contains('current');}
     function show(i){
       if(i<0||i>=cmpItems.length)return;cur=i;var it=cmpItems[i],d=it.dataset;
-      cm.querySelector('.cmp-title').textContent=d.name||d.raw||'Unmatched card';cm.querySelector('.cmp-sub').textContent=d.name?d.sub:'no catalog match yet — search on the right';
+      cm.querySelector('.cmp-title').textContent=d.name||d.raw||'No match yet';cm.querySelector('.cmp-sub').textContent=d.name?d.sub:'no catalog match yet — search on the right';
       cm.querySelector('.cmp-count').textContent=(i+1)+' of '+cmpItems.length;
       img(cm.querySelector('.cmp-scan'),d.scan);img(cm.querySelector('.cmp-cat'),d.catalog);
       cm.querySelector('.cmp-conf').textContent=d.conf?d.conf+'% match':'no match yet';

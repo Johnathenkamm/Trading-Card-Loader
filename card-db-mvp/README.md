@@ -43,10 +43,10 @@ npm start           # serves http://localhost:5173
 Data pipelines (run any time; all are re-runnable):
 
 ```bash
-npm run import:catalog -- pokemon|onepiece|all [--force] [--groups=id,id] [--no-hash]
+npm run import:catalog -- pokemon|pokemon-jp|onepiece|all [--force] [--groups=id,id] [--no-hash]
                       # GROW the catalog straight into Postgres from TCGCSV (TCGplayer's free
-                      # daily mirror): every set of the game (Pokémon = category 3, One Piece =
-                      # 68), one card per single product, one printing per price sub-type,
+                      # daily mirror): every set of the game (Pokémon = category 3, Japanese
+                      # Pokémon = 85, One Piece = 68), one card per single product, one printing per price sub-type,
                       # today's prices, then the photo-ID hashes for the new cards. Incremental:
                       # sets already imported are skipped unless --force. Never touches member
                       # tables. The owner console runs the same thing from /admin/catalog (the
@@ -132,7 +132,9 @@ archive reaches 2018 — bought, not built).
 The demo seed covers Pokémon **Base Set** + **Vivid Voltage** and Magic
 **Kamigawa: Neon Dynasty** (~607 cards). The real catalog comes from
 `npm run import:catalog` (or the owner console's Catalog page): **all of
-Pokémon and all of One Piece** from TCGCSV, ~220 + ~90 sets. Cards imported
+Pokémon, Japanese Pokémon and One Piece** from TCGCSV, ~220 + ~460 + ~90 sets.
+Japanese cards are their own game ("Pokemon Japanese", printings tagged JP),
+including the numberless vintage sets and promos. Cards imported
 that way carry TCGplayer's product id, URL and 200w/400w images; the seeded
 sets are adopted by their cached group id, keeping their higher-quality
 provider images. `seed` + `pg:migrate` remain a **demo-only** bootstrap — the
@@ -421,7 +423,7 @@ a live database.
   See `src/app/admin.ts` / `src/render/admin.ts`.
 
 Photo **upload, storage, review, and a pluggable vision hook** work end-to-end.
-Vision recognition is provider-based (`VISION_PROVIDER=none|mock|http`, see
+Vision recognition is provider-based (`VISION_PROVIDER=none|mock|hash|http`, see
 `src/app/vision.ts`): point `http` at a real recognizer (Ximilar, a self-hosted
 model, eBay `searchByImage`) and its labels resolve to a priced catalog variant
 through the same `identify()` contract; the offline default is filename-hint +

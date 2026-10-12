@@ -23,18 +23,19 @@ export type TitleStructure = { blocks: TitleBlock[]; optimize: boolean };
 
 // Available blocks. `drop` = optimization priority: when a title exceeds 80 chars
 // and optimization is on, blocks with the HIGHEST drop are removed first. The
-// card name and number are anchored (drop 0) and never removed.
+// card name and number are anchored (drop 0) and never removed. `k` is what a
+// saved structure stores; `label` is only the editor's chip text.
 export const TITLE_TOKENS: Array<{ k: string; label: string; drop: number }> = [
-  { k: "name", label: "Card Name", drop: 0 },
-  { k: "number", label: "Card Number", drop: 0 },
+  { k: "name", label: "Card name", drop: 0 },
+  { k: "number", label: "Card number", drop: 0 },
   { k: "grade", label: "Grade", drop: 15 },
   { k: "condition", label: "Condition", drop: 25 },
   { k: "finish", label: "Finish", drop: 35 },
   { k: "rarity", label: "Rarity", drop: 45 },
   { k: "language", label: "Language", drop: 50 },
-  { k: "setcode", label: "Set Number", drop: 60 },
-  { k: "set", label: "Set Name", drop: 70 },
-  { k: "game", label: "Card Game", drop: 78 },
+  { k: "setcode", label: "Set code", drop: 60 },
+  { k: "set", label: "Set name", drop: 70 },
+  { k: "game", label: "Card game", drop: 78 },
   { k: "year", label: "Year", drop: 85 },
   { k: "sku", label: "SKU", drop: 95 },
 ];

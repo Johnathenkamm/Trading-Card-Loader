@@ -21,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { currentSellerId } from "./session-context.ts";
 import { getListing, getInventoryItem, getSeller, updateSeller, type Listing } from "./store.ts";
 import { ebayConfig } from "./ebay-config.ts";
+import { SITE } from "../render/layout.ts";
 
 // Keys come from the owner console (meta table) or the env — see ebay-config.ts.
 const ENV = () => ebayConfig();
@@ -188,6 +189,25 @@ export class EbayError extends Error {
   }
 }
 
+/** What to do after eBay turns a request down (the shared wording on every page). */
+export const EBAY_RETRY = "Try again, or reconnect eBay in Configuration → eBay.";
+
+/**
+ * A failed eBay call in the seller's words. eBay's refusals (status > 0) keep
+ * eBay's own message behind "eBay didn't accept this:" — never the HTTP status,
+ * which stays on `status` for logs. Our own checks (status 0) are already plain
+ * sentences and pass through unchanged.
+ */
+export function ebayReason(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return err instanceof EbayError && err.status > 0 ? `eBay didn't accept this: ${msg.replace(/[.\s]+$/, "")}` : msg;
+}
+
+/** ebayReason plus what to do next, for a flash or a listing row. */
+export function ebayErrorText(err: unknown): string {
+  return err instanceof EbayError && err.status > 0 ? `${ebayReason(err)}. ${EBAY_RETRY}` : ebayReason(err);
+}
+
 const parseJson = <T>(s: string | null | undefined, fallback: T): T => {
   if (!s) return fallback;
   try {
@@ -236,7 +256,7 @@ async function tokenRequest(body: URLSearchParams): Promise<{ access_token: stri
     signal: AbortSignal.timeout(15_000),
   });
   const text = await res.text();
-  if (!res.ok) throw new EbayError(`eBay token request failed (HTTP ${res.status}): ${text.slice(0, 300)}`, res.status);
+  if (!res.ok) throw new EbayError(explain(text), res.status);
   return JSON.parse(text);
 }
 
@@ -244,7 +264,7 @@ async function tokenRequest(body: URLSearchParams): Promise<{ access_token: stri
 export async function completeConnect(code: string, state: string): Promise<EbayConnection> {
   const sid = currentSellerId();
   const st = await one<{ seller_id: number }>("DELETE FROM oauth_states WHERE state=$1 RETURNING seller_id", [state]);
-  if (!st || st.seller_id !== sid) throw new EbayError("The eBay sign-in didn't match this session — try Connect again.");
+  if (!st || st.seller_id !== sid) throw new EbayError("The eBay sign-in didn't match this session. Press Connect eBay to try again.");
   const e = ENV();
   let tok: { access_token: string; expires_in: number; refresh_token?: string; refresh_token_expires_in?: number };
   if (e.mock) tok = { access_token: "mock-access", expires_in: 7200, refresh_token: "mock-refresh", refresh_token_expires_in: 47304000 };
@@ -278,7 +298,7 @@ export async function disconnect(): Promise<void> {
 /** A valid user access token for the current seller, refreshing when close to expiry. */
 async function userToken(): Promise<string> {
   const c = await getConnection();
-  if (!c) throw new EbayError("Connect your eBay account first (Settings → eBay).");
+  if (!c) throw new EbayError("Connect your eBay account first (Configuration → eBay).");
   if (ENV().mock) return c.access_token;
   if (new Date(c.access_expires_at).getTime() - Date.now() > 120_000) return c.access_token;
   const tok = await tokenRequest(new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refresh_token, scope: SELL_SCOPES.join(" ") }));
@@ -289,15 +309,20 @@ async function userToken(): Promise<string> {
 
 // ---- API helper -----------------------------------------------------------
 
-function explain(status: number, text: string): string {
+/** eBay's own words from an error body. The HTTP status is left out (EbayError.status keeps it for logs). */
+function explain(text: string): string {
+  const none = "no reason given";
   try {
     const j = JSON.parse(text);
     const errs: any[] = j.errors ?? (j.error ? [{ message: j.error_description ?? j.error }] : []);
-    if (errs.length) return errs.map((e) => [e.message, e.longMessage].filter(Boolean).join(" — ")).join("; ");
+    const said = errs.map((e) => [e.message, e.longMessage].filter(Boolean).join(" — ")).filter(Boolean).join("; ");
+    return said || none; // a JSON body without messages says nothing useful either
   } catch {
     /* not json */
   }
-  return `HTTP ${status}${text ? ": " + text.slice(0, 200) : ""}`;
+  // Plain text is eBay's message; an HTML error page or an empty body says nothing useful.
+  const plain = text.trim();
+  return plain && !plain.startsWith("<") ? plain.slice(0, 200) : none;
 }
 
 async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
@@ -316,7 +341,7 @@ async function api<T = any>(method: string, path: string, body?: unknown): Promi
     signal: AbortSignal.timeout(30_000),
   });
   const text = await res.text();
-  if (!res.ok) throw new EbayError(explain(res.status, text), res.status);
+  if (!res.ok) throw new EbayError(explain(text), res.status);
   return (text ? JSON.parse(text) : {}) as T;
 }
 
@@ -388,7 +413,7 @@ export async function ensureLocation(loc: Location): Promise<string> {
       await api("POST", `/sell/inventory/v1/location/${LOCATION_KEY}`, {
         location: { address: { postalCode: location.postalCode, country: location.country, city: location.city || undefined, stateOrProvince: location.stateOrProvince || undefined } },
         locationTypes: ["WAREHOUSE"],
-        name: "CardIndex inventory",
+        name: `${SITE} inventory`,
         merchantLocationStatus: "ENABLED",
       });
     }
@@ -412,6 +437,9 @@ type Prepared = {
   category: string;
 };
 
+/** Sellers see eBay's policy names; "fulfillment" is only the API's word for shipping. */
+const POLICY_NAME: Record<keyof PolicyIds, string> = { fulfillment: "shipping", payment: "payment", return: "return" };
+
 async function prepare(listingId: number): Promise<{ prepared: Prepared | null; problems: string[] }> {
   const problems: string[] = [];
   const l = await getListing(listingId);
@@ -430,22 +458,28 @@ async function prepare(listingId: number): Promise<{ prepared: Prepared | null; 
   const priceCents = l.format === "auction" ? l.start_cents ?? l.price_cents ?? 0 : l.price_cents ?? 0;
   if (!title) problems.push("Title is empty.");
   if (title.length > 80) problems.push(`Title is ${title.length} characters — eBay allows 80.`);
-  if (!sku) problems.push("SKU is empty — eBay inventory items are keyed by SKU.");
-  else if (/[\s"']/.test(sku) || sku.length > 50) problems.push(`SKU "${sku}" has spaces/quotes or is over 50 characters.`);
+  if (!sku) problems.push("This card needs a SKU before it can be listed on eBay.");
+  else if (/[\s"']/.test(sku) || sku.length > 50) problems.push(`SKU "${sku}" has spaces or quotes, or is over 50 characters.`);
   if (!(priceCents > 0)) problems.push("Price must be greater than zero.");
   if (l.quantity < 1) problems.push("Quantity must be at least 1.");
   if (!l.category_id) problems.push("eBay category is missing.");
   if (!images.length) problems.push("At least one image with a public https:// URL is required (catalog cards have one; blank listings need an Image URL).");
   const c = await getConnection();
-  if (!c) problems.push("Connect your eBay account first (Settings → eBay).");
+  if (!c) problems.push("Connect your eBay account first (Configuration → eBay).");
   else {
     const ids = policyIdsOf(c);
     const p = policiesOf(c);
+    const missing: string[] = [];
     for (const k of ["fulfillment", "payment", "return"] as const) {
-      if (!ids[k]) problems.push(`No ${k} policy selected (Settings → eBay → Sync policies).`);
-      else if (p[k].length && !p[k].some((x) => x.id === ids[k])) problems.push(`The selected ${k} policy no longer exists on your eBay account — re-sync and pick again.`);
+      if (!ids[k]) missing.push(POLICY_NAME[k]);
+      else if (p[k].length && !p[k].some((x) => x.id === ids[k]))
+        problems.push(`The selected ${POLICY_NAME[k]} policy no longer exists on your eBay account. Go to Configuration → eBay, press Sync policies from eBay and pick another.`);
     }
-    if (!c.location_key) problems.push("No ship-from location yet — save a postal code under Settings → eBay.");
+    if (missing.length) {
+      const which = missing.length > 1 ? `${missing.slice(0, -1).join(", ")} or ${missing[missing.length - 1]}` : missing[0];
+      problems.push(`No ${which} policy selected. Go to Configuration → eBay, press Sync policies from eBay and pick ${missing.length > 1 ? "one of each" : "one"}.`);
+    }
+    if (!c.location_key) problems.push("No ship-from location yet — save a postal code in Configuration → eBay.");
   }
   const aspects: Record<string, string[]> = {};
   for (const [k, v] of Object.entries(specifics)) if (v && v.trim()) aspects[k] = [v.trim().slice(0, 65)];
@@ -540,8 +574,8 @@ export async function publishListing(listingId: number): Promise<{ listingId: st
     );
     return { listingId: ebayListingId!, offerId, revised: !!existingOffer };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await query("UPDATE listings SET last_error=$1 WHERE id=$2 AND seller_id=$3", [msg.slice(0, 1000), listingId, sid]);
+    // The listing row shows the same words as the flash: eBay's reason, no HTTP status.
+    await query("UPDATE listings SET last_error=$1 WHERE id=$2 AND seller_id=$3", [ebayErrorText(err).slice(0, 1000), listingId, sid]);
     throw err;
   }
 }

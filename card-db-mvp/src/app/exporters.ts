@@ -283,7 +283,7 @@ export function shopifyCsv(items: ExportItem[], prefs: ChannelPrefs): string {
 }
 
 export const EXPORT_FORMATS: Array<{ key: string; label: string; ext: string }> = [
-  { key: "ebay", label: "eBay (File Exchange)", ext: "csv" },
+  { key: "ebay", label: "eBay", ext: "csv" },
   { key: "tcgplayer", label: "TCGplayer", ext: "csv" },
   { key: "whatnot", label: "Whatnot", ext: "csv" },
   { key: "shopify", label: "Shopify", ext: "csv" },

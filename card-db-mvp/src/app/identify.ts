@@ -72,6 +72,7 @@ export type IdentifyOptions = {
 };
 const PRIORITY_SET_BOOST = 0.1;
 const PRIORITY_TERM_BOOST = 0.05;
+const LANGUAGE_PREFER_WINDOW = 0.1; // a printing in the typed language wins within this of the top score
 
 // ---- finish parsing -------------------------------------------------------
 // Order matters: check "reverse" before "holo", "1st edition holo" before "1st".
@@ -409,6 +410,20 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
   const game = (opts.game ?? "").trim().toLowerCase();
   const rows = fetched.filter((r) => (!game || r.game_slug === game) && !exSets.has(r.set_slug) && !exTerms.some((t) => hay(r).includes(t)));
 
+  // A typed language ("… japanese") prefers cards actually printed in it:
+  // "Pikachu 025/165 japanese" is the Japanese 151 card, not the English one
+  // with the same name and number. Ties break toward it here (so it makes the
+  // shortlist); a near-tie is settled once the candidates are built, below.
+  const inLanguage = new Set<number>();
+  if (parsed.language && rows.length) {
+    const hit = (await query(
+      "SELECT DISTINCT card_id FROM card_variants WHERE card_id = ANY($1) AND upper(language) = $2",
+      [rows.map((r) => r.id), parsed.language.toUpperCase()]
+    )) as Array<{ card_id: number }>;
+    for (const h of hit) inLanguage.add(h.card_id);
+  }
+  const langRank = (id: number) => (inLanguage.has(id) ? 1 : 0);
+
   const scored = rows
     .map((r) => {
       let score = scoreRow(parsed, r);
@@ -416,7 +431,7 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
       if (priTerms.length) score += PRIORITY_TERM_BOOST * priTerms.filter((t) => hay(r).includes(t)).length;
       return { row: r, score: Math.min(1, score) };
     })
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || langRank(b.row.id) - langRank(a.row.id))
     .slice(0, 6);
 
   if (scored.length === 0) {
@@ -448,6 +463,14 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
     (c): c is Candidate => c !== null
   );
   if (cands.length === 0) return { parsed, best: null, alternatives: [], confidence: 0, status: "failed" };
+
+  // ...and a printing in the typed language within LANGUAGE_PREFER_WINDOW of
+  // the top score goes first (confidence then reflects the narrower margin).
+  if (inLanguage.size) {
+    const top = cands[0].score;
+    const i = cands.findIndex((c) => inLanguage.has(c.card_id) && c.score >= top - LANGUAGE_PREFER_WINDOW);
+    if (i > 0) cands.unshift(cands.splice(i, 1)[0]);
+  }
 
   const best = cands[0];
   const second = cands[1];

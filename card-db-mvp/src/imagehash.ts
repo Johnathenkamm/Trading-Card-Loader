@@ -67,14 +67,25 @@ export async function hashImage(data: Buffer): Promise<ImageHashes> {
   return { full: frame(img), inset: frame(inset) };
 }
 
+/** Set bits in a 32-bit value (SWAR popcount). */
+function popcount32(x: number): number {
+  x -= (x >>> 1) & 0x55555555;
+  x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  x = (x + (x >>> 4)) & 0x0f0f0f0f;
+  return Math.imul(x, 0x01010101) >>> 24;
+}
+const LOW32 = 0xffffffffn;
+
+// The matcher runs this 8× per catalog card per photo (60k+ cards with the
+// Japanese catalog), so it counts the two 32-bit halves instead of looping
+// over 64 BigInt bits.
 export function hamming(a: bigint, b: bigint): number {
-  let x = a ^ b;
-  let n = 0;
-  while (x) {
-    n += Number(x & 1n);
-    x >>= 1n;
-  }
-  return n;
+  const x = a ^ b;
+  return popcount32(Number(x & LOW32)) + popcount32(Number(x >> 32n));
+}
+
+function frameDistance(qa: FrameHashes, ra: FrameHashes): number {
+  return hamming(qa.dhash, ra.dhash) + 0.5 * hamming(qa.ahash, ra.ahash);
 }
 
 /**
@@ -83,18 +94,12 @@ export function hamming(a: bigint, b: bigint): number {
  * corresponding aHash distance as a weighted corroborator.
  */
 export function hashDistance(q: ImageHashes, ref: ImageHashes): number {
-  const pairs: Array<[FrameHashes, FrameHashes]> = [
-    [q.full, ref.full],
-    [q.inset, ref.inset],
-    [q.full, ref.inset],
-    [q.inset, ref.full],
-  ];
-  let best = Infinity;
-  for (const [qa, ra] of pairs) {
-    const d = hamming(qa.dhash, ra.dhash) + 0.5 * hamming(qa.ahash, ra.ahash);
-    if (d < best) best = d;
-  }
-  return best;
+  return Math.min(
+    frameDistance(q.full, ref.full),
+    frameDistance(q.inset, ref.inset),
+    frameDistance(q.full, ref.inset),
+    frameDistance(q.inset, ref.full)
+  );
 }
 
 export function toHex(bits: bigint): string {
