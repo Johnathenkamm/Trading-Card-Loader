@@ -780,6 +780,7 @@ h1, h2, h3 { font-family: "Bricolage Grotesque", "IBM Plex Sans", sans-serif; fo
 .cmp-pane .lbl { font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .cmp-pane .frame { aspect-ratio: 63 / 88; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); display: grid; place-items: center; overflow: hidden; }
 .cmp-pane .frame img { width: 100%; height: 100%; object-fit: contain; }
+.cmp-pane .frame.previewing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .cmp-pane .frame span { color: var(--muted); font-size: 0.85rem; }
 .cmp-pane .conf { font-size: 0.86rem; }
 .cmp-side { display: grid; gap: 8px; align-content: start; }

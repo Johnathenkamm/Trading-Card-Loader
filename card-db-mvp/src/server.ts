@@ -618,7 +618,9 @@ async function uploadSettings(fields: Record<string, string>, persist: boolean):
     }
   }
   const f = persist ? fields : { ...fields, save_matching: "" };
-  const matching = identifyOpts(await matchingFromForm(f), f.game);
+  // The photo matcher reads the batch language too: "Any game" + EN never
+  // resolves an English scan to its Japanese twin (vision.ts photoGamePool).
+  const matching = { ...identifyOpts(await matchingFromForm(f), f.game), language };
   const seller: Seller = { ...(await getSeller()), default_condition: condition, default_language: language, price_mode: rr.mode, price_pct: rr.pct, ...startPriceView(f) };
   return { seller, matching };
 }
@@ -2042,7 +2044,7 @@ async function handleAppAuthed(
   if (path === "/api/identify") {
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q.length < 2) return send(res, 200, "[]", "application/json");
-    const r = await identify(q);
+    const r = await identify(q, { maxResults: 30 });
     const cands = [r.best, ...r.alternatives].filter((c): c is NonNullable<typeof c> => !!c);
     const out = cands.map((c) => ({
       variant_id: c.variant_id,

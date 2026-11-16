@@ -20,7 +20,7 @@
 import { identify, AUTO_THRESHOLD, type IdentifyResult, type IdentifyOptions } from "./identify.ts";
 import { hintFromFilename } from "../upload.ts";
 import { query } from "../pg.ts";
-import { hashImage, hashDistance, fromHex, type ImageHashes } from "../imagehash.ts";
+import { hashPhoto, hashDistance, fromHex, type ImageHashes, type PhotoHashes } from "../imagehash.ts";
 
 export type VisionImage = { data: Buffer; filename: string; contentType: string };
 
@@ -44,8 +44,29 @@ export type VisionResult = {
   raw?: unknown; // provider payload (for logging / future training data)
 };
 
-/** Batch settings a recognizer may honour (the upload's "Database" choice). */
-export type VisionOptions = { game?: string };
+/** Batch settings a recognizer may honour: the upload's "Database" and "Default language". */
+export type VisionOptions = { game?: string; language?: string };
+
+// Language editions of one game (CATALOG_GAMES in catalog-import.ts): the same
+// artwork printed in another language, priced as a different card. A photo
+// can't tell them apart (an English Vivid Voltage Wooper is a few bits from
+// its Japanese S4 twin), so with "Any game" the batch's language picks the
+// edition: an EN batch never resolves to a Japanese card, a JP batch never to
+// the English one. Choosing the edition's Database explicitly still wins.
+const LANGUAGE_EDITIONS: Record<string, { of: string; language: string }> = {
+  "pokemon-jp": { of: "pokemon", language: "JP" },
+};
+
+/** Which games a photo may match: `only` one, or everything not in `exclude`. */
+export function photoGamePool(opts: VisionOptions = {}): { only: string | null; exclude: Set<string> } {
+  const game = (opts.game ?? "").trim().toLowerCase();
+  if (game) return { only: game, exclude: new Set() };
+  const lang = (opts.language ?? "EN").trim().toUpperCase() || "EN";
+  const exclude = new Set<string>();
+  for (const [edition, e] of Object.entries(LANGUAGE_EDITIONS)) exclude.add(lang === e.language ? e.of : edition);
+  return { only: null, exclude };
+}
+const inPool = (pool: ReturnType<typeof photoGamePool>, slug: string) => (pool.only ? slug === pool.only : !pool.exclude.has(slug));
 
 export interface VisionProvider {
   readonly name: string;
@@ -132,14 +153,15 @@ class HashProvider implements VisionProvider {
     } catch {
       return null;
     }
-    // Honour the batch's Database: a Pokémon batch never resolves to a Magic card.
-    const game = (opts.game ?? "").trim().toLowerCase();
-    if (game) index = index.filter((r) => r.game_slug === game);
+    // Honour the batch's Database (a Pokémon batch never resolves to a Magic
+    // card) and language (an English batch never to a Japanese twin).
+    const pool = photoGamePool(opts);
+    index = index.filter((r) => inPool(pool, r.game_slug));
     if (index.length === 0) return null;
 
-    let q: ImageHashes;
+    let q: PhotoHashes;
     try {
-      q = await hashImage(image.data);
+      q = await hashPhoto(image.data);
     } catch {
       return null; // undecodable image
     }
@@ -147,7 +169,8 @@ class HashProvider implements VisionProvider {
     let best: { row: HashIndexRow; d: number } | null = null;
     let second: { row: HashIndexRow; d: number } | null = null;
     for (const row of index) {
-      const d = hashDistance(q, row.h);
+      // A scan with a margin is also compared with its margin cut away.
+      const d = q.trimmed ? Math.min(hashDistance(q.photo, row.h), hashDistance(q.trimmed, row.h)) : hashDistance(q.photo, row.h);
       if (!best || d < best.d) {
         if (best && best.row.card_id !== row.card_id) second = best;
         best = { row, d };
@@ -329,7 +352,7 @@ export async function visionIdentify(
 ): Promise<{ result: IdentifyResult; source: IdentifySource; hintText: string | null; vision: VisionResult | null }> {
   let vision: VisionResult | null = null;
   try {
-    vision = await visionProvider().identify(image, { game: opts.game });
+    vision = await visionProvider().identify(image, { game: opts.game, language: opts.language });
   } catch {
     vision = null;
   }

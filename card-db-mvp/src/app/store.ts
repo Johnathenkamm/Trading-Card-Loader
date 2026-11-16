@@ -578,12 +578,36 @@ export async function replaceMatch(itemId: number, variantId: number): Promise<v
   const item = await getItem(itemId);
   const vf = await getVariantFull(variantId);
   if (!item || !vf) return;
+  // The card being replaced stays first among the alternatives, so a wrong
+  // pick is undone with one click (the client replaced a correct match by
+  // mistake and had no way back, Nov 2026 video).
+  type Alt = ReturnType<typeof altRow>;
+  let alts: Alt[] = [];
+  try {
+    const raw = item.alternatives as unknown;
+    alts = Array.isArray(raw) ? (raw as Alt[]) : JSON.parse(String(raw || "[]"));
+  } catch {
+    alts = [];
+  }
+  const prev = item.matched_variant_id && item.matched_variant_id !== variantId ? await getVariantFull(item.matched_variant_id) : undefined;
+  if (prev) {
+    alts.unshift({
+      variant_id: prev.id,
+      card_id: prev.card_id,
+      label: `${prev.card_name}${prev.number ? " #" + prev.number : ""}`,
+      set: prev.set_name,
+      finish: prev.finish_label,
+      image: prev.image_small || prev.image_large,
+      score: Math.round((item.ai_confidence ?? 0) * 100),
+    });
+  }
+  alts = alts.filter((a, i) => a.variant_id !== variantId && alts.findIndex((b) => b.variant_id === a.variant_id) === i).slice(0, 6);
   const patch: Record<string, unknown> = {
     matched_variant_id: variantId,
     matched_card_id: vf.card_id,
     status: item.status === "failed" || item.status === "needs_review" ? "matched" : item.status,
     ai_confidence: 1, // a human confirmed it
-    alternatives: "[]",
+    alternatives: JSON.stringify(alts),
     prev_price_cents: await previousPrice(variantId, item.grade || item.condition),
   };
   if (!item.price_overridden) {

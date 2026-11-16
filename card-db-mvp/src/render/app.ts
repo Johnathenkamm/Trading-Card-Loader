@@ -2079,28 +2079,34 @@ export const APP_JS = `<script>(function(){
     var cm=document.createElement('div');cm.className='cmp-modal';cm.hidden=true;
     cm.innerHTML='<div class="cmp-box" role="dialog" aria-modal="true" aria-label="Card comparison and search">'
       +'<div class="cmp-head"><div><h2 class="cmp-title"></h2><div class="cmp-sub"></div></div><div class="cmp-nav"><span class="hint cmp-count"></span><button type="button" class="btn sm cmp-prev" title="Previous card (left arrow)">&#8249;</button><button type="button" class="btn sm cmp-next" title="Next card (right arrow)">&#8250;</button><button type="button" class="btn sm ghost cmp-close" title="Close (Esc)">&#10005;</button></div></div>'
-      +'<div class="cmp-grid"><div class="cmp-pane"><div class="lbl">Your photo</div><div class="frame cmp-scan"></div></div><div class="cmp-pane"><div class="lbl">Matched card</div><div class="frame cmp-cat"></div><div class="conf cmp-conf"></div></div>'
+      +'<div class="cmp-grid"><div class="cmp-pane"><div class="lbl">Your photo</div><div class="frame cmp-scan"></div></div><div class="cmp-pane"><div class="lbl cmp-cat-lbl">Matched card</div><div class="frame cmp-cat"></div><div class="conf cmp-conf"></div></div>'
       +'<div class="cmp-side"><div class="lbl">Alternatives &amp; search</div><input type="search" class="cmp-q" placeholder="Search for a card (name, number, set)…" aria-label="Search cards"><div class="cmp-list"></div></div></div>'
       +'<div class="cmp-foot"><span class="hint">up/down pick · Enter replace · left/right next card · Esc close</span><label class="ckbox sm"><input type="checkbox" class="cmp-cont" checked> continue to next card</label><button type="button" class="btn ghost cmp-cancel">Cancel</button><button type="button" class="btn primary cmp-replace" disabled>Replace card</button></div></div>';
     document.body.appendChild(cm);
     var cur=-1, sel=null, list=cm.querySelector('.cmp-list'), q=cm.querySelector('.cmp-q'), rep=cm.querySelector('.cmp-replace'), qt;
     function img(el,src){el.innerHTML=src?'<img src="'+src+'" alt="">':'<span>no image</span>';}
     function altEl(a,current){
-      var b=document.createElement('button');b.type='button';b.className='cmp-alt'+(current?' current':'');b.setAttribute('data-vid',a.variant_id);
+      var b=document.createElement('button');b.type='button';b.className='cmp-alt'+(current?' current':'');b.setAttribute('data-vid',a.variant_id);b.setAttribute('data-img',a.image||'');
       b.innerHTML=(a.image?'<img src="'+a.image+'" alt="">':'<span></span>')+'<span><div class="l"></div><div class="s"></div></span><span class="pct"></span>';
       b.querySelector('.l').textContent=a.label||'';b.querySelector('.s').textContent=(a.set||'')+(a.finish?' · '+a.finish:'');
       b.querySelector('.pct').textContent=current?'current':(a.score!=null&&a.score!==''?a.score+'%':'');
-      b.addEventListener('click',function(){select(b);});b.addEventListener('dblclick',function(){select(b);replace();});
+      // A click only previews the card next to the photo; Replace (or Enter) saves it.
+      b.addEventListener('click',function(){select(b);});
       return b;
     }
-    function select(b){list.querySelectorAll('.cmp-alt').forEach(function(x){x.classList.remove('selected');});sel=b;if(b){b.classList.add('selected');b.scrollIntoView({block:'nearest'});}rep.disabled=!b||b.classList.contains('current');}
+    function select(b){list.querySelectorAll('.cmp-alt').forEach(function(x){x.classList.remove('selected');});sel=b;if(b){b.classList.add('selected');b.scrollIntoView({block:'nearest'});}rep.disabled=!b||b.classList.contains('current');preview(b);}
+    function preview(b){
+      var it=cmpItems[cur];if(!it)return;var d=it.dataset,frame=cm.querySelector('.cmp-cat'),on=!!b&&!b.classList.contains('current');
+      img(frame,on?b.getAttribute('data-img'):d.catalog);frame.classList.toggle('previewing',on);
+      cm.querySelector('.cmp-cat-lbl').textContent=on?'Selected card (not saved yet)':'Matched card';
+      cm.querySelector('.cmp-conf').textContent=on?'Press Replace card (or Enter) to use this one':(d.conf?d.conf+'% match':'no match yet');
+    }
     function show(i){
       if(i<0||i>=cmpItems.length)return;cur=i;var it=cmpItems[i],d=it.dataset;
       cm.querySelector('.cmp-title').textContent=d.name||d.raw||'No match yet';cm.querySelector('.cmp-sub').textContent=d.name?d.sub:'no catalog match yet — search on the right';
       cm.querySelector('.cmp-count').textContent=(i+1)+' of '+cmpItems.length;
-      img(cm.querySelector('.cmp-scan'),d.scan);img(cm.querySelector('.cmp-cat'),d.catalog);
-      cm.querySelector('.cmp-conf').textContent=d.conf?d.conf+'% match':'no match yet';
-      list.innerHTML='';sel=null;rep.disabled=true;q.value='';
+      img(cm.querySelector('.cmp-scan'),d.scan);
+      list.innerHTML='';sel=null;rep.disabled=true;q.value='';preview(null);
       var alts=[];try{alts=JSON.parse(d.alts||'[]');}catch(e){}
       if(d.name)list.appendChild(altEl({variant_id:d.vid,label:d.name,set:d.sub,finish:'',image:d.catalog,score:d.conf},true));
       alts.forEach(function(a){list.appendChild(altEl(a,false));});

@@ -69,6 +69,18 @@ export type IdentifyOptions = {
   excludeTerms?: string[];
   /** Restrict candidates to one game (the batch's "Database": pokemon, mtg, onepiece …). */
   game?: string;
+  /**
+   * The batch's printed language (EN, JP …). Photo matching only (vision.ts
+   * photoGamePool): with "Any game" it picks the language edition of a game,
+   * so an English scan never lands on its Japanese twin. Text lookups ignore it.
+   */
+  language?: string;
+  /**
+   * How many candidates to return (best + alternatives); default 5. Manual
+   * search asks for more: "bisharp" has a dozen printings, and with five the
+   * one the seller holds looked missing from the catalog.
+   */
+  maxResults?: number;
 };
 const PRIORITY_SET_BOOST = 0.1;
 const PRIORITY_TERM_BOOST = 0.05;
@@ -369,6 +381,7 @@ async function pickVariant(cardId: number, finish: string | null, language: stri
 
 export async function identify(raw: string, opts: IdentifyOptions = {}): Promise<IdentifyResult> {
   const parsed = parseInput(raw);
+  const maxResults = Math.max(1, Math.min(50, Math.floor(opts.maxResults ?? 5)));
 
   // Set awareness: if the input speaks a set name ("charizard base set holo"),
   // consume its tokens and hard-filter candidates to that set — precision and
@@ -432,7 +445,7 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
       return { row: r, score: Math.min(1, score) };
     })
     .sort((a, b) => b.score - a.score || langRank(b.row.id) - langRank(a.row.id))
-    .slice(0, 6);
+    .slice(0, Math.max(6, maxResults));
 
   if (scored.length === 0) {
     return { parsed, best: null, alternatives: [], confidence: 0, status: "failed" };
@@ -494,5 +507,5 @@ export async function identify(raw: string, opts: IdentifyOptions = {}): Promise
   const status: IdentifyResult["status"] =
     best.score < MIN_MATCH ? "failed" : confidence >= AUTO_THRESHOLD ? "matched" : "needs_review";
 
-  return { parsed, best, alternatives: cands.slice(1, 5), confidence, status };
+  return { parsed, best, alternatives: cands.slice(1, maxResults), confidence, status };
 }
