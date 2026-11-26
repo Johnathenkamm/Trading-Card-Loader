@@ -4,8 +4,21 @@
     {
       "name": "cardindex",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["card-db-mvp/src/server.ts"],
+      "runtimeArgs": [
+        "card-db-mvp/src/server.ts"
+      ],
       "port": 5173,
+      "autoPort": true
+    },
+    {
+      "name": "cardindex-embed",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file-if-exists=card-db-mvp/.env",
+        "--env-file=card-db-mvp/data/bench/embed-preview.env",
+        "card-db-mvp/src/server.ts"
+      ],
+      "port": 5500,
       "autoPort": true
     }
   ]

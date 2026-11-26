@@ -77,6 +77,12 @@ export async function ensureWorkspaceSchema(): Promise<void> {
   await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS grade text`);
   await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS grader text`);
   await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS cert text`);
+  // The card the matcher auto-matched (null when it went to review). If the
+  // seller later points the item at another card, that was a false read: the
+  // owner console counts them (app/admin.ts scanAccuracy).
+  await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS auto_card_id bigint`);
+  // true on items created since auto_card_id exists, so older items don't dilute the rates
+  await query(`ALTER TABLE scan_items ADD COLUMN IF NOT EXISTS auto_tracked boolean NOT NULL DEFAULT false`);
   await query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS grade text`);
   await query(`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS cert text`);
   // batch kind (scan | graded | creator | pricing) + public share token for pricing batches
@@ -470,8 +476,8 @@ export async function addItemFromIdentify(
     `INSERT INTO scan_items(
       batch_id, seller_id, raw_input, image_url, back_image_url, matched_card_id, matched_variant_id,
       ai_confidence, alternatives, status, condition, language, quantity,
-      price_mode, price_pct, price_cents, prev_price_cents, created_at, grade, grader, cert, sku)
-     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22) RETURNING id`,
+      price_mode, price_pct, price_cents, prev_price_cents, created_at, grade, grader, cert, sku, auto_card_id, auto_tracked)
+     VALUES ($1,$18,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19,$20,$21,$22,$23,true) RETURNING id`,
     [
       batchId,
       raw,
@@ -495,6 +501,7 @@ export async function addItemFromIdentify(
       grader,
       opts.cert ?? null,
       opts.sku ?? null,
+      result.status === "matched" ? (best?.card_id ?? null) : null,
     ]
   );
   return r!.id;

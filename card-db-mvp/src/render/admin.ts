@@ -12,7 +12,7 @@ import { FEEDBACK_KINDS } from "../app/feedback.ts";
 import { PRO_PRICE_LABEL, PRO_PERIOD_LABEL } from "../app/billing.ts";
 import { MAX_UPLOAD_FILES_PRO } from "../upload.ts";
 import type { Seller } from "../app/store.ts";
-import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow } from "../app/admin.ts";
+import type { UserRow, UserFilter, UserUsage, Overview, ActivityRow, ActivityFilter, FeedbackRow, ScanAccuracy } from "../app/admin.ts";
 import type { SoldArchiveSummary } from "../app/soldimport.ts";
 import type { CatalogGameStats, ImportProgress } from "../app/catalog-import.ts";
 import { RECHECK_MISSING_AFTER_DAYS } from "../app/hashindex.ts";
@@ -558,7 +558,35 @@ function missingNote(missing: number): string {
   return `<div class="sub" title="${esc(why)}">${missing.toLocaleString()} have no image</div>`;
 }
 
-export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress, msg?: string): Page {
+/** Photo-matching accuracy panel: auto-matches sellers had to correct (false reads). */
+function accuracyPanel(a: ScanAccuracy | undefined): string {
+  if (!a) return "";
+  const pct = (n: number, of: number) => (of ? `${Math.round((n / of) * 1000) / 10}%` : "—");
+  const rows = a.recent
+    .map(
+      (r) => `<tr>
+        <td>${r.image_url ? `<a href="${esc(r.image_url)}" target="_blank" rel="noopener"><img src="${esc(r.image_url)}" alt="" style="width:40px;height:56px;object-fit:contain"></a>` : ""}</td>
+        <td>${esc(r.auto_label)}</td>
+        <td>${r.now_label ? esc(r.now_label) : `<span class="sub">no card</span>`}</td>
+        <td class="mono"><a href="/admin/users/${r.seller_id}">#${r.seller_id}</a> · batch ${r.batch_id}</td>
+        <td class="sub">${ago(r.created_at)}</td>
+      </tr>`
+    )
+    .join("");
+  return `<div class="ws-panel">
+    <div class="ws-panel-head"><h2>Photo matching accuracy</h2><span class="eyebrow">uploaded photos · last ${a.days} days · matcher: ${esc((process.env.VISION_PROVIDER ?? "none").toLowerCase())}</span></div>
+    <div class="stat-cards home-stats">
+      <div class="stat"><div class="k">Photos</div><div class="v mono">${a.photos.toLocaleString()}</div></div>
+      <div class="stat"><div class="k">Auto-matched</div><div class="v mono">${a.auto.toLocaleString()}</div><div class="s">${pct(a.auto, a.photos)} skipped review</div></div>
+      <div class="stat${a.corrected ? " attn" : ""}"><div class="k">False reads</div><div class="v mono">${a.corrected.toLocaleString()}</div><div class="s">auto-matches a seller changed · ${pct(a.corrected, a.auto)}</div></div>
+    </div>
+    ${rows ? `<div class="tablewrap"><table class="inv-table"><thead><tr><th>Photo</th><th>Matcher picked</th><th>Seller changed it to</th><th>Where</th><th>When</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="hint">No auto-match has been corrected${a.auto ? "" : " (none counted yet: photos uploaded from now on are tracked)"}.</p>`}
+  </div>`;
+}
+
+export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress, msg?: string, accuracy?: ScanAccuracy): Page {
+  // The embedding column only appears when VISION_PROVIDER=embed (catalogStats sets embedded).
+  const showEmbed = stats.some((g) => g.embedded != null);
   const pct = p.groupsTotal ? Math.round((p.groupsDone / p.groupsTotal) * 100) : 0;
   const rows = stats
     .map(
@@ -567,6 +595,7 @@ export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress,
         <td class="mono">${g.sets.toLocaleString()}</td>
         <td class="mono">${g.cards.toLocaleString()}</td>
         <td class="mono">${g.cards ? `${g.hashed.toLocaleString()} <span class="sub">(${Math.round((g.hashed / g.cards) * 100)}%)</span>${missingNote(g.missing)}` : "—"}</td>
+        ${showEmbed ? `<td class="mono">${g.cards && g.embedded != null ? `${g.embedded.toLocaleString()} <span class="sub">(${Math.round((g.embedded / g.cards) * 100)}%)</span>` : "—"}</td>` : ""}
         <td class="sub" title="${esc(g.lastImport ?? "")}">${g.lastImport ? ago(g.lastImport) : g.inCatalog ? "added at setup" : "not imported"}</td>
         <td class="act">${
           g.importable
@@ -597,8 +626,9 @@ export function renderAdminCatalog(stats: CatalogGameStats[], p: ImportProgress,
     ${flash(msg)}
     <div class="ws-panel">
       <div class="ws-panel-head"><h2>Games</h2><form method="post" action="/admin/catalog/hash" class="inline"><button class="btn sm" type="submit" ${p.running ? "disabled" : ""} title="Prepare every card image that isn't in the photo-ID index yet for photo matching">Rebuild photo-ID index</button><label class="ckbox sm" title="Also try again the card images that had no picture last time"><input type="checkbox" name="retry" value="1"> retry missing images</label></form></div>
-      <div class="tablewrap"><table class="inv-table"><thead><tr><th>Game</th><th>Sets</th><th>Cards</th><th>Photo-ID index</th><th>Last import</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="tablewrap"><table class="inv-table"><thead><tr><th>Game</th><th>Sets</th><th>Cards</th><th>Photo-ID index</th>${showEmbed ? `<th title="Cards prepared for the image-embedding matcher; it fills in the background after a deploy or import">Photo-ID embeddings</th>` : ""}<th>Last import</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     </div>
+    ${accuracyPanel(accuracy)}
     ${status}
     ${p.running ? `<meta http-equiv="refresh" content="5">` : ""}
     ${APP_JS}

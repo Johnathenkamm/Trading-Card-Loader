@@ -61,6 +61,7 @@ import {
 import { scheduleListing, setListingsBestOffer, setListingsStatus, inventoryForBatch, type BatchSetup } from "./app/store.ts";
 import { ensureFeedbackSchema, submitFeedback, listFeedback } from "./app/feedback.ts";
 import { startHashIndexOnBoot } from "./app/hashindex.ts";
+import { startEmbedIndexOnBoot, buildEmbedIndex } from "./app/embedindex.ts";
 import { startSoldSampleOnBoot, importSoldFeed, parseFeedText, readFeedFile, soldArchiveSummary, deleteSoldSource, SAMPLE_FEED, SAMPLE_SOURCE } from "./app/soldimport.ts";
 import { startSoldHarvestOnBoot, harvestSoldSalesFor, removeUnflaggedMockSales } from "./app/soldharvest.ts";
 import {
@@ -93,7 +94,7 @@ import {
   ensureAdminSchema, logActivity, describeActivity, listUsers, getUser, userUsage, overview, listActivity, dailyActive,
   listAllFeedback, userBatches, actAsCookie, clearActAsCookie, ACT_AS_COOKIE,
   ADMIN_COOKIE, adminConfigured, adminAuthenticate, adminLockedFor, adminSessionValid, createAdminSession, destroyAdminSession,
-  adminCookie, clearAdminCookie, ensureOwnerSeller, ownerSellerId,
+  adminCookie, clearAdminCookie, ensureOwnerSeller, ownerSellerId, scanAccuracy,
 } from "./app/admin.ts";
 import { replyFeedback, closeFeedback } from "./app/feedback.ts";
 import {
@@ -1850,7 +1851,9 @@ async function handleAdmin(
     }
     if (path === "/admin/catalog/hash") {
       if (catalogImportProgress().running) return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Wait for the running import; it builds the index when it finishes."));
-      buildHashIndex({ retryMissing: f.retry === "1", log: (l) => console.log("  " + l) }).catch((err) => console.error("photo-ID index:", err));
+      buildHashIndex({ retryMissing: f.retry === "1", log: (l) => console.log("  " + l) })
+        .then(() => ((process.env.VISION_PROVIDER ?? "").toLowerCase() === "embed" ? buildEmbedIndex({ log: (l) => console.log("  " + l) }) : null))
+        .catch((err) => console.error("photo-ID index:", err));
       return redirect(res, "/admin/catalog?msg=" + encodeURIComponent("Rebuilding the photo-ID index in the background. The counts on this page update as it goes."));
     }
 
@@ -1934,7 +1937,7 @@ async function handleAdmin(
     return sendPage(res, renderAdminSold(await soldArchiveSummary(), msg, process.env.SOLD_SAMPLE_ON_BOOT === "1"), "/admin/sold");
   }
   if (path === "/admin/catalog") {
-    return sendPage(res, renderAdminCatalog(await catalogStats(), catalogImportProgress(), msg), "/admin/catalog");
+    return sendPage(res, renderAdminCatalog(await catalogStats(), catalogImportProgress(), msg, await scanAccuracy(30)), "/admin/catalog");
   }
   if (path === "/admin/ebay") {
     const [st, conns] = await Promise.all([ebayAdminStatus(url.origin, deletionEndpointUrl(req)), listEbayConnections()]);
@@ -2356,6 +2359,8 @@ server.listen(PORT, () => {
   // Photo-ID index (VISION_PROVIDER=hash): hosted deploys can't run
   // `npm run hash:catalog` by hand, so fill any gap in the background here.
   startHashIndexOnBoot();
+  // VISION_PROVIDER=embed: image embeddings for the catalog (app/embedindex.ts).
+  startEmbedIndexOnBoot();
   // Sold archive housekeeping: remove bundled sample rows so /sales shows real
   // sales only (SOLD_SAMPLE_ON_BOOT=1 loads the sample on a demo deploy instead).
   startSoldSampleOnBoot();

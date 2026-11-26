@@ -48,7 +48,11 @@ Regression check of the trim on 1,200 synthetic photos (`src/bench/trim-check.ts
 plain-background 5→43 right, blur 6→34. Through the full upload path, background+blur gave 68/200 right, 16
 auto-matched, **0 wrong**.
 
-## Done locally (uncommitted, NOT on prod)
+## Shipped Nov 15 2026 (commit ceeee22, deployment f466a1a2)
+
+The first deploy failed at Railway's image step with no error in the build log; a redeploy of the same commit
+succeeded. Live check afterwards (the client's 52 photos through prod's matcher, read-only over `railway ssh`):
+51/52 right, 16 auto-matched, 0 wrong, 0 Japanese or Magic picks, ~270 ms/photo.
 
 - `vision.ts` `photoGamePool()`: with "Any game", the batch language picks the language edition. An EN batch never
   matches `pokemon-jp`, and a JP batch never matches `pokemon`. Choosing a Database explicitly still wins. Wired
@@ -60,16 +64,15 @@ auto-matched, **0 wrong**.
   (not saved yet)"). Only Replace or Enter saves it. Double-click no longer replaces.
 - `store.ts` `replaceMatch`: the card being replaced stays first in the alternatives, so a wrong Replace is undone with one click.
 
-Not yet checked in the browser: the Compare preview, the undo alternative, and the longer search list.
+Browser-checked locally before shipping (batch 122, test seller 15): click previews without saving, double-click
+doesn't save, Replace then one click on the old card undoes it, "bisharp" lists 30 cards with Astral Radiance at #8.
+Only the scanner hunks were committed; the embedding work in `vision.ts`/`server.ts` stays uncommitted.
 
 ## Plan to avoid false reads, in order
 
-1. **Browser-check the Compare changes** on the local server (upload the 52 photos as test seller 15).
-2. **Ship the hash fixes to prod.** `vision.ts` and `server.ts` also hold the uncommitted embedding hunks, so either
-   stage only the scanner-fix hunks or commit the embedding work too (it's dormant unless `VISION_PROVIDER=embed`).
-   Push = auto-deploy; no catalog rebuild needed (the trim is query-side only).
-3. **Re-run the client's batch on prod** after the deploy (`client-batch.ts` replays it offline against the prod index; a
-   fresh upload confirms it live).
+1. ~~Browser-check the Compare changes~~ (done)
+2. ~~Ship the hash fixes to prod~~ (done, ceeee22)
+3. ~~Re-run the client's batch on prod~~ (done, read-only)
 4. **Turn on image embeddings on prod** (`VISION_PROVIDER=embed`): more auto-matches with the same 0 wrong, and it holds
    up on phone photos, glare and tilt, where the hash fails. Needs about 600 MB more RAM on Railway and a first embed of
    the catalog: hours for Pokémon EN+JP + One Piece, more for 105k MTG. Consider embedding the client's games first.

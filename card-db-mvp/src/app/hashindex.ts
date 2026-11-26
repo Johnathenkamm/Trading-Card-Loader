@@ -46,7 +46,8 @@ class ImageMissingError extends Error {
   }
 }
 
-async function fetchImage(url: string): Promise<Buffer> {
+/** Fetch a catalog image (also used by the embedding builder, embedindex.ts). */
+export async function fetchImage(url: string): Promise<Buffer> {
   let lastErr: unknown;
   let notFound = 0; // 403/404/410 answers; resets and timeouts say nothing either way
   let otherStatus = false; // a 5xx, 429… answer keeps the failure transient
@@ -228,7 +229,8 @@ let booting: Promise<void> | null = null;
  */
 export function startHashIndexOnBoot(): void {
   if (process.env.HASH_INDEX_ON_BOOT === "0") return;
-  if ((process.env.VISION_PROVIDER ?? "none").toLowerCase() !== "hash") return;
+  // The embed matcher uses the hash too (exact scans first, fallback after).
+  if (!["hash", "embed"].includes((process.env.VISION_PROVIDER ?? "none").toLowerCase())) return;
   if (booting) return;
   booting = (async () => {
     try {

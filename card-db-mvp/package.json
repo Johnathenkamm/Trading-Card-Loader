@@ -12,6 +12,8 @@
     "sync:tcgcsv": "node --env-file-if-exists=.env src/scripts/sync-tcgcsv.ts",
     "import:catalog": "node --env-file-if-exists=.env src/scripts/import-catalog.ts",
     "hash:catalog": "node --env-file-if-exists=.env src/scripts/hash-catalog.ts",
+    "embed:catalog": "node --env-file-if-exists=.env src/scripts/embed-catalog.ts",
+    "bench:id": "node --env-file-if-exists=.env src/scripts/bench-id.ts",
     "import:sold": "node --env-file-if-exists=.env src/scripts/import-sold.ts",
     "check:sold-links": "node --env-file-if-exists=.env src/scripts/check-sold-links.ts",
     "grant-pro": "node --env-file-if-exists=.env src/scripts/grant-pro.ts",
@@ -26,6 +28,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1121.0",
+    "@huggingface/transformers": "4.3.0",
     "jimp": "^1.6.1",
     "pg": "^8.13.0"
   },

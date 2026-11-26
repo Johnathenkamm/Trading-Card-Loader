@@ -25,6 +25,7 @@
 import { query, one } from "../pg.ts";
 import { slugify, numberSort, sleep } from "../util.ts";
 import { buildHashIndex, ensureHashIndexSchema } from "./hashindex.ts";
+import { buildEmbedIndex, embedIndexCoverage } from "./embedindex.ts";
 
 const BASE = process.env.TCGCSV_BASE ?? "https://tcgcsv.com/tcgplayer";
 
@@ -338,6 +339,12 @@ export async function importGame(slug: string, opts: ImportOptions = {}): Promis
       note("Building the photo-ID index for the new cards…", log);
       const h = await buildHashIndex({ log: (l) => note("  " + l, log) });
       note(`Photo-ID index: ${h.hashed}/${h.cards} cards covered (${h.failed} failed, ${h.missing} with no image at the source).`, log);
+      if ((process.env.VISION_PROVIDER ?? "").toLowerCase() === "embed") {
+        progress.current = "photo-ID embeddings";
+        note("Embedding the new cards for photo matching…", log);
+        const e = await buildEmbedIndex({ games: [slug], log: (l) => note("  " + l, log) });
+        note(`Embedding index: ${e.done} embedded (${e.failed} failed).`, log);
+      }
     }
   } catch (err: any) {
     progress.error = err?.message ?? String(err);
@@ -358,7 +365,7 @@ export function startCatalogImport(slug: string, opts: ImportOptions = {}): void
 
 // `missing`: cards whose current image the host doesn't have (it answers
 // 403/404, see hashindex.ts), so the photo-ID index can't cover them.
-export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; missing: number; lastImport: string | null; inCatalog: boolean; importable: boolean };
+export type CatalogGameStats = { slug: string; name: string; sets: number; cards: number; hashed: number; missing: number; /** cards embedded for VISION_PROVIDER=embed; null when that matcher is off */ embedded: number | null; lastImport: string | null; inCatalog: boolean; importable: boolean };
 
 /** Per-game counts for the owner console. Games without a row yet are listed as importable. */
 export async function catalogStats(): Promise<CatalogGameStats[]> {
@@ -380,7 +387,9 @@ export async function catalogStats(): Promise<CatalogGameStats[]> {
   ))) as Array<{ slug: string; name: string; sets: number; cards: number; hashed: number; missing: number }>;
   const meta = (await query("SELECT key, value FROM meta WHERE key LIKE 'catalog_import_%'")) as Array<{ key: string; value: string }>;
   const last = new Map(meta.map((m) => [m.key.replace("catalog_import_", ""), m.value]));
-  const out: CatalogGameStats[] = rows.map((r) => ({ ...r, lastImport: last.get(r.slug) ?? null, inCatalog: true, importable: !!CATALOG_GAMES[r.slug] }));
-  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, missing: 0, lastImport: null, inCatalog: false, importable: true });
+  const embedOn = (process.env.VISION_PROVIDER ?? "").toLowerCase() === "embed";
+  const embedded = new Map(embedOn ? (await embedIndexCoverage().catch(() => [])).map((c) => [c.game, c.embedded]) : []);
+  const out: CatalogGameStats[] = rows.map((r) => ({ ...r, embedded: embedOn ? (embedded.get(r.slug) ?? 0) : null, lastImport: last.get(r.slug) ?? null, inCatalog: true, importable: !!CATALOG_GAMES[r.slug] }));
+  for (const g of Object.values(CATALOG_GAMES)) if (!out.some((r) => r.slug === g.slug)) out.push({ slug: g.slug, name: g.name, sets: 0, cards: 0, hashed: 0, missing: 0, embedded: embedOn ? 0 : null, lastImport: null, inCatalog: false, importable: true });
   return out;
 }

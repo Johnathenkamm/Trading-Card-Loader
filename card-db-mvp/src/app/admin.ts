@@ -457,6 +457,43 @@ export function userBatches(sellerId: number, limit = 8): Promise<Array<{ id: nu
   );
 }
 
+// ---- photo-matching accuracy ------------------------------------------------
+// A false read: the matcher auto-matched a photo (scan_items.auto_card_id) and
+// the seller later pointed the item at another card. Counted over uploaded
+// photos only; items created before tracking started (auto_tracked) don't count.
+
+export type ScanAccuracy = {
+  days: number;
+  photos: number;
+  auto: number;
+  corrected: number;
+  recent: Array<{ item_id: number; batch_id: number; seller_id: number; image_url: string | null; created_at: string; auto_label: string; now_label: string | null }>;
+};
+
+export async function scanAccuracy(days = 30): Promise<ScanAccuracy> {
+  const totals = await one<{ photos: number; auto: number; corrected: number }>(
+    `SELECT COUNT(*)::int AS photos,
+            COUNT(*) FILTER (WHERE i.auto_card_id IS NOT NULL)::int AS auto,
+            COUNT(*) FILTER (WHERE i.auto_card_id IS NOT NULL AND i.matched_card_id IS DISTINCT FROM i.auto_card_id)::int AS corrected
+     FROM scan_items i JOIN scan_batches b ON b.id = i.batch_id
+     WHERE b.source = 'upload' AND i.auto_tracked AND i.created_at > now() - make_interval(days => $1)`,
+    [days]
+  );
+  const label = (card: string, set: string) => `${card}.name || COALESCE(' #' || ${card}.number, '') || ' · ' || ${set}.name`;
+  const recent = await query<ScanAccuracy["recent"][number]>(
+    `SELECT i.id::int AS item_id, i.batch_id::int AS batch_id, i.seller_id::int AS seller_id, i.image_url, i.created_at,
+            ${label("a", "aset")} AS auto_label, ${label("n", "ns")} AS now_label
+     FROM scan_items i JOIN scan_batches b ON b.id = i.batch_id
+     JOIN cards a ON a.id = i.auto_card_id JOIN sets aset ON aset.id = a.set_id
+     LEFT JOIN cards n ON n.id = i.matched_card_id LEFT JOIN sets ns ON ns.id = n.set_id
+     WHERE b.source = 'upload' AND i.auto_tracked AND i.matched_card_id IS DISTINCT FROM i.auto_card_id
+       AND i.created_at > now() - make_interval(days => $1)
+     ORDER BY i.id DESC LIMIT 10`,
+    [days]
+  );
+  return { days, photos: totals?.photos ?? 0, auto: totals?.auto ?? 0, corrected: totals?.corrected ?? 0, recent };
+}
+
 // ---- cookies --------------------------------------------------------------
 
 const COOKIE_SECURE = process.env.COOKIE_SECURE === "1";

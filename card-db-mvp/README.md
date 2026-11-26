@@ -74,6 +74,12 @@ npm run hash:catalog [-- --retry-missing | --force]
                       # products) are recorded in card_image_missing and skipped until their
                       # URL changes or 30 days pass; --retry-missing tries them again now.
                       # Powers VISION_PROVIDER=hash — real photo identification, no API.
+npm run embed:catalog [-- --game mtg] [-- --force]
+                      # embed every catalog reference image with SigLIP 2 for
+                      # VISION_PROVIDER=embed (skips cards whose image + model are
+                      # unchanged). ~8 cards/s on a 16-core box; the server also
+                      # runs it at boot.
+npm run bench:id      # compare photo -> card methods on the same photos (see below)
 ```
 
 **TCGplayer on card pages**: the daily sync stores the full **price spread**
@@ -430,7 +436,7 @@ a live database.
   See `src/app/admin.ts` / `src/render/admin.ts`.
 
 Photo **upload, storage, review, and a pluggable vision hook** work end-to-end.
-Vision recognition is provider-based (`VISION_PROVIDER=none|mock|hash|http`, see
+Vision recognition is provider-based (`VISION_PROVIDER=none|mock|hash|embed|http`, see
 `src/app/vision.ts`): point `http` at a real recognizer (Ximilar, a self-hosted
 model, eBay `searchByImage`) and its labels resolve to a priced catalog variant
 through the same `identify()` contract; the offline default is filename-hint +
@@ -438,6 +444,72 @@ manual search, and `mock` proves the pipeline with no external service. Remainin
 **seams** (labeled in the UI): the recognizer endpoint itself (needs an API
 key/model), graded-slab OCR/QR + cert lookup, live eBay Sell-API publish (OAuth),
 and Stripe billing.
+
+### Embedding matcher (`VISION_PROVIDER=embed`)
+
+The hash matcher compares the whole frame's brightness pattern, so it only
+works when the card fills the photo; on synthetic phone photos (background,
+tilt, glare, blur) it found the right card 22% of the time. The embed matcher
+turns the photo into a SigLIP 2 vector on the server's CPU and takes the
+nearest catalog card (98% on the same photos). How a photo is handled:
+
+1. **Hash first.** A clean scan of catalog art that the hash matches with
+   confidence ≥ 0.97 is accepted as is. That's near-certain and costs nothing.
+2. **Embedding search** within the batch's game, over vectors held in memory
+   (int8, ~50 MB for the whole catalog; refreshed every 2 min from
+   `card_embeddings`).
+3. **Confidence** from similarity and margin over the runner-up
+   (`embedConfidence` in `src/app/embedding.ts`, calibrated with
+   `src/bench/calibrate.ts`). It auto-matches on a high similarity with a clear
+   margin, or a wide margin at moderate similarity. Everything else goes to
+   review with the runner-up offered on near-ties. A match is held for review
+   while its game is under 95% embedded, or when another version of the same
+   card name has no vector (its image couldn't be fetched). Otherwise a photo of
+   *Zarude V* would auto-match *Zarude V (Full Art)*.
+4. **Fallbacks.** Model or index unavailable → the hash result → the filename hint.
+
+Costs about 600 MB of RAM and 0.3 s of CPU per photo. The model downloads
+(~370 MB) on first use into `EMBED_MODEL_DIR`. A first full catalog embed
+takes about 2 h at 8 cards/s on a 16-core box; the owner console's Catalog
+page shows a "Photo-ID embeddings" column while it fills. Don't use
+`EMBED_DTYPE=q8`: it measured 55% top-1.
+
+### Identification benchmark (`npm run bench:id`)
+
+Compares photo → card methods on the same queries and gallery before any of
+them goes into `vision.ts`: today's hash matcher (`hash`, and `hash-prod` against
+the full stored index), DINOv2 and SigLIP 2 embeddings run locally on CPU (ONNX
+via `@huggingface/transformers`, the same code the embed matcher runs), and Gemini Embedding 2
+(`gemini`, only when `GEMINI_API_KEY` is set). It reports top-1/top-5,
+"right card, wrong printing", auto-match coverage at ≥98% precision, the hash
+matcher's production auto-match rule, and time per query.
+
+```bash
+npm run bench:id                                    # 100 cards x 6 synthetic conditions
+npm run bench:id -- --limit 30 --methods hash,siglip2
+npm run bench:id -- --photos ../photos --labels ../photos/labels.txt   # real photos
+```
+
+- **Synthetic queries** (default) render catalog images as phone photos:
+  background, tilt, glare, blur + JPEG, and all of them together (`src/bench/augment.ts`).
+  `-crop` methods get the card straightened with its known corners, which is
+  the ceiling for a find-and-straighten step. Put real background photos in
+  `data/bench/backgrounds/` to use them instead of the procedural ones.
+- **Real photos**: a folder plus a labels file, one `file|card_id` or
+  `file|Charizard 4/102 Base` per line; text labels go through `identify()` and
+  shaky ones are flagged.
+- **Gemini** costs one API call per uncached image. The run prints the count
+  first and stops above `--max-api-calls` (default 1500). Features are cached by
+  image content, so a rerun only pays for new images.
+- Everything (models, image + feature caches, `results/<timestamp>/report.md`)
+  lives in `data/bench/`, which is gitignored.
+- After a run, `src/bench/calibrate.ts` (bench gallery) and
+  `src/bench/calibrate-full.ts --game pokemon` (the whole stored embedding
+  index) score the embed matcher's confidence rule and its variants: how many
+  photos it auto-matches, how many of those are wrong, and how many photos of a
+  card missing from the catalog would auto-match anyway.
+  `VISION_PROVIDER=embed node src/bench/provider-check.ts [game]` runs the same
+  photos through `visionIdentify()`, the path an upload takes.
 
 ## Layout
 

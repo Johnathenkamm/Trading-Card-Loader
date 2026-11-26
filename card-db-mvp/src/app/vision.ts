@@ -8,6 +8,8 @@
 //            pipeline works end-to-end with no external service
 //   hash  -> local perceptual-hash matcher (src/imagehash.ts); exact catalog-art
 //            scans only, it fails once the card doesn't fill the frame
+//   embed -> local SigLIP 2 image embeddings (src/app/embedding.ts) + the hash
+//            for exact scans; survives background, tilt, glare and blur
 //   http  -> POST the image to any recognition API (Ximilar, a self-hosted model,
 //            eBay Browse searchByImage, …); map its JSON response to card labels
 //
@@ -21,6 +23,7 @@ import { identify, AUTO_THRESHOLD, type IdentifyResult, type IdentifyOptions } f
 import { hintFromFilename } from "../upload.ts";
 import { query } from "../pg.ts";
 import { hashPhoto, hashDistance, fromHex, type ImageHashes, type PhotoHashes } from "../imagehash.ts";
+import { embedder, embedConfidence } from "./embedding.ts";
 
 export type VisionImage = { data: Buffer; filename: string; contentType: string };
 
@@ -212,6 +215,229 @@ class HashProvider implements VisionProvider {
   }
 }
 
+/**
+ * Image-embedding matcher (src/app/embedding.ts): the photo becomes a SigLIP 2
+ * vector and the nearest catalog card by cosine similarity wins. Unlike the
+ * hash it survives background, tilt, glare and blur (npm run bench:id). Exact
+ * catalog-art scans still go to the hash first: it's near-certain on those and
+ * costs nothing. Requires card_embeddings (built at boot, or `npm run
+ * embed:catalog`); while a game's index is empty this returns the hash result.
+ */
+type EmbedGameIndex = {
+  ids: number[];
+  meta: Array<{ name: string; number: string | null; set_name: string }>;
+  vecs: Int8Array; // ids.length x dim, value ≈ byte / scale
+  scales: Float32Array;
+  catalog: number; // cards with an image in this game (for coverage)
+  unindexed: Set<string>; // base names of this game's cards with no vector (no image, or not built yet)
+};
+type EmbedIndex = {
+  key: string;
+  dim: number;
+  games: Map<string, EmbedGameIndex>;
+  /** Cards with a fetchable image per game, including games with no vectors yet. */
+  catalog: Map<string, number>;
+  pos: Map<number, { game: string; row: number }>;
+  since: number;
+  checked: number;
+};
+let embedIndex: EmbedIndex | null = null;
+const EMBED_REFRESH_MS = 2 * 60 * 1000;
+
+/** Drop the in-memory copy so the next identify reloads it (after a rebuild). */
+export function invalidateEmbedIndex(): void {
+  embedIndex = null;
+}
+
+/** Load the embedding index now (at boot), so the first scan doesn't wait for it. Returns the vector count. */
+export async function warmEmbedIndex(): Promise<number> {
+  const idx = await loadEmbedIndex();
+  return idx.pos.size;
+}
+
+type EmbedRow = { card_id: number; vec: Buffer; scale: number; updated_us: number; name: string; number: string | null; set_name: string; game: string };
+const EMBED_ROW_SQL = `SELECT e.card_id::int AS card_id, e.vec, e.scale, (extract(epoch FROM e.updated_at) * 1000000)::float8 AS updated_us, c.name, c.number, s.name AS set_name, g.slug AS game
+  FROM card_embeddings e JOIN cards c ON c.id=e.card_id JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id
+  WHERE e.model = $1`;
+
+let embedLoading: Promise<EmbedIndex> | null = null;
+
+/** The in-memory index, loaded once and refreshed every 2 min; concurrent callers share one load. */
+function loadEmbedIndex(): Promise<EmbedIndex> {
+  const key = embedder().key;
+  if (embedIndex && embedIndex.key === key && Date.now() - embedIndex.checked < EMBED_REFRESH_MS) return Promise.resolve(embedIndex);
+  if (!embedLoading) embedLoading = refreshEmbedIndex(key).finally(() => (embedLoading = null));
+  return embedLoading;
+}
+
+async function refreshEmbedIndex(key: string): Promise<EmbedIndex> {
+
+  // First load reads everything; later refreshes only rows written since.
+  const fresh = !embedIndex || embedIndex.key !== key;
+  const idx: EmbedIndex = fresh ? { key, dim: 0, games: new Map(), catalog: new Map(), pos: new Map(), since: 0, checked: 0 } : embedIndex!;
+  const rows = (await query(`${EMBED_ROW_SQL} AND e.updated_at > to_timestamp($2::float8 / 1000000) ORDER BY e.updated_at`, [key, idx.since])) as EmbedRow[];
+  const added = new Map<string, EmbedRow[]>();
+  for (const r of rows) {
+    idx.dim ||= r.vec.length;
+    if (r.vec.length !== idx.dim) continue;
+    const at = idx.pos.get(r.card_id);
+    if (at && at.game === r.game) {
+      // re-embedded card: overwrite its row in place
+      const g = idx.games.get(at.game)!;
+      g.vecs.set(new Int8Array(r.vec.buffer, r.vec.byteOffset, r.vec.length), at.row * idx.dim);
+      g.scales[at.row] = r.scale;
+    } else {
+      if (!added.has(r.game)) added.set(r.game, []);
+      added.get(r.game)!.push(r);
+    }
+    if (r.updated_us > idx.since) idx.since = r.updated_us;
+  }
+  for (const [game, adds] of added) {
+    const old = idx.games.get(game);
+    const n0 = old?.ids.length ?? 0;
+    const vecs = new Int8Array((n0 + adds.length) * idx.dim);
+    const scales = new Float32Array(n0 + adds.length);
+    if (old) {
+      vecs.set(old.vecs);
+      scales.set(old.scales);
+    }
+    const g: EmbedGameIndex = { ids: old?.ids ?? [], meta: old?.meta ?? [], vecs, scales, catalog: old?.catalog ?? 0, unindexed: old?.unindexed ?? new Set() };
+    adds.forEach((r, i) => {
+      vecs.set(new Int8Array(r.vec.buffer, r.vec.byteOffset, r.vec.length), (n0 + i) * idx.dim);
+      scales[n0 + i] = r.scale;
+      g.ids.push(r.card_id);
+      g.meta.push({ name: r.name, number: r.number, set_name: r.set_name });
+      idx.pos.set(r.card_id, { game, row: n0 + i });
+    });
+    idx.games.set(game, g);
+  }
+  // Coverage: an index that's still building can't rule out the true card.
+  // Counted against the cards whose image the hash index could fetch: an image
+  // TCGplayer refuses (403) fails here too, and shouldn't keep a game "building"
+  // forever (Japanese Pokémon would never auto-match at 91%).
+  const cov = (await query(
+    `SELECT g.slug AS game, COUNT(*)::int AS n, COUNT(h.card_id)::int AS fetchable
+     FROM cards c JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id
+     LEFT JOIN card_image_hashes h ON h.card_id = c.id
+     WHERE COALESCE(c.image_small, c.image_large) IS NOT NULL GROUP BY g.slug`
+  ).catch(() => [])) as Array<{ game: string; n: number; fetchable: number }>;
+  idx.catalog = new Map();
+  for (const c of cov) {
+    idx.catalog.set(c.game, c.fetchable || c.n);
+    const g = idx.games.get(c.game);
+    if (g) g.catalog = c.fetchable || c.n;
+  }
+  // Cards we can't match by image (TCGplayer refuses some images, ~9% of
+  // Japanese Pokémon). A photo of one lands on a sibling version with the same
+  // name (Zarude V → Zarude V (Full Art)) with a confident-looking margin, so a
+  // match whose name has an unindexed version always goes to review.
+  const missing = (await query(
+    `SELECT DISTINCT g.slug AS game, c.name FROM cards c JOIN sets s ON s.id=c.set_id JOIN games g ON g.id=s.game_id
+     LEFT JOIN card_embeddings e ON e.card_id = c.id AND e.model = $1
+     WHERE e.card_id IS NULL`,
+    [key]
+  )) as Array<{ game: string; name: string }>;
+  for (const g of idx.games.values()) g.unindexed = new Set();
+  for (const m of missing) idx.games.get(m.game)?.unindexed.add(baseName(m.name));
+  idx.checked = Date.now();
+  embedIndex = idx;
+  return idx;
+}
+
+/** "Zarude V (Full Art)" and "Zarude V" are versions of one card name. */
+function baseName(name: string): string {
+  return name.toLowerCase().replace(/\s*[([][^)\]]*[)\]]/g, "").replace(/\s+/g, " ").trim();
+}
+
+class EmbedProvider implements VisionProvider {
+  readonly name = "embed";
+  private hash = new HashProvider();
+
+  async identify(image: VisionImage, opts: VisionOptions = {}): Promise<VisionResult | null> {
+    // 1. A clean scan of catalog art: the hash is near-certain and cheap.
+    const hashed = await this.hash.identify(image, opts).catch(() => null);
+    if (hashed && (hashed.confidence ?? 0) >= 0.97) return { ...hashed, provider: this.name, raw: { ...(hashed.raw as object), method: "hash" } };
+
+    // 2. Everything else: nearest card by image embedding, within the batch's game.
+    const pool = photoGamePool(opts);
+    let idx: EmbedIndex;
+    let q: Float32Array;
+    try {
+      idx = await loadEmbedIndex();
+      if (![...idx.games.keys()].some((g) => inPool(pool, g))) return hashed;
+      [q] = await embedder().embed([image.data]);
+    } catch {
+      return hashed; // model or index unavailable: fall back to the hash result
+    }
+    if (q.length !== idx.dim) return hashed;
+
+    // Coverage counts every game the photo may belong to, including one with no
+    // vectors yet: while Magic is still being embedded, a Magic photo would
+    // otherwise get a confident pick from among the Pokémon cards.
+    let catalog = 0;
+    let indexed = 0;
+    for (const [slug, n] of idx.catalog) {
+      if (!inPool(pool, slug)) continue;
+      catalog += n;
+      indexed += idx.games.get(slug)?.ids.length ?? 0;
+    }
+    let best: { game: string; row: number; sim: number } | null = null;
+    let second: { game: string; row: number; sim: number } | null = null;
+    for (const [slug, g] of idx.games) {
+      if (!inPool(pool, slug)) continue;
+      const { vecs, scales } = g;
+      const dim = idx.dim;
+      for (let r = 0; r < g.ids.length; r++) {
+        let dot = 0;
+        const o = r * dim;
+        for (let i = 0; i < dim; i++) dot += q[i] * vecs[o + i];
+        const sim = dot / scales[r];
+        if (!best || sim > best.sim) {
+          second = best;
+          best = { game: slug, row: r, sim };
+        } else if (!second || sim > second.sim) {
+          second = { game: slug, row: r, sim };
+        }
+      }
+    }
+    if (!best) return hashed;
+
+    // similarity + margin → confidence: the calibrated rule lives in embedding.ts.
+    const margin = second ? best.sim - second.sim : 1;
+    let confidence = embedConfidence(best.sim, margin);
+    if (confidence == null) return hashed;
+    if (catalog > 0 && indexed / catalog < 0.95) confidence = Math.min(confidence, 0.85); // still building
+
+    const at = (h: { game: string; row: number }) => ({ id: idx.games.get(h.game)!.ids[h.row], m: idx.games.get(h.game)!.meta[h.row] });
+    const b = at(best);
+    const unindexedVersion = idx.games.get(best.game)!.unindexed.has(baseName(b.m.name));
+    if (unindexedVersion) confidence = Math.min(confidence, 0.85);
+    const labels: VisionLabels = { name: b.m.name, number: b.m.number ?? undefined, set: b.m.set_name };
+    const s = second ? at(second) : null;
+    // `distance` keeps the orchestrator's near-tie rule (runner-up < 2 away)
+    // meaning "within 0.02 similarity".
+    const dist = (sim: number) => (1 - sim) * 100;
+    return {
+      provider: this.name,
+      labels,
+      hintText: labelsToHint(labels),
+      confidence,
+      raw: {
+        method: "embed",
+        card_id: b.id,
+        similarity: best.sim,
+        distance: dist(best.sim),
+        runner_up: s && second
+          ? { card_id: s.id, similarity: second.sim, distance: dist(second.sim), hint: labelsToHint({ name: s.m.name, number: s.m.number ?? undefined, set: s.m.set_name }) }
+          : null,
+        coverage: catalog ? indexed / catalog : null,
+        unindexed_version: unindexedVersion,
+        hash: hashed?.raw ?? null,
+      },
+    };
+  }
+}
+
 type HttpConfig = {
   url: string;
   apiKey?: string;
@@ -299,6 +525,7 @@ let _provider: VisionProvider | null = null;
 function build(): VisionProvider {
   const p = (process.env.VISION_PROVIDER ?? "none").toLowerCase();
   if (p === "hash") return new HashProvider();
+  if (p === "embed") return new EmbedProvider();
   if (p === "mock") return new MockProvider();
   if (p === "http" || p === "custom" || p === "ximilar") {
     return new HttpVisionProvider(p, {
