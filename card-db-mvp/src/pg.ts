@@ -254,16 +254,61 @@ export async function getMeta(key: string): Promise<string | undefined> {
   return r?.value;
 }
 
+/**
+ * Cache a whole-catalog query that runs on a public page (the home page). With
+ * 170k+ cards these scan every price row, so running them per visit is slow,
+ * and in parallel they can fill Postgres's shared memory (Railway's Postgres
+ * has a 62 MB /dev/shm): "could not resize shared memory segment … No space
+ * left on device" failed the home page. One load at a time per key; on an
+ * error the last good value is served, so a hiccup never takes the page down.
+ */
+const pageCache = new Map<string, { at: number; value: unknown; loading: Promise<unknown> | null }>();
+const PAGE_CACHE_MS = 10 * 60 * 1000;
+async function cachedPageQuery<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const hit = pageCache.get(key);
+  if (hit && hit.at && Date.now() - hit.at < PAGE_CACHE_MS) return hit.value as T;
+  if (hit?.loading) return hit.loading as Promise<T>;
+  const entry = hit ?? { at: 0, value: undefined, loading: null };
+  pageCache.set(key, entry);
+  entry.loading = load()
+    .then((value) => {
+      entry.at = Date.now();
+      entry.value = value;
+      return value;
+    })
+    .catch((err) => {
+      if (entry.at) {
+        console.error(`${key}: query failed, serving the cached result:`, err?.message ?? err);
+        return entry.value as T;
+      }
+      throw err;
+    })
+    .finally(() => {
+      entry.loading = null;
+    });
+  return entry.loading as Promise<T>;
+}
+
+/** Run one read query with parallel workers off (they need Postgres shared memory). */
+async function serialQuery<T = any>(text: string, params: any[] = []): Promise<T[]> {
+  return tx(async (client) => {
+    await client.query("SET LOCAL max_parallel_workers_per_gather = 0");
+    return (await client.query(text, params)).rows as T[];
+  });
+}
+
 export function counts(): Promise<
   { games: number; sets: number; cards: number; variants: number; prices: number }
 > {
   // COUNT returns bigint (parsed as string by pg); cast to int for JS numbers.
-  return one(
-    `SELECT (SELECT COUNT(*) FROM games)::int         AS games,
-            (SELECT COUNT(*) FROM sets)::int          AS sets,
-            (SELECT COUNT(*) FROM cards)::int         AS cards,
-            (SELECT COUNT(*) FROM card_variants)::int AS variants,
-            (SELECT COUNT(*) FROM price_points)::int  AS prices`
+  return cachedPageQuery("counts", async () =>
+    (await serialQuery(
+      `SELECT (SELECT COUNT(*) FROM games)::int         AS games,
+              (SELECT COUNT(*) FROM sets)::int          AS sets,
+              (SELECT COUNT(*) FROM cards)::int         AS cards,
+              (SELECT COUNT(*) FROM card_variants)::int AS variants,
+              (SELECT COUNT(*) FROM price_points)::int  AS prices`
+    ))[0]
   ) as Promise<{ games: number; sets: number; cards: number; variants: number; prices: number }>;
 }
 
@@ -271,19 +316,26 @@ export function counts(): Promise<
 export function trendingCards(
   limit = 8
 ): Promise<Array<Card & { price_cents: number; currency: string }>> {
-  // Postgres is strict about GROUP BY: c.id (the PK) covers c.*, but the joined
-  // columns must be grouped explicitly, and currency needs an aggregate.
-  return query(
-    `SELECT c.*, s.slug AS set_slug, s.name AS set_name, g.slug AS game_slug,
-            MAX(pp.price_cents) AS price_cents, MAX(pp.currency) AS currency
-     FROM cards c
-     JOIN sets s ON s.id=c.set_id
-     JOIN games g ON g.id=s.game_id
-     JOIN card_variants v ON v.card_id=c.id
-     JOIN price_points pp ON pp.variant_id=v.id AND pp.kind='market' AND pp.grade IS NULL
-     GROUP BY c.id, s.slug, s.name, g.slug
-     ORDER BY price_cents DESC
-     LIMIT $1`,
-    [limit]
+  // Rank cards on the narrow price rows first, then join the full card row for
+  // the top few only (grouping c.* for every card sorted ~35 MB to disk).
+  return cachedPageQuery(`trending:${limit}`, () =>
+    serialQuery(
+      `WITH top AS (
+         SELECT v.card_id, MAX(pp.price_cents) AS price_cents, MAX(pp.currency) AS currency
+         FROM price_points pp
+         JOIN card_variants v ON v.id=pp.variant_id
+         WHERE pp.kind='market' AND pp.grade IS NULL
+         GROUP BY v.card_id
+         ORDER BY price_cents DESC
+         LIMIT $1
+       )
+       SELECT c.*, s.slug AS set_slug, s.name AS set_name, g.slug AS game_slug, top.price_cents, top.currency
+       FROM top
+       JOIN cards c ON c.id=top.card_id
+       JOIN sets s ON s.id=c.set_id
+       JOIN games g ON g.id=s.game_id
+       ORDER BY top.price_cents DESC, c.id`,
+      [limit]
+    )
   ) as Promise<Array<Card & { price_cents: number; currency: string }>>;
 }
